@@ -1,0 +1,24 @@
+[package]
+name = "svb"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["std"]
+std = ["alloc", "thiserror/std"]
+alloc = []
+simd-avx2 = []
+simd-sse2 = []
+simd-neon = []
+simd-auto = []
+
+[dependencies]
+thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
+
+[[bench]]
+name = "decode"
+harness = false
