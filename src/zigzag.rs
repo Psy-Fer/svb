@@ -20,7 +20,54 @@ pub fn decode(codes: &[u16]) -> Vec<i16> {
 }
 
 pub fn decode_into(codes: &[u16], out: &mut Vec<i16>) {
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    {
+        decode_into_sse2(codes, out);
+        return;
+    }
     out.extend(codes.iter().copied().map(decode_one));
+}
+
+// SSE2 zigzag decode: 8 u16 values per iteration.
+// SSE2 is baseline on x86_64 so no runtime feature check is needed.
+// The scalar decode_one formula is: shifted = n >> 1; sign = -(n & 1); result = shifted ^ sign.
+// In SIMD, -(n & 1) yields 0x0000 (if bit=0) or 0xFFFF (if bit=1) via _mm_sub_epi16(zero, bit).
+#[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+fn decode_into_sse2(codes: &[u16], out: &mut Vec<i16>) {
+    use core::arch::x86_64::*;
+
+    let n = codes.len();
+    out.reserve(n);
+    let base = out.len();
+    let simd_n = (n / 8) * 8;
+
+    let mut i = 0usize;
+    while i < simd_n {
+        let result = unsafe {
+            // SAFETY: i + 8 <= simd_n <= n; codes slice bounds are valid.
+            let v = _mm_loadu_si128(codes.as_ptr().add(i) as *const __m128i);
+            let one = _mm_set1_epi16(1);
+            let zero = _mm_setzero_si128();
+            let low_bit = _mm_and_si128(v, one);
+            // _mm_sub_epi16(zero, low_bit): 0 - 0 = 0x0000; 0 - 1 = 0xFFFF (wrapping i16)
+            let sign = _mm_sub_epi16(zero, low_bit);
+            let shifted = _mm_srli_epi16(v, 1);
+            _mm_xor_si128(shifted, sign)
+        };
+        unsafe {
+            // SAFETY: out.reserve(n) ensures capacity; base + i + 8 <= base + n.
+            let out_ptr = out.as_mut_ptr().add(base + i) as *mut __m128i;
+            _mm_storeu_si128(out_ptr, result);
+        }
+        i += 8;
+    }
+    unsafe {
+        // SAFETY: elements [base, base + simd_n) were all written above.
+        out.set_len(base + simd_n);
+    }
+
+    // Scalar tail for n % 8 remaining values.
+    out.extend(codes[simd_n..].iter().copied().map(decode_one));
 }
 
 #[inline]
@@ -40,6 +87,43 @@ mod tests {
     use super::*;
     #[cfg(not(feature = "std"))]
     use alloc::vec;
+
+    // Cross-path: verify SSE2 and scalar produce identical output.
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    fn decode_both(codes: &[u16]) -> (Vec<i16>, Vec<i16>) {
+        let mut scalar_out = Vec::new();
+        scalar_out.extend(codes.iter().copied().map(decode_one));
+        let mut simd_out = Vec::new();
+        decode_into_sse2(codes, &mut simd_out);
+        (scalar_out, simd_out)
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_matches_scalar_known_values() {
+        // Known zigzag codes: 0→0, 1→-1, 2→1, 3→-2, 65534→i16::MAX, 65535→i16::MIN
+        let codes: Vec<u16> = vec![0, 1, 2, 3, 65534, 65535, 0, 0];
+        let (s, v) = decode_both(&codes);
+        assert_eq!(s, v);
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_matches_scalar_with_tail() {
+        // 11 values — 8 via SIMD, 3 via scalar tail.
+        let codes: Vec<u16> = (0..11u16).collect();
+        let (s, v) = decode_both(&codes);
+        assert_eq!(s, v);
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_matches_scalar_exhaustive_first_256() {
+        // All 256 possible low-byte patterns (covers both 1-byte and sign cases).
+        let codes: Vec<u16> = (0u16..256).collect();
+        let (s, v) = decode_both(&codes);
+        assert_eq!(s, v);
+    }
 
     #[test]
     fn known_values() {

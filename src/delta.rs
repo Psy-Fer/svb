@@ -40,8 +40,69 @@ fn encode_with_initial_into(initial: i16, samples: &[i16], out: &mut Vec<i16>) {
 }
 
 fn decode_with_initial_into(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    {
+        decode_sse2(initial, deltas, out);
+        return;
+    }
+    decode_scalar(initial, deltas, out);
+}
+
+fn decode_scalar(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
     let mut acc = initial;
     for &d in deltas {
+        acc = acc.wrapping_add(d);
+        out.push(acc);
+    }
+}
+
+// SSE2 prefix-sum delta decode: 8 i16 values per iteration.
+//
+// Three-step scan builds all 8 prefix sums in-register:
+//   v += shl_1(v)  →  pairwise running sums
+//   v += shl_2(v)  →  4-element running sums
+//   v += shl_4(v)  →  8-element prefix sums (all starting from d0)
+// Then add the inter-block accumulator `acc` to all 8 lanes and extract
+// element 7 (the cumulative sum of all 8 deltas + acc) as the new accumulator.
+#[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+fn decode_sse2(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
+    use core::arch::x86_64::*;
+
+    let n = deltas.len();
+    out.reserve(n);
+    let base = out.len();
+    let simd_n = (n / 8) * 8;
+
+    let mut acc = initial;
+    let mut i = 0usize;
+
+    while i < simd_n {
+        let result = unsafe {
+            // SAFETY: i + 8 <= simd_n <= n; deltas slice bounds are valid.
+            let v = _mm_loadu_si128(deltas.as_ptr().add(i) as *const __m128i);
+            // Three-step prefix-sum scan (all wrapping i16 arithmetic).
+            let v = _mm_add_epi16(v, _mm_slli_si128(v, 2));
+            let v = _mm_add_epi16(v, _mm_slli_si128(v, 4));
+            let v = _mm_add_epi16(v, _mm_slli_si128(v, 8));
+            // Broadcast acc to all lanes and add.
+            _mm_add_epi16(v, _mm_set1_epi16(acc))
+        };
+        unsafe {
+            // SAFETY: out.reserve(n) ensures capacity; base + i + 8 <= base + n.
+            let out_ptr = out.as_mut_ptr().add(base + i) as *mut __m128i;
+            _mm_storeu_si128(out_ptr, result);
+            // Element 7 is the prefix sum of all 8 deltas + acc = new accumulator.
+            acc = _mm_extract_epi16(result, 7) as i16;
+        }
+        i += 8;
+    }
+    unsafe {
+        // SAFETY: elements [base, base + simd_n) were all written above.
+        out.set_len(base + simd_n);
+    }
+
+    // Scalar tail for n % 8 remaining values.
+    for &d in &deltas[simd_n..] {
         acc = acc.wrapping_add(d);
         out.push(acc);
     }
@@ -52,6 +113,53 @@ mod tests {
     use super::*;
     #[cfg(not(feature = "std"))]
     use alloc::vec;
+
+    // Cross-path: verify SSE2 and scalar produce identical output.
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    fn decode_both(initial: i16, deltas: &[i16]) -> (Vec<i16>, Vec<i16>) {
+        let mut scalar_out = Vec::new();
+        decode_scalar(initial, deltas, &mut scalar_out);
+        let mut simd_out = Vec::new();
+        decode_sse2(initial, deltas, &mut simd_out);
+        (scalar_out, simd_out)
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_matches_scalar_exact_block() {
+        // Exactly 8 values — exercises the SIMD loop with no tail.
+        let deltas: Vec<i16> = vec![1, 2, 3, 4, -1, -2, -3, -4];
+        let (s, v) = decode_both(0, &deltas);
+        assert_eq!(s, v);
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_matches_scalar_with_tail() {
+        // 11 values — 8 via SIMD, 3 via scalar tail.
+        let deltas: Vec<i16> = vec![10, -5, 3, 0, -100, 200, i16::MAX, i16::MIN, 1, 2, 3];
+        let (s, v) = decode_both(0, &deltas);
+        assert_eq!(s, v);
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_matches_scalar_nonzero_initial() {
+        let deltas: Vec<i16> = (0..40).map(|i| i as i16).collect();
+        let (s, v) = decode_both(100, &deltas);
+        assert_eq!(s, v);
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_matches_scalar_wrapping() {
+        // Wrapping arithmetic: alternating MAX/MIN deltas.
+        let deltas: Vec<i16> = (0..16)
+            .map(|i| if i % 2 == 0 { i16::MAX } else { i16::MIN })
+            .collect();
+        let (s, v) = decode_both(0, &deltas);
+        assert_eq!(s, v);
+    }
 
     #[test]
     fn roundtrip_empty() {
