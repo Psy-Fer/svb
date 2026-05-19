@@ -161,6 +161,83 @@ mod tests {
         assert_eq!(s, v);
     }
 
+    // ── all tail lengths ──────────────────────────────────────────────────────
+    //
+    // n = 0..=16 covers n%8 = 0,1,2,3,4,5,6,7 for both one-block (n<8) and
+    // two-block (8≤n≤16) cases, exercising the scalar tail for every residue.
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_all_tail_lengths() {
+        let pool: Vec<i16> = (0..16).map(|i| (i * 3 - 20) as i16).collect();
+        for n in 0..=16usize {
+            let (s, v) = decode_both(5, &pool[..n]);
+            assert_eq!(s, v, "tail n={n}");
+        }
+    }
+
+    // ── inter-block accumulator carry ─────────────────────────────────────────
+    //
+    // Verifies that the value at element 7 of block N becomes the initial
+    // accumulator for block N+1.
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_accumulator_carry_multiple_blocks() {
+        // 3 full blocks (24 values) with initial = -100.
+        let deltas: Vec<i16> = (0..24).map(|i| (i as i16).wrapping_mul(7)).collect();
+        let (s, v) = decode_both(-100, &deltas);
+        assert_eq!(s, v);
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_accumulator_carry_at_wrap_boundary() {
+        // Block 1 ends with prefix-sum = i16::MAX; block 2 starts adding from there.
+        // Craft block 1 so its cumulative sum = i16::MAX with initial=0:
+        //   deltas = [i16::MAX, 0, 0, 0, 0, 0, 0, 0]
+        // Then block 2 delta[0] = 1 should wrap to i16::MIN.
+        let mut deltas = vec![i16::MAX, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        let (s, v) = decode_both(0, &deltas);
+        assert_eq!(s, v);
+
+        // Reverse: block 1 ends at i16::MIN, block 2 delta[0] = -1 wraps to i16::MAX.
+        deltas = vec![i16::MIN, 0, 0, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0];
+        let (s, v) = decode_both(0, &deltas);
+        assert_eq!(s, v);
+    }
+
+    // ── special sequences ─────────────────────────────────────────────────────
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_monotone_increasing() {
+        // All deltas = 1: output should be initial+1, initial+2, ...
+        let deltas = vec![1i16; 33]; // 4 full blocks + 1 scalar tail
+        let (s, v) = decode_both(0, &deltas);
+        assert_eq!(s, v);
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_all_zero_deltas() {
+        // All deltas = 0: every output equals initial.
+        let deltas = vec![0i16; 32];
+        let (s, v) = decode_both(42, &deltas);
+        assert_eq!(s, v);
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_large_input() {
+        // 512 values — many SIMD blocks.
+        let deltas: Vec<i16> = (0..512i32)
+            .map(|i| ((i * 31 + 17) % 257 - 128) as i16)
+            .collect();
+        let (s, v) = decode_both(1000, &deltas);
+        assert_eq!(s, v);
+    }
+
     #[test]
     fn roundtrip_empty() {
         assert_eq!(decode(&encode(&[])), &[] as &[i16]);

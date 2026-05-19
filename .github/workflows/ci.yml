@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── test matrix ──────────────────────────────────────────────────────────────
+  #
+  # Five platforms, each with a distinct SIMD story:
+  #   ubuntu-latest      → x86_64 Linux   (SSE2 / SSSE3 / AVX2)
+  #   ubuntu-24.04-arm   → AArch64 Linux  (NEON)
+  #   macos-13           → x86_64 macOS   (SSE2 / SSSE3 / AVX2)
+  #   macos-latest       → AArch64 macOS  (NEON — Apple Silicon)
+  #   windows-latest     → x86_64 Windows (SSE2 / SSSE3 / AVX2)
+
+  test:
+    name: test / ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-13
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # ── feature matrix ──────────────────────────────────────────────────────
+
+      - name: Test — default features (scalar path)
+        run: cargo test
+
+      - name: Test — simd-auto (runtime detection, best available path)
+        run: cargo test --features simd-auto
+
+      # x86_64 only: forced compile-time SIMD paths
+      - name: Test — simd-sse2 (forced SSSE3)
+        if: runner.arch == 'X64'
+        run: cargo test --features simd-sse2
+
+      - name: Test — simd-avx2 (forced AVX2)
+        if: runner.arch == 'X64'
+        run: cargo test --features simd-avx2
+
+      # AArch64 only: forced NEON path
+      - name: Test — simd-neon (forced NEON)
+        if: runner.arch == 'ARM64'
+        run: cargo test --features simd-neon
+
+      # no_std + alloc: all platforms
+      - name: Test — no_std + alloc
+        run: cargo test --no-default-features --features alloc
+
+  # ── lint ─────────────────────────────────────────────────────────────────────
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --check
+
+      # simd-auto activates all SIMD code paths so clippy sees everything.
+      - name: clippy
+        run: cargo clippy --features simd-auto -- -D clippy::all
+
+  # ── MSRV ─────────────────────────────────────────────────────────────────────
+
+  msrv:
+    name: MSRV (1.82.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.82.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test — default features
+        run: cargo test
+
+      - name: Test — simd-auto
+        run: cargo test --features simd-auto

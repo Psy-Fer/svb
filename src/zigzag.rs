@@ -125,6 +125,73 @@ mod tests {
         assert_eq!(s, v);
     }
 
+    // ── exhaustive: all 65536 u16 values ─────────────────────────────────────
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_exhaustive_all_u16_values() {
+        // Every possible zigzag code through the SSE2 path must match scalar.
+        let codes: Vec<u16> = (u16::MIN..=u16::MAX).collect();
+        let (s, v) = decode_both(&codes);
+        assert_eq!(s, v);
+    }
+
+    // ── all tail lengths ──────────────────────────────────────────────────────
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_all_tail_lengths() {
+        let pool: Vec<u16> = (0u16..16).collect();
+        for n in 0..=16usize {
+            let (s, v) = decode_both(&pool[..n]);
+            assert_eq!(s, v, "tail n={n}");
+        }
+    }
+
+    // ── edge sizes ────────────────────────────────────────────────────────────
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_empty_and_small() {
+        // n=0 and n=1 exercise the early-return and pure-tail paths respectively.
+        let (s, v) = decode_both(&[]);
+        assert_eq!(s, v);
+        let (s, v) = decode_both(&[0]);
+        assert_eq!(s, v);
+        let (s, v) = decode_both(&[65535]);
+        assert_eq!(s, v);
+    }
+
+    // ── homogeneous bit patterns ──────────────────────────────────────────────
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_all_even_codes() {
+        // Even codes: low_bit = 0 → sign = 0 → result = code >> 1 (positive i16).
+        let codes: Vec<u16> = (0..64u16).map(|i| i * 2).collect();
+        let (s, v) = decode_both(&codes);
+        assert_eq!(s, v);
+    }
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_all_odd_codes() {
+        // Odd codes: low_bit = 1 → sign = 0xFFFF → result = (code>>1) ^ 0xFFFF = negative.
+        let codes: Vec<u16> = (0..64u16).map(|i| i * 2 + 1).collect();
+        let (s, v) = decode_both(&codes);
+        assert_eq!(s, v);
+    }
+
+    // ── large input ───────────────────────────────────────────────────────────
+
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[test]
+    fn sse2_large_input() {
+        let codes: Vec<u16> = (0u32..10_000).map(|i| (i % 65536) as u16).collect();
+        let (s, v) = decode_both(&codes);
+        assert_eq!(s, v);
+    }
+
     #[test]
     fn known_values() {
         let cases: &[(i16, u16)] = &[
