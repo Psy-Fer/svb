@@ -1,7 +1,7 @@
-#[cfg(feature = "std")]
-use std::vec::Vec;
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 pub fn encode(samples: &[i16]) -> Vec<u16> {
     let mut out = Vec::with_capacity(samples.len());
@@ -20,11 +20,15 @@ pub fn decode(codes: &[u16]) -> Vec<i16> {
 }
 
 pub fn decode_into(codes: &[u16], out: &mut Vec<i16>) {
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
-    {
-        decode_into_sse2(codes, out);
-        return;
-    }
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
+    decode_into_sse2(codes, out);
+    #[cfg(not(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    )))]
     out.extend(codes.iter().copied().map(decode_one));
 }
 
@@ -32,7 +36,10 @@ pub fn decode_into(codes: &[u16], out: &mut Vec<i16>) {
 // SSE2 is baseline on x86_64 so no runtime feature check is needed.
 // The scalar decode_one formula is: shifted = n >> 1; sign = -(n & 1); result = shifted ^ sign.
 // In SIMD, -(n & 1) yields 0x0000 (if bit=0) or 0xFFFF (if bit=1) via _mm_sub_epi16(zero, bit).
-#[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+#[cfg(all(
+    any(feature = "simd-auto", feature = "simd-sse2"),
+    target_arch = "x86_64"
+))]
 fn decode_into_sse2(codes: &[u16], out: &mut Vec<i16>) {
     use core::arch::x86_64::*;
 
@@ -89,7 +96,10 @@ mod tests {
     use alloc::vec;
 
     // Cross-path: verify SSE2 and scalar produce identical output.
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     fn decode_both(codes: &[u16]) -> (Vec<i16>, Vec<i16>) {
         let mut scalar_out = Vec::new();
         scalar_out.extend(codes.iter().copied().map(decode_one));
@@ -98,7 +108,10 @@ mod tests {
         (scalar_out, simd_out)
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_matches_scalar_known_values() {
         // Known zigzag codes: 0→0, 1→-1, 2→1, 3→-2, 65534→i16::MAX, 65535→i16::MIN
@@ -107,7 +120,10 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_matches_scalar_with_tail() {
         // 11 values — 8 via SIMD, 3 via scalar tail.
@@ -116,7 +132,10 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_matches_scalar_exhaustive_first_256() {
         // All 256 possible low-byte patterns (covers both 1-byte and sign cases).
@@ -127,7 +146,10 @@ mod tests {
 
     // ── exhaustive: all 65536 u16 values ─────────────────────────────────────
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_exhaustive_all_u16_values() {
         // Every possible zigzag code through the SSE2 path must match scalar.
@@ -138,7 +160,10 @@ mod tests {
 
     // ── all tail lengths ──────────────────────────────────────────────────────
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_all_tail_lengths() {
         let pool: Vec<u16> = (0u16..16).collect();
@@ -150,7 +175,10 @@ mod tests {
 
     // ── edge sizes ────────────────────────────────────────────────────────────
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_empty_and_small() {
         // n=0 and n=1 exercise the early-return and pure-tail paths respectively.
@@ -164,7 +192,10 @@ mod tests {
 
     // ── homogeneous bit patterns ──────────────────────────────────────────────
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_all_even_codes() {
         // Even codes: low_bit = 0 → sign = 0 → result = code >> 1 (positive i16).
@@ -173,7 +204,10 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_all_odd_codes() {
         // Odd codes: low_bit = 1 → sign = 0xFFFF → result = (code>>1) ^ 0xFFFF = negative.
@@ -184,7 +218,10 @@ mod tests {
 
     // ── large input ───────────────────────────────────────────────────────────
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_large_input() {
         let codes: Vec<u16> = (0u32..10_000).map(|i| (i % 65536) as u16).collect();
@@ -234,7 +271,11 @@ mod tests {
     fn small_values_encode_small() {
         // The point of zigzag: small absolute values → small unsigned codes.
         for x in -127i16..=127 {
-            assert!(encode_one(x) <= 254, "x={x} encoded to {} (>254)", encode_one(x));
+            assert!(
+                encode_one(x) <= 254,
+                "x={x} encoded to {} (>254)",
+                encode_one(x)
+            );
         }
     }
 }

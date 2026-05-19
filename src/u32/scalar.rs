@@ -1,7 +1,7 @@
-#[cfg(feature = "std")]
-use std::vec::Vec;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 use crate::error::DecodeError;
 
@@ -75,6 +75,7 @@ pub(super) fn decode_into_classic(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(super) fn encoded_data_len_classic(ctrl: &[u8], n: usize) -> usize {
     // byte_width = tag + 1, so data_len = n + sum(tag_i)
     let mut sum = n;
@@ -159,6 +160,7 @@ pub(super) fn decode_into_0124(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(super) fn encoded_data_len_0124(ctrl: &[u8], n: usize) -> usize {
     let mut sum = 0usize;
     let full = n / 4;
@@ -210,13 +212,17 @@ mod tests {
         let got = enc_classic(&[1, 256, 65536, 0xFFFF_FFFF]);
         assert_eq!(
             got,
-            [0xE4, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF]
+            [
+                0xE4, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF
+            ]
         );
     }
 
     #[test]
     fn classic_spec_example_decode() {
-        let data = [0xE4u8, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF];
+        let data = [
+            0xE4u8, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF,
+        ];
         assert_eq!(dec_classic(&data, 4).unwrap(), [1, 256, 65536, 0xFFFF_FFFF]);
     }
 
@@ -229,7 +235,16 @@ mod tests {
 
     #[test]
     fn classic_roundtrip_boundaries() {
-        let vals = [0u32, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFF_FFFF, 0x100_0000, u32::MAX];
+        let vals = [
+            0u32,
+            0xFF,
+            0x100,
+            0xFFFF,
+            0x10000,
+            0xFF_FFFF,
+            0x100_0000,
+            u32::MAX,
+        ];
         assert_eq!(dec_classic(&enc_classic(&vals), vals.len()).unwrap(), vals);
     }
 
@@ -289,8 +304,8 @@ mod tests {
         assert_eq!(
             got,
             [
-                0x94, 0x3E, 0x01, 0xFF, 0x00, 0x01, 0xFF, 0xFF, 0x00, 0x00, 0x01, 0x00, 0xFF,
-                0xFF, 0xFF, 0xFF
+                0x94, 0x3E, 0x01, 0xFF, 0x00, 0x01, 0xFF, 0xFF, 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF,
+                0xFF, 0xFF
             ]
         );
     }
@@ -298,8 +313,8 @@ mod tests {
     #[test]
     fn v0124_spec_example_decode() {
         let data = [
-            0x94u8, 0x3E, 0x01, 0xFF, 0x00, 0x01, 0xFF, 0xFF, 0x00, 0x00, 0x01, 0x00, 0xFF,
-            0xFF, 0xFF, 0xFF,
+            0x94u8, 0x3E, 0x01, 0xFF, 0x00, 0x01, 0xFF, 0xFF, 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF,
+            0xFF, 0xFF,
         ];
         assert_eq!(
             dec_0124(&data, 7).unwrap(),

@@ -1,7 +1,7 @@
-#[cfg(feature = "std")]
-use std::vec::Vec;
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 pub fn encode(samples: &[i16]) -> Vec<i16> {
     encode_with_initial(0, samples)
@@ -40,14 +40,22 @@ fn encode_with_initial_into(initial: i16, samples: &[i16], out: &mut Vec<i16>) {
 }
 
 fn decode_with_initial_into(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
-    {
-        decode_sse2(initial, deltas, out);
-        return;
-    }
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
+    decode_sse2(initial, deltas, out);
+    #[cfg(not(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    )))]
     decode_scalar(initial, deltas, out);
 }
 
+#[cfg_attr(
+    all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"),
+    allow(dead_code)
+)]
 fn decode_scalar(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
     let mut acc = initial;
     for &d in deltas {
@@ -64,7 +72,10 @@ fn decode_scalar(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
 //   v += shl_4(v)  →  8-element prefix sums (all starting from d0)
 // Then add the inter-block accumulator `acc` to all 8 lanes and extract
 // element 7 (the cumulative sum of all 8 deltas + acc) as the new accumulator.
-#[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+#[cfg(all(
+    any(feature = "simd-auto", feature = "simd-sse2"),
+    target_arch = "x86_64"
+))]
 fn decode_sse2(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
     use core::arch::x86_64::*;
 
@@ -115,7 +126,10 @@ mod tests {
     use alloc::vec;
 
     // Cross-path: verify SSE2 and scalar produce identical output.
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     fn decode_both(initial: i16, deltas: &[i16]) -> (Vec<i16>, Vec<i16>) {
         let mut scalar_out = Vec::new();
         decode_scalar(initial, deltas, &mut scalar_out);
@@ -124,7 +138,10 @@ mod tests {
         (scalar_out, simd_out)
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_matches_scalar_exact_block() {
         // Exactly 8 values — exercises the SIMD loop with no tail.
@@ -133,7 +150,10 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_matches_scalar_with_tail() {
         // 11 values — 8 via SIMD, 3 via scalar tail.
@@ -142,7 +162,10 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_matches_scalar_nonzero_initial() {
         let deltas: Vec<i16> = (0..40).map(|i| i as i16).collect();
@@ -150,7 +173,10 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_matches_scalar_wrapping() {
         // Wrapping arithmetic: alternating MAX/MIN deltas.
@@ -166,7 +192,10 @@ mod tests {
     // n = 0..=16 covers n%8 = 0,1,2,3,4,5,6,7 for both one-block (n<8) and
     // two-block (8≤n≤16) cases, exercising the scalar tail for every residue.
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_all_tail_lengths() {
         let pool: Vec<i16> = (0..16).map(|i| (i * 3 - 20) as i16).collect();
@@ -181,7 +210,10 @@ mod tests {
     // Verifies that the value at element 7 of block N becomes the initial
     // accumulator for block N+1.
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_accumulator_carry_multiple_blocks() {
         // 3 full blocks (24 values) with initial = -100.
@@ -190,7 +222,10 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_accumulator_carry_at_wrap_boundary() {
         // Block 1 ends with prefix-sum = i16::MAX; block 2 starts adding from there.
@@ -209,7 +244,10 @@ mod tests {
 
     // ── special sequences ─────────────────────────────────────────────────────
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_monotone_increasing() {
         // All deltas = 1: output should be initial+1, initial+2, ...
@@ -218,7 +256,10 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_all_zero_deltas() {
         // All deltas = 0: every output equals initial.
@@ -227,7 +268,10 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ))]
     #[test]
     fn sse2_large_input() {
         // 512 values — many SIMD blocks.

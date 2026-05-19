@@ -1,7 +1,7 @@
-#[cfg(feature = "std")]
-use std::vec::Vec;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 use crate::error::DecodeError;
 
@@ -24,11 +24,7 @@ pub(super) fn encode_into(values: &[u16], out: &mut Vec<u8>) {
     }
 }
 
-pub(super) fn decode_into(
-    data: &[u8],
-    n: usize,
-    out: &mut Vec<u16>,
-) -> Result<(), DecodeError> {
+pub(super) fn decode_into(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<(), DecodeError> {
     if n == 0 {
         return Ok(());
     }
@@ -74,6 +70,7 @@ pub(super) fn decode_from_raw(
 /// Number of data bytes consumed by `n` values given their control stream.
 /// Each value occupies 1 byte (ctrl bit 0) or 2 bytes (ctrl bit 1), so
 /// total = n + popcount(first n bits of ctrl).
+#[allow(dead_code)]
 pub(super) fn encoded_data_len(ctrl: &[u8], n: usize) -> usize {
     let full = n / 8;
     let rem = n % 8;

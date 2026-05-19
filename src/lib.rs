@@ -36,10 +36,10 @@ pub use vbz::{decode_vbz, decode_vbz_into, encode_vbz, encode_vbz_into};
 
 #[cfg(feature = "alloc")]
 mod vbz {
-    #[cfg(feature = "std")]
-    use std::vec::Vec;
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
 
     use crate::error::DecodeError;
     use crate::{delta, u16::Svb16, zigzag};

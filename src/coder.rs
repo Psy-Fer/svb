@@ -5,6 +5,7 @@ use std::vec::Vec;
 
 use crate::error::DecodeError;
 
+#[allow(dead_code)]
 pub(crate) trait Coder {
     type Elem: Copy;
 

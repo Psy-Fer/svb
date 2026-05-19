@@ -1,7 +1,7 @@
-#[cfg(feature = "std")]
-use std::vec::Vec;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 use crate::error::DecodeError;
 
@@ -77,6 +77,7 @@ pub(super) fn decode_into_1234(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(super) fn encoded_data_len_1234(ctrl: &[u8], n: usize) -> usize {
     // Identical formula to U32Classic: data_len = n + sum(tag_i)
     let mut sum = n;
@@ -156,6 +157,7 @@ pub(super) fn decode_into_1248(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(super) fn encoded_data_len_1248(ctrl: &[u8], n: usize) -> usize {
     let mut sum = 0usize;
     let full = n / 4;
@@ -223,7 +225,16 @@ mod tests {
 
     #[test]
     fn coder1234_roundtrip_boundaries() {
-        let vals = [0u64, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFF_FFFF, 0x100_0000, u32::MAX as u64];
+        let vals = [
+            0u64,
+            0xFF,
+            0x100,
+            0xFFFF,
+            0x10000,
+            0xFF_FFFF,
+            0x100_0000,
+            u32::MAX as u64,
+        ];
         assert_eq!(dec_1234(&enc_1234(&vals), vals.len()).unwrap(), vals);
     }
 

@@ -15,10 +15,10 @@ mod shuffle;
 // regardless of feature flags; the feature flags only control dispatch.
 #[cfg(target_arch = "x86_64")]
 mod avx2;
-#[cfg(target_arch = "x86_64")]
-mod sse2;
 #[cfg(target_arch = "aarch64")]
 mod neon;
+#[cfg(target_arch = "x86_64")]
+mod sse2;
 
 // ── dispatch ──────────────────────────────────────────────────────────────────
 
@@ -165,8 +165,8 @@ mod cross_path {
 
     #[cfg(all(target_arch = "x86_64", feature = "std"))]
     mod x86 {
-        use super::*;
         use super::super::{avx2, scalar, sse2};
+        use super::*;
 
         // ── helpers ──────────────────────────────────────────────────────────
 
@@ -262,7 +262,9 @@ mod cross_path {
                 return;
             }
             // Mix of 1-byte and 2-byte values to stress both branches.
-            let pool: Vec<u16> = (0..20).map(|i| if i % 3 == 0 { 300 + i } else { i }).collect();
+            let pool: Vec<u16> = (0..20)
+                .map(|i| if i % 3 == 0 { 300 + i } else { i })
+                .collect();
             for n in 0..=20usize {
                 let values = &pool[..n];
                 let enc = encode(values);
@@ -277,7 +279,9 @@ mod cross_path {
             if avx2_decode(&encode(&[0u16]), 1).is_none() {
                 return;
             }
-            let pool: Vec<u16> = (0..33).map(|i| if i % 3 == 0 { 300 + i } else { i }).collect();
+            let pool: Vec<u16> = (0..33)
+                .map(|i| if i % 3 == 0 { 300 + i } else { i })
+                .collect();
             for n in 0..=33usize {
                 let values = &pool[..n];
                 let enc = encode(values);
@@ -387,8 +391,8 @@ mod cross_path {
 
     #[cfg(target_arch = "aarch64")]
     mod arm {
-        use super::*;
         use super::super::{neon, scalar};
+        use super::*;
 
         fn encode(values: &[u16]) -> Vec<u8> {
             let mut v = Vec::new();
@@ -425,7 +429,13 @@ mod cross_path {
         fn all_ctrl_byte_values() {
             for ctrl in 0u8..=255 {
                 let values: Vec<u16> = (0..8)
-                    .map(|k| if (ctrl >> k) & 1 == 1 { 300 + k as u16 } else { k as u16 })
+                    .map(|k| {
+                        if (ctrl >> k) & 1 == 1 {
+                            300 + k as u16
+                        } else {
+                            k as u16
+                        }
+                    })
                     .collect();
                 check(&values);
             }
@@ -433,14 +443,12 @@ mod cross_path {
 
         #[test]
         fn all_tail_lengths() {
-            let pool: Vec<u16> = (0..20).map(|i| if i % 3 == 0 { 300 + i } else { i }).collect();
+            let pool: Vec<u16> = (0..20)
+                .map(|i| if i % 3 == 0 { 300 + i } else { i })
+                .collect();
             for n in 0..=20usize {
                 let enc = encode(&pool[..n]);
-                assert_eq!(
-                    decode_scalar(&enc, n),
-                    neon_decode(&enc, n),
-                    "tail n={n}"
-                );
+                assert_eq!(decode_scalar(&enc, n), neon_decode(&enc, n), "tail n={n}");
             }
         }
 

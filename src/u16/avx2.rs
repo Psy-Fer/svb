@@ -70,9 +70,8 @@ pub(super) unsafe fn decode_into(
             // SAFETY: data_pos + 32 <= data_bytes.len() checked above;
             // c0_bytes <= 16 so data_pos + c0_bytes + 16 <= data_pos + 32.
             let chunk_lo = _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
-            let chunk_hi = _mm_loadu_si128(
-                data_bytes.as_ptr().add(data_pos + c0_bytes) as *const __m128i,
-            );
+            let chunk_hi =
+                _mm_loadu_si128(data_bytes.as_ptr().add(data_pos + c0_bytes) as *const __m128i);
 
             // Pack into 256-bit registers: lower 128 = c0 lane, upper 128 = c1 lane.
             let mask256 = _mm256_set_m128i(mask_hi, mask_lo);
