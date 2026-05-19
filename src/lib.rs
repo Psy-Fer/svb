@@ -15,3 +15,6 @@ pub(crate) mod coder;
 pub mod delta;
 #[cfg(feature = "alloc")]
 pub mod zigzag;
+
+#[cfg(feature = "alloc")]
+pub mod u16;
