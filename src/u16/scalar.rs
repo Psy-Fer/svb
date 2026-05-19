@@ -39,10 +39,19 @@ pub(super) fn decode_into(
             have: data.len(),
         });
     }
-    let ctrl = &data[..ctrl_len];
-    let mut pos = ctrl_len;
+    decode_from_raw(&data[..ctrl_len], &data[ctrl_len..], n, out)
+}
 
+/// Decode `n` values from pre-split `ctrl` and `data` byte slices.
+/// Called by SIMD paths for their scalar tail.
+pub(super) fn decode_from_raw(
+    ctrl: &[u8],
+    data: &[u8],
+    n: usize,
+    out: &mut Vec<u16>,
+) -> Result<(), DecodeError> {
     out.reserve(n);
+    let mut pos = 0usize;
     for i in 0..n {
         let bit = (ctrl[i / 8] >> (i % 8)) & 1;
         if bit == 0 {
