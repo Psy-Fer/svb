@@ -10,3 +10,8 @@ pub use error::DecodeError;
 
 #[cfg(feature = "alloc")]
 pub(crate) mod coder;
+
+#[cfg(feature = "alloc")]
+pub mod delta;
+#[cfg(feature = "alloc")]
+pub mod zigzag;
