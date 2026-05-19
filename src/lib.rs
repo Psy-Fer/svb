@@ -18,3 +18,7 @@ pub mod zigzag;
 
 #[cfg(feature = "alloc")]
 pub mod u16;
+#[cfg(feature = "alloc")]
+pub mod u32;
+#[cfg(feature = "alloc")]
+pub mod u64;
