@@ -4,3 +4,9 @@
 
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 extern crate alloc;
+
+pub mod error;
+pub use error::DecodeError;
+
+#[cfg(feature = "alloc")]
+pub(crate) mod coder;
