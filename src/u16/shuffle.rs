@@ -1,7 +1,9 @@
-// Shuffle table shared by the SSSE3 and NEON decode paths.
+// Shuffle tables shared by the SSSE3 and NEON paths.
 // Always compiled on x86_64/aarch64 to catch compile errors even when no SIMD
 // feature is active; dead_code suppressed because use is feature-gated.
 #![allow(dead_code)]
+
+// ── Decode table ─────────────────────────────────────────────────────────────
 //
 // Entry `c` is the 16-byte PSHUFB / vqtbl1q_u8 mask that expands the
 // variable-width data bytes for control byte value `c` into 8 fixed-width
@@ -15,7 +17,7 @@
 // its high bit set (≥ 16 and ≥ 128 respectively). 0x80 satisfies both, so
 // the same table works for SSE/NEON without modification.
 
-const fn make() -> [[u8; 16]; 256] {
+const fn make_decode() -> [[u8; 16]; 256] {
     let mut table = [[0u8; 16]; 256];
     let mut ctrl = 0usize;
     while ctrl < 256 {
@@ -38,4 +40,37 @@ const fn make() -> [[u8; 16]; 256] {
     table
 }
 
-pub(super) static TABLE: [[u8; 16]; 256] = make();
+pub(super) static TABLE: [[u8; 16]; 256] = make_decode();
+
+// ── Encode table ─────────────────────────────────────────────────────────────
+//
+// Entry `c` is the 16-byte PSHUFB mask that packs 8 u16 values (laid out as
+// 16 LE bytes in a register) into the compact SVB16 data stream.
+//
+// Bit k of `c`: 0 = 1-byte value → emit only byte 2k (low byte of value k).
+//               1 = 2-byte value → emit byte 2k then byte 2k+1.
+//
+// The packed bytes occupy the first (8 + popcount(c)) positions of the result.
+// Positions beyond that are don't-care (filled with 0, never read).
+
+const fn make_encode() -> [[u8; 16]; 256] {
+    let mut table = [[0u8; 16]; 256];
+    let mut ctrl = 0usize;
+    while ctrl < 256 {
+        let mut dst = 0usize;
+        let mut i = 0usize;
+        while i < 8 {
+            table[ctrl][dst] = (2 * i) as u8; // low byte of value i
+            dst += 1;
+            if (ctrl >> i) & 1 != 0 {
+                table[ctrl][dst] = (2 * i + 1) as u8; // high byte of value i
+                dst += 1;
+            }
+            i += 1;
+        }
+        ctrl += 1;
+    }
+    table
+}
+
+pub(super) static ENCODE_TABLE: [[u8; 16]; 256] = make_encode();

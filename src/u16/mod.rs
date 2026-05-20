@@ -23,7 +23,21 @@ mod sse2;
 // ── dispatch ──────────────────────────────────────────────────────────────────
 
 fn dispatch_encode(values: &[u16], out: &mut Vec<u8>) {
-    scalar::encode_into(values, out);
+    // Compile-time explicit path: simd-sse2 and simd-avx2 both imply SSSE3.
+    #[cfg(all(any(feature = "simd-avx2", feature = "simd-sse2"), target_arch = "x86_64"))]
+    // SAFETY: simd-avx2 implies SSSE3 is present; simd-sse2 declares SSSE3 available.
+    unsafe { sse2::encode_into(values, out) };
+
+    #[cfg(not(all(any(feature = "simd-avx2", feature = "simd-sse2"), target_arch = "x86_64")))]
+    {
+        // Runtime auto-detection (std only — is_x86_feature_detected! requires std).
+        #[cfg(all(feature = "simd-auto", feature = "std", target_arch = "x86_64"))]
+        if is_x86_feature_detected!("ssse3") {
+            // SAFETY: SSSE3 confirmed at runtime.
+            return unsafe { sse2::encode_into(values, out) };
+        }
+        scalar::encode_into(values, out);
+    }
 }
 
 fn dispatch_decode(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<(), DecodeError> {
@@ -206,6 +220,28 @@ mod cross_path {
             }
         }
 
+        // ── encode helpers ───────────────────────────────────────────────────
+
+        fn ssse3_encode(values: &[u16]) -> Option<Vec<u8>> {
+            if !is_x86_feature_detected!("ssse3") {
+                return None;
+            }
+            let mut out = Vec::new();
+            unsafe { sse2::encode_into(values, &mut out) };
+            Some(out)
+        }
+
+        fn check_encode(values: &[u16]) {
+            let expected = encode(values);
+            if let Some(got) = ssse3_encode(values) {
+                assert_eq!(
+                    expected, got,
+                    "SSSE3 encode mismatch n={} values={values:?}",
+                    values.len()
+                );
+            }
+        }
+
         // ── POD5 parity (real-world data) ─────────────────────────────────
 
         const SVB0: &[u8] = include_bytes!("../../tests/vectors/parity_00_02885.svb16");
@@ -384,6 +420,90 @@ mod cross_path {
             check_all(&[255]);
             check_all(&[256]);
             check_all(&[u16::MAX]);
+        }
+
+        // ── SSSE3 encode cross-path tests ─────────────────────────────────
+        //
+        // All tests compare SSSE3 encode output byte-for-byte against scalar.
+
+        #[test]
+        fn ssse3_encode_all_ctrl_byte_values() {
+            // One block of 8 per ctrl byte value — exhaustive coverage of ENCODE_TABLE.
+            for ctrl in 0u8..=255 {
+                let values: Vec<u16> = (0..8)
+                    .map(|k| {
+                        if (ctrl >> k) & 1 == 1 {
+                            300 + k as u16
+                        } else {
+                            k as u16
+                        }
+                    })
+                    .collect();
+                check_encode(&values);
+            }
+        }
+
+        #[test]
+        fn ssse3_encode_all_tail_lengths() {
+            // n = 0..=20 exercises every possible tail residue (n % 8 = 0..7)
+            // across both zero-tail and non-zero-tail cases.
+            if ssse3_encode(&[0u16]).is_none() {
+                return;
+            }
+            let pool: Vec<u16> = (0..20)
+                .map(|i| if i % 3 == 0 { 300 + i } else { i })
+                .collect();
+            for n in 0..=20usize {
+                check_encode(&pool[..n]);
+            }
+        }
+
+        #[test]
+        fn ssse3_encode_roundtrip() {
+            // Encode with SSSE3, decode with scalar — must recover original values.
+            if ssse3_encode(&[0u16]).is_none() {
+                return;
+            }
+            let values: Vec<u16> = (0..100)
+                .map(|i| if i % 2 == 0 { i as u16 } else { 300 + i })
+                .collect();
+            let enc = ssse3_encode(&values).unwrap();
+            let got = decode_scalar(&enc, values.len());
+            assert_eq!(values, got);
+        }
+
+        #[test]
+        fn ssse3_encode_all_one_byte() {
+            // ctrl byte = 0x00 for every block — exercises the all-small path.
+            let values: Vec<u16> = (0..=255).collect();
+            check_encode(&values);
+        }
+
+        #[test]
+        fn ssse3_encode_all_two_byte() {
+            // ctrl byte = 0xFF for every block — maximum data per block (16 bytes).
+            let values: Vec<u16> = (256..512).collect();
+            check_encode(&values);
+        }
+
+        #[test]
+        fn ssse3_encode_large_input() {
+            let values: Vec<u16> = (0..10_000u16)
+                .map(|i| if i % 7 < 3 { i % 256 } else { 256 + (i % 1000) })
+                .collect();
+            check_encode(&values);
+        }
+
+        #[test]
+        fn ssse3_encode_boundary_values() {
+            // 0, 255, 256, u16::MAX — the four boundary cases repeated.
+            let values: Vec<u16> = [0u16, 255, 256, u16::MAX]
+                .iter()
+                .copied()
+                .cycle()
+                .take(32)
+                .collect();
+            check_encode(&values);
         }
     }
 

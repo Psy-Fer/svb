@@ -11,8 +11,93 @@ use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
-use super::shuffle::TABLE;
+use super::shuffle::{ENCODE_TABLE, TABLE};
 use crate::error::DecodeError;
+
+/// Encode `values` into SVB16 format using SSSE3 `PSHUFB`.
+///
+/// Processes 8 values per iteration. Uses a 256-entry encode shuffle table to
+/// pack variable-width bytes in a single instruction. Stores 16 bytes per
+/// iteration (overwriting into the +16-byte guard in the reserved capacity) and
+/// advances the data pointer by the exact byte count for that ctrl byte.
+/// Remaining values (n % 8) are handled by the scalar path.
+///
+/// # Safety
+/// The executing CPU must support SSSE3.
+#[allow(dead_code)]
+#[target_feature(enable = "ssse3")]
+pub(super) unsafe fn encode_into(values: &[u16], out: &mut Vec<u8>) {
+    let n = values.len();
+    if n == 0 {
+        return;
+    }
+
+    let ctrl_len = n.div_ceil(8);
+    let ctrl_start = out.len();
+
+    // Reserve ctrl bytes + worst-case data (2 bytes/value) + 16-byte SIMD overrun guard.
+    out.reserve(ctrl_len + 2 * n + 16);
+    // Zero-initialize ctrl bytes so the scalar tail can OR into them safely.
+    out.resize(ctrl_start + ctrl_len, 0u8);
+
+    let simd_n = (n / 8) * 8;
+    let data_start = ctrl_start + ctrl_len;
+    let base_ptr = out.as_mut_ptr();
+    let mut data_pos = 0usize;
+
+    let mut block = 0usize;
+    while block * 8 < simd_n {
+        let i = block * 8;
+
+        let v = unsafe {
+            // SAFETY: i + 8 <= simd_n <= n; values slice bounds are valid.
+            _mm_loadu_si128(values.as_ptr().add(i) as *const __m128i)
+        };
+
+        // Compute ctrl byte: bit k = 1 iff high byte of value k is non-zero (value > 255).
+        // _mm_srli_epi16 shifts each u16 right by 8, leaving the high byte in bits 7:0.
+        // _mm_cmpgt_epi16 on [0,255] values is signed-safe (all non-negative as i16).
+        // _mm_packs_epi16 saturates 0xFFFF→0x80, 0x0000→0x00; movemask extracts MSBs.
+        // These are pure-computation intrinsics, safe within #[target_feature(enable="ssse3")].
+        let hi = _mm_srli_epi16(v, 8);
+        let needs_two = _mm_cmpgt_epi16(hi, _mm_setzero_si128());
+        let ctrl = _mm_movemask_epi8(_mm_packs_epi16(needs_two, needs_two)) as u8;
+
+        unsafe {
+            // SAFETY: ctrl_start + block < ctrl_start + ctrl_len <= out.len().
+            *base_ptr.add(ctrl_start + block) = ctrl;
+
+            // Shuffle input bytes into packed output order, then store 16 bytes.
+            // SAFETY: ENCODE_TABLE[ctrl] is 16 bytes; ctrl < 256 (u8).
+            let mask =
+                _mm_loadu_si128(ENCODE_TABLE[ctrl as usize].as_ptr() as *const __m128i);
+            let packed = _mm_shuffle_epi8(v, mask);
+            // SAFETY: data_start + data_pos + 16 <= data_start + 2*n + 16 <= out.capacity().
+            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed);
+        }
+
+        data_pos += 8 + ctrl.count_ones() as usize;
+        block += 1;
+    }
+
+    unsafe {
+        // SAFETY: elements [data_start, data_start + data_pos) were written above.
+        out.set_len(data_start + data_pos);
+    }
+
+    // Scalar tail for n % 8 remaining values.
+    for j in simd_n..n {
+        let v = values[j];
+        if v <= 0xFF {
+            out.push(v as u8);
+        } else {
+            // SAFETY: ctrl_start + j/8 < ctrl_start + ctrl_len <= new out.len()
+            //         (ctrl bytes are always within the initialized region).
+            out[ctrl_start + j / 8] |= 1u8 << (j % 8);
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+}
 
 /// Decode `n` u16 values from an SVB16-encoded buffer using SSSE3 `PSHUFB`.
 ///
