@@ -23,21 +23,56 @@ mod sse2;
 // ── dispatch ──────────────────────────────────────────────────────────────────
 
 fn dispatch_encode(values: &[u16], out: &mut Vec<u8>) {
-    // Compile-time explicit path: simd-sse2 and simd-avx2 both imply SSSE3.
-    #[cfg(all(any(feature = "simd-avx2", feature = "simd-sse2"), target_arch = "x86_64"))]
-    // SAFETY: simd-avx2 implies SSSE3 is present; simd-sse2 declares SSSE3 available.
-    unsafe { sse2::encode_into(values, out) };
-
-    #[cfg(not(all(any(feature = "simd-avx2", feature = "simd-sse2"), target_arch = "x86_64")))]
+    #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
     {
-        // Runtime auto-detection (std only — is_x86_feature_detected! requires std).
-        #[cfg(all(feature = "simd-auto", feature = "std", target_arch = "x86_64"))]
-        if is_x86_feature_detected!("ssse3") {
-            // SAFETY: SSSE3 confirmed at runtime.
-            return unsafe { sse2::encode_into(values, out) };
-        }
-        scalar::encode_into(values, out);
+        // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
+        return unsafe { avx2::encode_into(values, out) };
     }
+
+    #[cfg(all(
+        feature = "simd-sse2",
+        not(feature = "simd-avx2"),
+        target_arch = "x86_64"
+    ))]
+    {
+        // SAFETY: simd-sse2 feature declares SSSE3 is available at runtime.
+        return unsafe { sse2::encode_into(values, out) };
+    }
+
+    #[cfg(all(
+        feature = "simd-neon",
+        not(any(feature = "simd-avx2", feature = "simd-sse2")),
+        target_arch = "aarch64"
+    ))]
+    {
+        // SAFETY: NEON is mandatory on AArch64.
+        return unsafe { neon::encode_into(values, out) };
+    }
+
+    #[cfg(all(
+        feature = "simd-auto",
+        not(any(feature = "simd-avx2", feature = "simd-sse2", feature = "simd-neon"))
+    ))]
+    {
+        #[cfg(all(feature = "std", target_arch = "x86_64"))]
+        {
+            if is_x86_feature_detected!("avx2") {
+                // SAFETY: AVX2 confirmed at runtime.
+                return unsafe { avx2::encode_into(values, out) };
+            }
+            if is_x86_feature_detected!("ssse3") {
+                // SAFETY: SSSE3 confirmed at runtime.
+                return unsafe { sse2::encode_into(values, out) };
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON is mandatory on AArch64.
+            return unsafe { neon::encode_into(values, out) };
+        }
+    }
+
+    scalar::encode_into(values, out)
 }
 
 fn dispatch_decode(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<(), DecodeError> {
@@ -240,6 +275,22 @@ mod cross_path {
                     values.len()
                 );
             }
+            if let Some(got) = avx2_encode(values) {
+                assert_eq!(
+                    expected, got,
+                    "AVX2 encode mismatch n={} values={values:?}",
+                    values.len()
+                );
+            }
+        }
+
+        fn avx2_encode(values: &[u16]) -> Option<Vec<u8>> {
+            if !is_x86_feature_detected!("avx2") {
+                return None;
+            }
+            let mut out = Vec::new();
+            unsafe { avx2::encode_into(values, &mut out) };
+            Some(out)
         }
 
         // ── POD5 parity (real-world data) ─────────────────────────────────
@@ -505,6 +556,58 @@ mod cross_path {
                 .collect();
             check_encode(&values);
         }
+
+        // ── AVX2 encode cross-path tests ──────────────────────────────────────
+        //
+        // Exercises AVX2-specific tail lengths and the 16-value-per-iteration
+        // boundary. check_encode already includes AVX2 via avx2_encode, so the
+        // SSSE3 tests above also cover AVX2; these tests add AVX2-specific cases.
+
+        #[test]
+        fn avx2_encode_all_tail_lengths() {
+            // n = 0..=33 covers all n%16 residues and both zero-tail/non-zero-tail.
+            if avx2_encode(&[0u16]).is_none() {
+                return;
+            }
+            let pool: Vec<u16> = (0..33)
+                .map(|i| if i % 3 == 0 { 300 + i } else { i })
+                .collect();
+            for n in 0..=33usize {
+                check_encode(&pool[..n]);
+            }
+        }
+
+        #[test]
+        fn avx2_encode_all_ctrl_byte_values() {
+            // Two consecutive 8-value blocks that together exercise every possible
+            // (c0, c1) pair via paired ctrl bytes. Checking via check_encode verifies
+            // AVX2 matches scalar on all 256 ctrl byte values for both groups.
+            for ctrl in 0u8..=255 {
+                let values: Vec<u16> = (0..16)
+                    .map(|k| {
+                        if (ctrl >> (k % 8)) & 1 == 1 {
+                            300 + k as u16
+                        } else {
+                            k as u16
+                        }
+                    })
+                    .collect();
+                check_encode(&values);
+            }
+        }
+
+        #[test]
+        fn avx2_encode_roundtrip() {
+            if avx2_encode(&[0u16]).is_none() {
+                return;
+            }
+            let values: Vec<u16> = (0..200)
+                .map(|i| if i % 2 == 0 { i as u16 } else { 300 + i })
+                .collect();
+            let enc = avx2_encode(&values).unwrap();
+            let got = decode_scalar(&enc, values.len());
+            assert_eq!(values, got, "AVX2 encode roundtrip failed");
+        }
     }
 
     // ── aarch64 ──────────────────────────────────────────────────────────────
@@ -526,12 +629,28 @@ mod cross_path {
             out
         }
 
+        fn neon_encode(values: &[u16]) -> Vec<u8> {
+            let mut out = Vec::new();
+            unsafe { neon::encode_into(values, &mut out) };
+            out
+        }
+
         fn check(values: &[u16]) {
             let n = values.len();
             let enc = encode(values);
             let expected = decode_scalar(&enc, n);
             let got = neon_decode(&enc, n);
-            assert_eq!(expected, got, "NEON n={n}");
+            assert_eq!(expected, got, "NEON decode n={n}");
+        }
+
+        fn check_encode(values: &[u16]) {
+            let expected = encode(values);
+            let got = neon_encode(values);
+            assert_eq!(
+                expected, got,
+                "NEON encode mismatch n={} values={values:?}",
+                values.len()
+            );
         }
 
         const SVB0: &[u8] = include_bytes!("../../tests/vectors/parity_00_02885.svb16");
@@ -595,6 +714,61 @@ mod cross_path {
                 .map(|i| if i % 7 < 3 { i % 256 } else { 256 + (i % 1000) })
                 .collect();
             check(&values);
+        }
+
+        // ── NEON encode cross-path tests ──────────────────────────────────────
+
+        #[test]
+        fn neon_encode_all_ctrl_byte_values() {
+            for ctrl in 0u8..=255 {
+                let values: Vec<u16> = (0..8)
+                    .map(|k| {
+                        if (ctrl >> k) & 1 == 1 { 300 + k as u16 } else { k as u16 }
+                    })
+                    .collect();
+                check_encode(&values);
+            }
+        }
+
+        #[test]
+        fn neon_encode_all_tail_lengths() {
+            let pool: Vec<u16> = (0..20)
+                .map(|i| if i % 3 == 0 { 300 + i } else { i })
+                .collect();
+            for n in 0..=20usize {
+                check_encode(&pool[..n]);
+            }
+        }
+
+        #[test]
+        fn neon_encode_roundtrip() {
+            let values: Vec<u16> = (0..100)
+                .map(|i| if i % 2 == 0 { i as u16 } else { 300 + i })
+                .collect();
+            let enc = neon_encode(&values);
+            let got = decode_scalar(&enc, values.len());
+            assert_eq!(values, got, "NEON encode roundtrip failed");
+        }
+
+        #[test]
+        fn neon_encode_all_one_byte() {
+            check_encode(&(0u16..=255).collect::<Vec<_>>());
+        }
+
+        #[test]
+        fn neon_encode_all_two_byte() {
+            check_encode(&(256u16..512).collect::<Vec<_>>());
+        }
+
+        #[test]
+        fn neon_encode_boundary_values() {
+            let values: Vec<u16> = [0u16, 255, 256, u16::MAX]
+                .iter()
+                .copied()
+                .cycle()
+                .take(32)
+                .collect();
+            check_encode(&values);
         }
     }
 }

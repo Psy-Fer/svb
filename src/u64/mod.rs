@@ -7,17 +7,64 @@ use crate::error::DecodeError;
 
 mod scalar;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod shuffle;
 #[cfg(target_arch = "x86_64")]
 mod avx2;
 #[cfg(target_arch = "x86_64")]
 mod sse2;
+#[cfg(target_arch = "aarch64")]
+mod neon;
 
 // ── U64Coder1234 ──────────────────────────────────────────────────────────────
 
 fn dispatch_encode_1234(values: &[u64], out: &mut Vec<u8>) {
-    scalar::encode_into_1234(values, out);
+    #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
+    {
+        // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
+        return unsafe { avx2::encode_into_1234(values, out) };
+    }
+
+    #[cfg(all(
+        feature = "simd-sse2",
+        not(feature = "simd-avx2"),
+        target_arch = "x86_64"
+    ))]
+    {
+        // SAFETY: simd-sse2 feature declares SSSE3 is available at runtime.
+        return unsafe { sse2::encode_into_1234(values, out) };
+    }
+
+    #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
+    {
+        // SAFETY: NEON is mandatory on AArch64.
+        return unsafe { neon::encode_into_1234(values, out) };
+    }
+
+    #[cfg(all(
+        feature = "simd-auto",
+        not(any(feature = "simd-avx2", feature = "simd-sse2", feature = "simd-neon"))
+    ))]
+    {
+        #[cfg(all(feature = "std", target_arch = "x86_64"))]
+        {
+            if is_x86_feature_detected!("avx2") {
+                // SAFETY: AVX2 confirmed at runtime.
+                return unsafe { avx2::encode_into_1234(values, out) };
+            }
+            if is_x86_feature_detected!("ssse3") {
+                // SAFETY: SSSE3 confirmed at runtime.
+                return unsafe { sse2::encode_into_1234(values, out) };
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON is mandatory on AArch64.
+            return unsafe { neon::encode_into_1234(values, out) };
+        }
+    }
+
+    scalar::encode_into_1234(values, out)
 }
 
 fn dispatch_decode_1234(data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(), DecodeError> {
@@ -37,9 +84,15 @@ fn dispatch_decode_1234(data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(),
         return unsafe { sse2::decode_into_1234(data, n, out) };
     }
 
+    #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
+    {
+        // SAFETY: NEON is mandatory on AArch64.
+        return unsafe { neon::decode_into_1234(data, n, out) };
+    }
+
     #[cfg(all(
         feature = "simd-auto",
-        not(any(feature = "simd-avx2", feature = "simd-sse2"))
+        not(any(feature = "simd-avx2", feature = "simd-sse2", feature = "simd-neon"))
     ))]
     {
         #[cfg(all(feature = "std", target_arch = "x86_64"))]
@@ -52,6 +105,11 @@ fn dispatch_decode_1234(data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(),
                 // SAFETY: SSSE3 confirmed at runtime.
                 return unsafe { sse2::decode_into_1234(data, n, out) };
             }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON is mandatory on AArch64.
+            return unsafe { neon::decode_into_1234(data, n, out) };
         }
     }
 
@@ -119,7 +177,52 @@ impl crate::coder::Coder for U64Coder1234 {
 // ── U64Coder1248 ──────────────────────────────────────────────────────────────
 
 fn dispatch_encode_1248(values: &[u64], out: &mut Vec<u8>) {
-    scalar::encode_into_1248(values, out);
+    #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
+    {
+        // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
+        return unsafe { avx2::encode_into_1248(values, out) };
+    }
+
+    #[cfg(all(
+        feature = "simd-sse2",
+        not(feature = "simd-avx2"),
+        target_arch = "x86_64"
+    ))]
+    {
+        // SAFETY: simd-sse2 feature declares SSSE3 is available at runtime.
+        return unsafe { sse2::encode_into_1248(values, out) };
+    }
+
+    #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
+    {
+        // SAFETY: NEON is mandatory on AArch64.
+        return unsafe { neon::encode_into_1248(values, out) };
+    }
+
+    #[cfg(all(
+        feature = "simd-auto",
+        not(any(feature = "simd-avx2", feature = "simd-sse2", feature = "simd-neon"))
+    ))]
+    {
+        #[cfg(all(feature = "std", target_arch = "x86_64"))]
+        {
+            if is_x86_feature_detected!("avx2") {
+                // SAFETY: AVX2 confirmed at runtime.
+                return unsafe { avx2::encode_into_1248(values, out) };
+            }
+            if is_x86_feature_detected!("ssse3") {
+                // SAFETY: SSSE3 confirmed at runtime.
+                return unsafe { sse2::encode_into_1248(values, out) };
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON is mandatory on AArch64.
+            return unsafe { neon::encode_into_1248(values, out) };
+        }
+    }
+
+    scalar::encode_into_1248(values, out)
 }
 
 fn dispatch_decode_1248(data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(), DecodeError> {
@@ -139,9 +242,15 @@ fn dispatch_decode_1248(data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(),
         return unsafe { sse2::decode_into_1248(data, n, out) };
     }
 
+    #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
+    {
+        // SAFETY: NEON is mandatory on AArch64.
+        return unsafe { neon::decode_into_1248(data, n, out) };
+    }
+
     #[cfg(all(
         feature = "simd-auto",
-        not(any(feature = "simd-avx2", feature = "simd-sse2"))
+        not(any(feature = "simd-avx2", feature = "simd-sse2", feature = "simd-neon"))
     ))]
     {
         #[cfg(all(feature = "std", target_arch = "x86_64"))]
@@ -154,6 +263,11 @@ fn dispatch_decode_1248(data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(),
                 // SAFETY: SSSE3 confirmed at runtime.
                 return unsafe { sse2::decode_into_1248(data, n, out) };
             }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON is mandatory on AArch64.
+            return unsafe { neon::decode_into_1248(data, n, out) };
         }
     }
 
@@ -496,6 +610,384 @@ mod cross_path {
             check_1248(&values);
         }
 
+        #[test]
+        fn empty_and_single_1248() {
+            check_1248(&[]);
+            for &v in &[0u64, 1, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFFFF_FFFF, u64::MAX] {
+                check_1248(&[v]);
+            }
+        }
+    }
+
+    // ── x86 encode cross-path tests ───────────────────────────────────────────
+    #[cfg(all(target_arch = "x86_64", feature = "std"))]
+    mod x86_encode {
+        use super::super::{avx2, scalar, sse2};
+        use std::vec::Vec;
+
+        fn scalar_enc_1234(v: &[u64]) -> Vec<u8> {
+            let mut out = Vec::new();
+            scalar::encode_into_1234(v, &mut out);
+            out
+        }
+        fn ssse3_enc_1234(v: &[u64]) -> Option<Vec<u8>> {
+            if !is_x86_feature_detected!("ssse3") {
+                return None;
+            }
+            let mut out = Vec::new();
+            unsafe { sse2::encode_into_1234(v, &mut out) };
+            Some(out)
+        }
+        fn avx2_enc_1234(v: &[u64]) -> Option<Vec<u8>> {
+            if !is_x86_feature_detected!("avx2") {
+                return None;
+            }
+            let mut out = Vec::new();
+            unsafe { avx2::encode_into_1234(v, &mut out) };
+            Some(out)
+        }
+        fn scalar_enc_1248(v: &[u64]) -> Vec<u8> {
+            let mut out = Vec::new();
+            scalar::encode_into_1248(v, &mut out);
+            out
+        }
+        fn ssse3_enc_1248(v: &[u64]) -> Option<Vec<u8>> {
+            if !is_x86_feature_detected!("ssse3") {
+                return None;
+            }
+            let mut out = Vec::new();
+            unsafe { sse2::encode_into_1248(v, &mut out) };
+            Some(out)
+        }
+        fn avx2_enc_1248(v: &[u64]) -> Option<Vec<u8>> {
+            if !is_x86_feature_detected!("avx2") {
+                return None;
+            }
+            let mut out = Vec::new();
+            unsafe { avx2::encode_into_1248(v, &mut out) };
+            Some(out)
+        }
+
+        fn check_1234(values: &[u64]) {
+            let expected = scalar_enc_1234(values);
+            let n = values.len();
+            if let Some(got) = ssse3_enc_1234(values) {
+                assert_eq!(expected, got, "SSSE3 1234 encode mismatch n={n}");
+            }
+            if let Some(got) = avx2_enc_1234(values) {
+                assert_eq!(expected, got, "AVX2 1234 encode mismatch n={n}");
+            }
+        }
+        fn check_1248(values: &[u64]) {
+            let expected = scalar_enc_1248(values);
+            let n = values.len();
+            if let Some(got) = ssse3_enc_1248(values) {
+                assert_eq!(expected, got, "SSSE3 1248 encode mismatch n={n}");
+            }
+            if let Some(got) = avx2_enc_1248(values) {
+                assert_eq!(expected, got, "AVX2 1248 encode mismatch n={n}");
+            }
+        }
+
+        #[test]
+        fn all_ctrl_byte_values_1234_enc() {
+            for ctrl in 0u8..=255 {
+                let values: Vec<u64> = (0..4u64)
+                    .map(|i| match (ctrl >> (2 * i as usize)) & 3 {
+                        0 => i + 1,
+                        1 => 0x100 + i,
+                        2 => 0x10000 + i,
+                        _ => 0x1000000 + i,
+                    })
+                    .collect();
+                check_1234(&values);
+            }
+        }
+        #[test]
+        fn all_ctrl_byte_values_1248_enc() {
+            for ctrl in 0u8..=255 {
+                let values: Vec<u64> = (0..4u64)
+                    .map(|i| match (ctrl >> (2 * i as usize)) & 3 {
+                        0 => i + 1,
+                        1 => 0x100 + i,
+                        2 => 0x10000 + i,
+                        _ => 0x1_0000_0000 + i,
+                    })
+                    .collect();
+                check_1248(&values);
+            }
+        }
+        #[test]
+        fn all_tail_lengths_1234_enc() {
+            if ssse3_enc_1234(&[1u64]).is_none() {
+                return;
+            }
+            let pool: Vec<u64> = (0..20u64)
+                .map(|i| match i % 4 {
+                    0 => i + 1,
+                    1 => 0x100 + i,
+                    2 => 0x10000 + i,
+                    _ => 0x1000000 + i,
+                })
+                .collect();
+            for n in 0..=20usize {
+                check_1234(&pool[..n]);
+            }
+        }
+        #[test]
+        fn all_tail_lengths_1248_enc() {
+            if ssse3_enc_1248(&[1u64]).is_none() {
+                return;
+            }
+            let pool: Vec<u64> = (0..20u64)
+                .map(|i| match i % 4 {
+                    0 => i + 1,
+                    1 => 0x100 + i,
+                    2 => 0x10000 + i,
+                    _ => 0x1_0000_0000 + i,
+                })
+                .collect();
+            for n in 0..=20usize {
+                check_1248(&pool[..n]);
+            }
+        }
+        #[test]
+        fn homogeneous_tags_1234_enc() {
+            for base in [1u64, 0x100, 0x10000, 0x1000000] {
+                let values: Vec<u64> = (0..32).map(|i| base + i).collect();
+                check_1234(&values);
+            }
+        }
+        #[test]
+        fn homogeneous_tags_1248_enc() {
+            for base in [1u64, 0x100, 0x10000, 0x1_0000_0000] {
+                let values: Vec<u64> = (0..32).map(|i| base + i).collect();
+                check_1248(&values);
+            }
+        }
+        #[test]
+        fn boundary_values_1234_enc() {
+            let values: Vec<u64> = [
+                0u64, 1, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFF_FFFF, 0x100_0000, u32::MAX as u64,
+            ]
+            .iter().copied().cycle().take(36).collect();
+            check_1234(&values);
+        }
+        #[test]
+        fn boundary_values_1248_enc() {
+            let values: Vec<u64> = [
+                0u64, 1, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFFFF_FFFF, 0x1_0000_0000, u64::MAX,
+            ]
+            .iter().copied().cycle().take(36).collect();
+            check_1248(&values);
+        }
+        #[test]
+        fn large_input_1234_enc() {
+            let values: Vec<u64> = (0..10_000u64)
+                .map(|i| match i % 4 {
+                    0 => (i % 255) + 1,
+                    1 => 0x100 + i % 0xFFFF,
+                    2 => 0x10000 + i % 0xFF_FFFF,
+                    _ => 0x1000000 + i,
+                })
+                .collect();
+            check_1234(&values);
+        }
+        #[test]
+        fn large_input_1248_enc() {
+            let values: Vec<u64> = (0..10_000u64)
+                .map(|i| match i % 4 {
+                    0 => (i % 255) + 1,
+                    1 => 0x100 + i % 0xFFFF,
+                    2 => 0x10000 + i % 0xFFFF_FFFF,
+                    _ => 0x1_0000_0000 + i,
+                })
+                .collect();
+            check_1248(&values);
+        }
+        #[test]
+        fn empty_and_single_1234_enc() {
+            check_1234(&[]);
+            for &v in &[0u64, 1, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFF_FFFF, u32::MAX as u64] {
+                check_1234(&[v]);
+            }
+        }
+        #[test]
+        fn empty_and_single_1248_enc() {
+            check_1248(&[]);
+            for &v in &[0u64, 1, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFFFF_FFFF, u64::MAX] {
+                check_1248(&[v]);
+            }
+        }
+    }
+
+    // ── NEON cross-path tests (aarch64) ───────────────────────────────────────
+    #[cfg(target_arch = "aarch64")]
+    mod arm {
+        use super::super::{neon, scalar};
+        use std::vec::Vec;
+
+        fn scalar_enc_1234(v: &[u64]) -> Vec<u8> {
+            let mut out = Vec::new();
+            scalar::encode_into_1234(v, &mut out);
+            out
+        }
+        fn neon_enc_1234(v: &[u64]) -> Vec<u8> {
+            let mut out = Vec::new();
+            unsafe { neon::encode_into_1234(v, &mut out) };
+            out
+        }
+        fn scalar_dec_1234(d: &[u8], n: usize) -> Vec<u64> {
+            let mut out = Vec::new();
+            scalar::decode_into_1234(d, n, &mut out).unwrap();
+            out
+        }
+        fn neon_dec_1234(d: &[u8], n: usize) -> Vec<u64> {
+            let mut out = Vec::new();
+            unsafe { neon::decode_into_1234(d, n, &mut out).unwrap() };
+            out
+        }
+        fn scalar_enc_1248(v: &[u64]) -> Vec<u8> {
+            let mut out = Vec::new();
+            scalar::encode_into_1248(v, &mut out);
+            out
+        }
+        fn neon_enc_1248(v: &[u64]) -> Vec<u8> {
+            let mut out = Vec::new();
+            unsafe { neon::encode_into_1248(v, &mut out) };
+            out
+        }
+        fn scalar_dec_1248(d: &[u8], n: usize) -> Vec<u64> {
+            let mut out = Vec::new();
+            scalar::decode_into_1248(d, n, &mut out).unwrap();
+            out
+        }
+        fn neon_dec_1248(d: &[u8], n: usize) -> Vec<u64> {
+            let mut out = Vec::new();
+            unsafe { neon::decode_into_1248(d, n, &mut out).unwrap() };
+            out
+        }
+
+        fn check_1234(values: &[u64]) {
+            let n = values.len();
+            let scalar_enc = scalar_enc_1234(values);
+            let neon_enc = neon_enc_1234(values);
+            assert_eq!(scalar_enc, neon_enc, "NEON 1234 encode mismatch n={n}");
+            let scalar_dec = scalar_dec_1234(&scalar_enc, n);
+            let neon_dec = neon_dec_1234(&scalar_enc, n);
+            assert_eq!(scalar_dec, neon_dec, "NEON 1234 decode mismatch n={n}");
+        }
+        fn check_1248(values: &[u64]) {
+            let n = values.len();
+            let scalar_enc = scalar_enc_1248(values);
+            let neon_enc = neon_enc_1248(values);
+            assert_eq!(scalar_enc, neon_enc, "NEON 1248 encode mismatch n={n}");
+            let scalar_dec = scalar_dec_1248(&scalar_enc, n);
+            let neon_dec = neon_dec_1248(&scalar_enc, n);
+            assert_eq!(scalar_dec, neon_dec, "NEON 1248 decode mismatch n={n}");
+        }
+
+        #[test]
+        fn all_ctrl_byte_values_1234() {
+            for ctrl in 0u8..=255 {
+                let values: Vec<u64> = (0..4u64)
+                    .map(|i| match (ctrl >> (2 * i as usize)) & 3 {
+                        0 => i + 1,
+                        1 => 0x100 + i,
+                        2 => 0x10000 + i,
+                        _ => 0x1000000 + i,
+                    })
+                    .collect();
+                check_1234(&values);
+            }
+        }
+        #[test]
+        fn all_ctrl_byte_values_1248() {
+            for ctrl in 0u8..=255 {
+                let values: Vec<u64> = (0..4u64)
+                    .map(|i| match (ctrl >> (2 * i as usize)) & 3 {
+                        0 => i + 1,
+                        1 => 0x100 + i,
+                        2 => 0x10000 + i,
+                        _ => 0x1_0000_0000 + i,
+                    })
+                    .collect();
+                check_1248(&values);
+            }
+        }
+        #[test]
+        fn all_tail_lengths_1234() {
+            let pool: Vec<u64> = (0..20u64)
+                .map(|i| match i % 4 {
+                    0 => i + 1,
+                    1 => 0x100 + i,
+                    2 => 0x10000 + i,
+                    _ => 0x1000000 + i,
+                })
+                .collect();
+            for n in 0..=20usize {
+                check_1234(&pool[..n]);
+            }
+        }
+        #[test]
+        fn all_tail_lengths_1248() {
+            let pool: Vec<u64> = (0..20u64)
+                .map(|i| match i % 4 {
+                    0 => i + 1,
+                    1 => 0x100 + i,
+                    2 => 0x10000 + i,
+                    _ => 0x1_0000_0000 + i,
+                })
+                .collect();
+            for n in 0..=20usize {
+                check_1248(&pool[..n]);
+            }
+        }
+        #[test]
+        fn homogeneous_tags_1234() {
+            for base in [1u64, 0x100, 0x10000, 0x1000000] {
+                let values: Vec<u64> = (0..32).map(|i| base + i).collect();
+                check_1234(&values);
+            }
+        }
+        #[test]
+        fn homogeneous_tags_1248() {
+            for base in [1u64, 0x100, 0x10000, 0x1_0000_0000] {
+                let values: Vec<u64> = (0..32).map(|i| base + i).collect();
+                check_1248(&values);
+            }
+        }
+        #[test]
+        fn large_input_1234() {
+            let values: Vec<u64> = (0..10_000u64)
+                .map(|i| match i % 4 {
+                    0 => (i % 255) + 1,
+                    1 => 0x100 + i % 0xFFFF,
+                    2 => 0x10000 + i % 0xFF_FFFF,
+                    _ => 0x1000000 + i,
+                })
+                .collect();
+            check_1234(&values);
+        }
+        #[test]
+        fn large_input_1248() {
+            let values: Vec<u64> = (0..10_000u64)
+                .map(|i| match i % 4 {
+                    0 => (i % 255) + 1,
+                    1 => 0x100 + i % 0xFFFF,
+                    2 => 0x10000 + i % 0xFFFF_FFFF,
+                    _ => 0x1_0000_0000 + i,
+                })
+                .collect();
+            check_1248(&values);
+        }
+        #[test]
+        fn empty_and_single_1234() {
+            check_1234(&[]);
+            for &v in &[0u64, 1, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFF_FFFF, u32::MAX as u64] {
+                check_1234(&[v]);
+            }
+        }
         #[test]
         fn empty_and_single_1248() {
             check_1248(&[]);

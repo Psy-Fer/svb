@@ -1,10 +1,14 @@
-// SSSE3 decode path for U32Classic.
+// NEON decode and encode paths for U32Classic and U32Variant0124 (AArch64).
 //
-// The file is named sse2 per project convention; the instruction actually used
-// is PSHUFB (_mm_shuffle_epi8), which is SSSE3 (Penryn 2007+).
-// At runtime, dispatch checks is_x86_feature_detected!("ssse3") before calling.
+// vqtbl1q_u8 is the AArch64 equivalent of SSSE3 PSHUFB: it zeroes the output
+// byte when the index byte is >= 16. Our decode table uses 0x80 for zero-fill
+// slots, satisfying both conditions.
+//
+// For encode, NEON provides vcgtq_u32 for UNSIGNED 32-bit comparison directly
+// (no bias trick needed, unlike the x86 path). The ctrl byte is assembled via
+// narrowing shifts and a weighted horizontal sum.
 
-use core::arch::x86_64::*;
+use core::arch::aarch64::*;
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -14,19 +18,18 @@ use std::vec::Vec;
 use super::shuffle::{DATA_LEN, DATA_LEN_0124, ENCODE_TABLE_0124, ENCODE_TABLE_CLASSIC, TABLE, TABLE_0124};
 use crate::error::DecodeError;
 
-/// Encode `values` into U32Classic format using SSSE3 `PSHUFB`.
+/// Encode `values` into U32Classic format using NEON `vqtbl1q_u8`.
 ///
-/// Processes 4 values per ctrl byte. The ctrl byte is computed using the signed
-/// bias trick (unsigned comparison via i32 bias 0x80000000). `PSHUFB` packs the
-/// variable-width data bytes in a single instruction. Stores 16 bytes per
-/// iteration (overwriting into the +16-byte guard in the reserved capacity) and
-/// advances the data pointer by the exact byte count for that ctrl byte.
-/// Remaining values (n % 4) are handled by the scalar path.
+/// Processes 4 values per ctrl byte. Tags are computed with `vcgtq_u32`
+/// (unsigned comparison, no bias needed). `vqtbl1q_u8` packs the variable-width
+/// data bytes. Stores 16 bytes per iteration (overwriting into the +16-byte guard
+/// in the reserved capacity). Remaining values (n % 4) are handled by the scalar
+/// path.
 ///
 /// # Safety
-/// The executing CPU must support SSSE3.
+/// Must run on AArch64 (NEON is mandatory on that architecture).
 #[allow(dead_code)]
-#[target_feature(enable = "ssse3")]
+#[target_feature(enable = "neon")]
 pub(super) unsafe fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
     let n = values.len();
     if n == 0 {
@@ -46,15 +49,11 @@ pub(super) unsafe fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
     let base_ptr = out.as_mut_ptr();
     let mut data_pos = 0usize;
 
-    // Bias constant: converts unsigned u32 to signed i32 range for comparisons.
-    let bias = _mm_set1_epi32(i32::MIN);
-    // Biased thresholds for Classic widths 1/2/3/4:
-    // tag0: v <= 0xFF → width 1; tag1: v <= 0xFFFF → width 2;
-    // tag2: v <= 0xFFFFFF → width 3; tag3: otherwise → width 4
-    let t1 = _mm_set1_epi32(i32::MIN + 0xFF);
-    let t2 = _mm_set1_epi32(i32::MIN + 0xFFFF);
-    let t3 = _mm_set1_epi32(i32::MIN + 0xFF_FFFF);
-    let zero = _mm_setzero_si128();
+    // Weights for assembling the ctrl byte from 4 tags (each 0..3 in bits 0:1).
+    // Lane k contributes tag_k << (2*k) to the ctrl byte.
+    // We use: ctrl = tag0*1 + tag1*4 + tag2*16 + tag3*64
+    // Pack weights as u8 (each tag fits in u8 after narrowing).
+    let weights = unsafe { vld1_u8([1u8, 4, 16, 64, 0, 0, 0, 0].as_ptr()) };
 
     let mut block = 0usize;
     while block * 4 < simd_n {
@@ -62,47 +61,38 @@ pub(super) unsafe fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
 
         let v = unsafe {
             // SAFETY: i + 4 <= simd_n <= n; values slice bounds are valid.
-            _mm_loadu_si128(values.as_ptr().add(i) as *const __m128i)
+            vld1q_u32(values.as_ptr().add(i))
         };
 
-        // Compute per-lane tags (0..3) using signed comparison with bias.
-        let bv = _mm_add_epi32(v, bias);
-        // c1[lane] = 0xFFFFFFFF if v[lane] > 0xFF, else 0
-        let c1 = _mm_cmpgt_epi32(bv, t1);
-        let c2 = _mm_cmpgt_epi32(bv, t2);
-        let c3 = _mm_cmpgt_epi32(bv, t3);
-        // Convert mask 0xFFFFFFFF → 1 via negation (-(-1) = 1, -(0) = 0).
-        let b1 = _mm_sub_epi32(zero, c1);
-        let b2 = _mm_sub_epi32(zero, c2);
-        let b3 = _mm_sub_epi32(zero, c3);
-        let tag_vec = _mm_add_epi32(_mm_add_epi32(b1, b2), b3); // 0,1,2,3 per lane
+        // Compute per-lane tags: tag = (v>0xFF) + (v>0xFFFF) + (v>0xFFFFFF)
+        // vcgtq_u32 returns 0xFFFFFFFF or 0 per lane.
+        let gt255 = vcgtq_u32(v, vdupq_n_u32(0xFF));
+        let gt65535 = vcgtq_u32(v, vdupq_n_u32(0xFFFF));
+        let gt16m = vcgtq_u32(v, vdupq_n_u32(0xFF_FFFF));
+        // Convert 0xFFFFFFFF → 1 by logical shift right 31.
+        let b1 = vshrq_n_u32::<31>(gt255);
+        let b2 = vshrq_n_u32::<31>(gt65535);
+        let b3 = vshrq_n_u32::<31>(gt16m);
+        let tag_vec = vaddq_u32(vaddq_u32(b1, b2), b3); // 0,1,2,3 per lane (u32x4)
 
-        // Pack 4 tag values (each in byte 0 of a 32-bit lane) into a ctrl byte.
-        // PSHUFB: gather byte 0 of each 32-bit lane → positions 0,1,2,3.
-        let tag_bytes = _mm_shuffle_epi8(
-            tag_vec,
-            _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 8, 4, 0),
-        );
-        // tag_bytes[0..4] = [tag0, tag1, tag2, tag3], rest zero.
-        // Extract as u32: bits 0..7=tag0, 8..15=tag1, 16..23=tag2, 24..31=tag3.
-        let tags = _mm_cvtsi128_si32(tag_bytes) as u32;
-        // Bit-pack to ctrl byte: tag_i occupies bits 2*i .. 2*i+1.
-        let ctrl = ((tags & 0x3)
-            | ((tags >> 6) & 0x0C)
-            | ((tags >> 12) & 0x30)
-            | ((tags >> 18) & 0xC0)) as u8;
+        // Narrow to u8 via two steps: u32x4 → u16x4 → u8x4, then assemble ctrl byte.
+        let tag16 = vmovn_u32(tag_vec); // uint16x4_t: tags as u16
+        let tag8 = vmovn_u16(vcombine_u16(tag16, vdup_n_u16(0))); // uint8x8_t: tags as u8
+        // Multiply each tag by its weight and sum horizontally.
+        let weighted = vmul_u8(tag8, weights); // uint8x8_t
+        let ctrl = vaddv_u8(weighted); // horizontal sum → ctrl byte
 
         unsafe {
             // SAFETY: ctrl_start + block < ctrl_start + ctrl_len <= out.len().
             *base_ptr.add(ctrl_start + block) = ctrl;
 
-            // Shuffle input bytes into packed output order, then store 16 bytes.
+            // Reinterpret u32 values as bytes and shuffle into packed output order.
+            let v_bytes = vreinterpretq_u8_u32(v);
             // SAFETY: ENCODE_TABLE_CLASSIC[ctrl] is 16 bytes; ctrl < 256 (u8).
-            let enc_mask =
-                _mm_loadu_si128(ENCODE_TABLE_CLASSIC[ctrl as usize].as_ptr() as *const __m128i);
-            let packed = _mm_shuffle_epi8(v, enc_mask);
+            let mask = vld1q_u8(ENCODE_TABLE_CLASSIC[ctrl as usize].as_ptr());
+            let packed = vqtbl1q_u8(v_bytes, mask);
             // SAFETY: data_start + data_pos + 16 <= data_start + 4*n + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed);
+            vst1q_u8(base_ptr.add(data_start + data_pos), packed);
         }
 
         data_pos += DATA_LEN[ctrl as usize] as usize;
@@ -133,16 +123,15 @@ pub(super) unsafe fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
     }
 }
 
-/// Encode `values` into U32Variant0124 format using SSSE3 `PSHUFB`.
+/// Encode `values` into U32Variant0124 format using NEON `vqtbl1q_u8`.
 ///
-/// Identical structure to `encode_into_classic` but uses the 0124 tag thresholds
-/// (0 bytes for zero, 1/2/4 bytes for 1-byte/2-byte/4-byte values) and the
-/// corresponding encode table and data-length table.
+/// Identical structure to `encode_into_classic` but uses the 0124 thresholds:
+/// tag = (v>0) + (v>0xFF) + (v>0xFFFF), with widths [0,1,2,4].
 ///
 /// # Safety
-/// The executing CPU must support SSSE3.
+/// Must run on AArch64 (NEON is mandatory on that architecture).
 #[allow(dead_code)]
-#[target_feature(enable = "ssse3")]
+#[target_feature(enable = "neon")]
 pub(super) unsafe fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
     let n = values.len();
     if n == 0 {
@@ -162,15 +151,7 @@ pub(super) unsafe fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
     let base_ptr = out.as_mut_ptr();
     let mut data_pos = 0usize;
 
-    // Bias constant for unsigned comparisons.
-    let bias = _mm_set1_epi32(i32::MIN);
-    // Variant0124: tag = (v>0) + (v>0xFF) + (v>0xFFFF)
-    // Thresholds (biased): biased(0)=i32::MIN, biased(0xFF)=i32::MIN+0xFF, etc.
-    // v > 0 (unsigned) ↔ biased_v > i32::MIN (i.e., biased_v > 0x80000000)
-    let t0 = _mm_set1_epi32(i32::MIN); // threshold for v > 0
-    let t1 = _mm_set1_epi32(i32::MIN + 0xFF); // threshold for v > 0xFF
-    let t2 = _mm_set1_epi32(i32::MIN + 0xFFFF); // threshold for v > 0xFFFF
-    let zero = _mm_setzero_si128();
+    let weights = unsafe { vld1_u8([1u8, 4, 16, 64, 0, 0, 0, 0].as_ptr()) };
 
     let mut block = 0usize;
     while block * 4 < simd_n {
@@ -178,38 +159,35 @@ pub(super) unsafe fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
 
         let v = unsafe {
             // SAFETY: i + 4 <= simd_n <= n; values slice bounds are valid.
-            _mm_loadu_si128(values.as_ptr().add(i) as *const __m128i)
+            vld1q_u32(values.as_ptr().add(i))
         };
 
-        let bv = _mm_add_epi32(v, bias);
-        let c0 = _mm_cmpgt_epi32(bv, t0); // lane != 0 (v > 0 unsigned)
-        let c1 = _mm_cmpgt_epi32(bv, t1); // v > 0xFF
-        let c2 = _mm_cmpgt_epi32(bv, t2); // v > 0xFFFF
-        let b0 = _mm_sub_epi32(zero, c0);
-        let b1 = _mm_sub_epi32(zero, c1);
-        let b2 = _mm_sub_epi32(zero, c2);
-        let tag_vec = _mm_add_epi32(_mm_add_epi32(b0, b1), b2);
+        // Variant0124: tag = (v>0) + (v>0xFF) + (v>0xFFFF)
+        // vceqzq_u32: 0xFFFFFFFF if v==0, else 0; we want (v>0) = !eq0
+        // vcgtq_u32(v, vdupq_n_u32(0)) gives 0xFFFFFFFF if v > 0 (unsigned).
+        let gt0 = vcgtq_u32(v, vdupq_n_u32(0));
+        let gt255 = vcgtq_u32(v, vdupq_n_u32(0xFF));
+        let gt65535 = vcgtq_u32(v, vdupq_n_u32(0xFFFF));
+        let b0 = vshrq_n_u32::<31>(gt0);
+        let b1 = vshrq_n_u32::<31>(gt255);
+        let b2 = vshrq_n_u32::<31>(gt65535);
+        let tag_vec = vaddq_u32(vaddq_u32(b0, b1), b2);
 
-        let tag_bytes = _mm_shuffle_epi8(
-            tag_vec,
-            _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 8, 4, 0),
-        );
-        let tags = _mm_cvtsi128_si32(tag_bytes) as u32;
-        let ctrl = ((tags & 0x3)
-            | ((tags >> 6) & 0x0C)
-            | ((tags >> 12) & 0x30)
-            | ((tags >> 18) & 0xC0)) as u8;
+        let tag16 = vmovn_u32(tag_vec);
+        let tag8 = vmovn_u16(vcombine_u16(tag16, vdup_n_u16(0)));
+        let weighted = vmul_u8(tag8, weights);
+        let ctrl = vaddv_u8(weighted);
 
         unsafe {
             // SAFETY: ctrl_start + block < ctrl_start + ctrl_len <= out.len().
             *base_ptr.add(ctrl_start + block) = ctrl;
 
+            let v_bytes = vreinterpretq_u8_u32(v);
             // SAFETY: ENCODE_TABLE_0124[ctrl] is 16 bytes; ctrl < 256 (u8).
-            let enc_mask =
-                _mm_loadu_si128(ENCODE_TABLE_0124[ctrl as usize].as_ptr() as *const __m128i);
-            let packed = _mm_shuffle_epi8(v, enc_mask);
+            let mask = vld1q_u8(ENCODE_TABLE_0124[ctrl as usize].as_ptr());
+            let packed = vqtbl1q_u8(v_bytes, mask);
             // SAFETY: data_start + data_pos + 16 <= data_start + 4*n + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed);
+            vst1q_u8(base_ptr.add(data_start + data_pos), packed);
         }
 
         data_pos += DATA_LEN_0124[ctrl as usize] as usize;
@@ -242,16 +220,16 @@ pub(super) unsafe fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
     }
 }
 
-/// Decode `n` u32 values from a U32Classic-encoded buffer using SSSE3 `PSHUFB`.
+/// Decode `n` u32 values from a U32Classic-encoded buffer using NEON `vqtbl1q_u8`.
 ///
 /// Processes 4 values per ctrl byte. Falls back to the scalar path for any
 /// trailing values when fewer than 16 data bytes remain (preventing an
 /// out-of-bounds read on the unaligned 128-bit load).
 ///
 /// # Safety
-/// The executing CPU must support SSSE3.
+/// Must run on AArch64 (NEON is mandatory on that architecture).
 #[allow(dead_code)]
-#[target_feature(enable = "ssse3")]
+#[target_feature(enable = "neon")]
 pub(super) unsafe fn decode_into_classic(
     data: &[u8],
     n: usize,
@@ -282,25 +260,25 @@ pub(super) unsafe fn decode_into_classic(
         let cb = ctrl[ctrl_pos];
 
         // Guard against an out-of-bounds unaligned load at the end of the buffer.
-        // The maximum data bytes for 4 values is 16 (all 4-byte). If fewer than
-        // 16 bytes remain we fall through to the scalar tail.
+        // Maximum data bytes for 4 values is 16 (all 4-byte).
         if data_pos + 16 > data_bytes.len() {
             break;
         }
 
         let result = unsafe {
             // SAFETY: TABLE[cb] is 16 bytes; cb < 256 (u8).
-            let mask = _mm_loadu_si128(TABLE[cb as usize].as_ptr() as *const __m128i);
+            let mask = vld1q_u8(TABLE[cb as usize].as_ptr());
             // SAFETY: data_pos + 16 <= data_bytes.len() verified above.
-            let chunk = _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
-            _mm_shuffle_epi8(chunk, mask)
+            let chunk = vld1q_u8(data_bytes.as_ptr().add(data_pos));
+            // vqtbl1q_u8: result[i] = chunk[mask[i]] if mask[i] < 16, else 0.
+            // 0x80 >= 16 → zero fill, matching PSHUFB semantics.
+            vqtbl1q_u8(chunk, mask)
         };
 
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n, so
-            // base + decoded + 4 <= base + n <= out.capacity().
-            let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
-            _mm_storeu_si128(out_ptr, result);
+            // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
+            let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut u8;
+            vst1q_u8(out_ptr, result);
         }
 
         data_pos += DATA_LEN[cb as usize] as usize;
@@ -326,15 +304,15 @@ pub(super) unsafe fn decode_into_classic(
     Ok(())
 }
 
-/// Decode `n` u32 values from a U32Variant0124-encoded buffer using SSSE3 `PSHUFB`.
+/// Decode `n` u32 values from a U32Variant0124-encoded buffer using NEON `vqtbl1q_u8`.
 ///
 /// Identical structure to `decode_into_classic` but uses the 0124 shuffle and
 /// data-length tables (tag widths 0/1/2/4 instead of 1/2/3/4).
 ///
 /// # Safety
-/// The executing CPU must support SSSE3.
+/// Must run on AArch64 (NEON is mandatory on that architecture).
 #[allow(dead_code)]
-#[target_feature(enable = "ssse3")]
+#[target_feature(enable = "neon")]
 pub(super) unsafe fn decode_into_0124(
     data: &[u8],
     n: usize,
@@ -371,16 +349,16 @@ pub(super) unsafe fn decode_into_0124(
 
         let result = unsafe {
             // SAFETY: TABLE_0124[cb] is 16 bytes; cb < 256 (u8).
-            let mask = _mm_loadu_si128(TABLE_0124[cb as usize].as_ptr() as *const __m128i);
+            let mask = vld1q_u8(TABLE_0124[cb as usize].as_ptr());
             // SAFETY: data_pos + 16 <= data_bytes.len() verified above.
-            let chunk = _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
-            _mm_shuffle_epi8(chunk, mask)
+            let chunk = vld1q_u8(data_bytes.as_ptr().add(data_pos));
+            vqtbl1q_u8(chunk, mask)
         };
 
         unsafe {
             // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
-            let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
-            _mm_storeu_si128(out_ptr, result);
+            let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut u8;
+            vst1q_u8(out_ptr, result);
         }
 
         data_pos += DATA_LEN_0124[cb as usize] as usize;

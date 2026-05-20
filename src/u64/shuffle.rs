@@ -1,6 +1,6 @@
-// Shuffle tables shared by the SSSE3 and AVX2 decode paths.
-// Always compiled on x86_64 to catch compile errors even when no SIMD
-// feature is active; dead_code suppressed because use is feature-gated.
+// Shuffle tables shared by the SSSE3, AVX2, and NEON paths.
+// Always compiled on x86_64 and aarch64 to catch compile errors even when no
+// SIMD feature is active; dead_code suppressed because use is feature-gated.
 #![allow(dead_code)]
 
 // ── U64Coder1234 decode table ─────────────────────────────────────────────────
@@ -106,3 +106,70 @@ const fn make_data_len_1248_pair() -> [u8; 16] {
 }
 
 pub(super) static DATA_LEN_1248_PAIR: [u8; 16] = make_data_len_1248_pair();
+
+// ── U64Coder1234 encode table ─────────────────────────────────────────────────
+//
+// Entry `c` is the 16-byte PSHUFB mask that packs 4 u32 values (the low 32 bits
+// of the u64 values, already narrowed) into a compact variable-width output.
+// Identical structure to U32Classic encode table.
+
+const fn make_encode_1234() -> [[u8; 16]; 256] {
+    let mut table = [[0u8; 16]; 256];
+    let mut ctrl = 0usize;
+    while ctrl < 256 {
+        let mut dst = 0usize;
+        let mut i = 0usize;
+        while i < 4 {
+            let tag = (ctrl >> (2 * i)) & 3;
+            let width = tag + 1;
+            let mut b = 0usize;
+            while b < width {
+                table[ctrl][dst] = (4 * i + b) as u8;
+                dst += 1;
+                b += 1;
+            }
+            i += 1;
+        }
+        ctrl += 1;
+    }
+    table
+}
+
+pub(super) static ENCODE_TABLE_1234: [[u8; 16]; 256] = make_encode_1234();
+
+// ── U64Coder1248 pair encode table ────────────────────────────────────────────
+//
+// Entry `key` is the 16-byte PSHUFB mask that packs 2 u64 values (16 bytes in
+// little-endian layout) into a compact variable-width output.
+//
+// key bits 1:0 = tag for val0, bits 3:2 = tag for val1.
+// widths: [1, 2, 4, 8]
+// val0 occupies source bytes 0..8; val1 occupies source bytes 8..16.
+// Output: val0 bytes first, then val1 bytes.
+
+const fn make_encode_1248_pair() -> [[u8; 16]; 16] {
+    const WIDTHS: [usize; 4] = [1, 2, 4, 8];
+    let mut table = [[0u8; 16]; 16];
+    let mut key = 0usize;
+    while key < 16 {
+        let w0 = WIDTHS[key & 3];
+        let w1 = WIDTHS[(key >> 2) & 3];
+        let mut dst = 0usize;
+        let mut b = 0usize;
+        while b < w0 {
+            table[key][dst] = b as u8;
+            dst += 1;
+            b += 1;
+        }
+        b = 0;
+        while b < w1 {
+            table[key][dst] = (8 + b) as u8;
+            dst += 1;
+            b += 1;
+        }
+        key += 1;
+    }
+    table
+}
+
+pub(super) static ENCODE_TABLE_1248_PAIR: [[u8; 16]; 16] = make_encode_1248_pair();

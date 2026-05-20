@@ -1,9 +1,16 @@
-// SSSE3 decode paths for U64Coder1234 and U64Coder1248.
+// NEON decode and encode paths for U64Coder1234 and U64Coder1248 (AArch64).
 //
-// The file is named sse2 per project convention; the instruction used is
-// PSHUFB (_mm_shuffle_epi8), which is SSSE3 (Penryn 2007+).
+// vqtbl1q_u8 is the AArch64 equivalent of SSSE3 PSHUFB: it zeroes the output
+// byte when the index byte is >= 16. Our decode table uses 0x80 for zero-fill
+// slots, satisfying both conditions.
+//
+// For encode:
+//   1234: vmovn_u64 narrows uint64x2_t → uint32x2_t (taking low 32 bits), then
+//         the Classic u32 NEON encode path applies.
+//   1248: scalar tag computation (values can be full u64) + SIMD packing with
+//         ENCODE_TABLE_1248_PAIR and vqtbl1q_u8.
 
-use core::arch::x86_64::*;
+use core::arch::aarch64::*;
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -16,16 +23,17 @@ use super::shuffle::{
 };
 use crate::error::DecodeError;
 
-/// Encode `values` into U64Coder1234 format using SSSE3 `PSHUFB`.
+/// Encode `values` into U64Coder1234 format using NEON `vqtbl1q_u8`.
 ///
-/// Processes 4 values per ctrl byte. Values must fit in u32 (values > u32::MAX
-/// are silently truncated to their low 32 bits). The low 32 bits of each u64
-/// are narrowed to a u32 register; the Classic encode path is then applied.
+/// Processes 4 values per ctrl byte. The low 32 bits of each u64 are extracted
+/// via `vmovn_u64`; tags are computed with `vcgtq_u32` (unsigned). Values
+/// > u32::MAX are silently truncated. Remaining values (n % 4) are handled by
+/// the scalar path.
 ///
 /// # Safety
-/// The executing CPU must support SSSE3.
+/// Must run on AArch64 (NEON is mandatory on that architecture).
 #[allow(dead_code)]
-#[target_feature(enable = "ssse3")]
+#[target_feature(enable = "neon")]
 pub(super) unsafe fn encode_into_1234(values: &[u64], out: &mut Vec<u8>) {
     let n = values.len();
     if n == 0 {
@@ -45,67 +53,53 @@ pub(super) unsafe fn encode_into_1234(values: &[u64], out: &mut Vec<u8>) {
     let base_ptr = out.as_mut_ptr();
     let mut data_pos = 0usize;
 
-    // Bias and thresholds for Classic tag computation (same as U32Classic SSSE3 encode).
-    let bias = _mm_set1_epi32(i32::MIN);
-    let t1 = _mm_set1_epi32(i32::MIN + 0xFF);
-    let t2 = _mm_set1_epi32(i32::MIN + 0xFFFF);
-    let t3 = _mm_set1_epi32(i32::MIN + 0xFF_FFFF);
-    let zero = _mm_setzero_si128();
+    // Weights for assembling the ctrl byte from 4 tags (each 0..3).
+    let weights = unsafe { vld1_u8([1u8, 4, 16, 64, 0, 0, 0, 0].as_ptr()) };
 
     let mut block = 0usize;
     while block * 4 < simd_n {
         let i = block * 4;
 
-        // Load 4 u64 values as two 128-bit registers.
-        let lo128 = unsafe {
+        // Load 4 u64 values as two uint64x2_t registers.
+        let lo_vals = unsafe {
             // SAFETY: i + 2 <= simd_n <= n; values slice bounds are valid.
-            _mm_loadu_si128(values.as_ptr().add(i) as *const __m128i)
+            vld1q_u64(values.as_ptr().add(i))
         };
-        let hi128 = unsafe {
+        let hi_vals = unsafe {
             // SAFETY: i + 4 <= simd_n <= n.
-            _mm_loadu_si128(values.as_ptr().add(i + 2) as *const __m128i)
+            vld1q_u64(values.as_ptr().add(i + 2))
         };
 
-        // Narrow 4 u64 values to 4 u32 (taking low 32 bits of each u64).
-        // _mm_shuffle_epi32 with imm 0x88 = 0b10001000:
-        //   dst[0]=src[0], dst[1]=src[2], dst[2]=src[0], dst[3]=src[2]
-        // In u32 terms: src = [v0_lo, v0_hi, v1_lo, v1_hi]
-        //   result = [v0_lo, v1_lo, v0_lo, v1_lo] (low halves in positions 0,1)
-        let lo_pair = _mm_shuffle_epi32(lo128, 0x88); // [v0_lo, v1_lo, v0_lo, v1_lo]
-        let hi_pair = _mm_shuffle_epi32(hi128, 0x88); // [v2_lo, v3_lo, v2_lo, v3_lo]
-        // _mm_unpacklo_epi64: lower 64 bits of each → [v0_lo, v1_lo, v2_lo, v3_lo]
-        let v32 = _mm_unpacklo_epi64(lo_pair, hi_pair);
+        // Narrow 4 u64 → 4 u32 (take low 32 bits of each u64).
+        // vmovn_u64: uint64x2_t → uint32x2_t (low 32 bits of each lane)
+        let lo_u32 = vmovn_u64(lo_vals); // uint32x2_t: [v0_low32, v1_low32]
+        let hi_u32 = vmovn_u64(hi_vals); // uint32x2_t: [v2_low32, v3_low32]
+        let v32 = vcombine_u32(lo_u32, hi_u32); // uint32x4_t: [v0,v1,v2,v3] low32
 
-        // Compute tags exactly as U32Classic SSSE3 encode.
-        let bv = _mm_add_epi32(v32, bias);
-        let c1 = _mm_cmpgt_epi32(bv, t1);
-        let c2 = _mm_cmpgt_epi32(bv, t2);
-        let c3 = _mm_cmpgt_epi32(bv, t3);
-        let b1 = _mm_sub_epi32(zero, c1);
-        let b2 = _mm_sub_epi32(zero, c2);
-        let b3 = _mm_sub_epi32(zero, c3);
-        let tag_vec = _mm_add_epi32(_mm_add_epi32(b1, b2), b3);
+        // Compute per-lane tags exactly as U32Classic NEON encode.
+        let gt255 = vcgtq_u32(v32, vdupq_n_u32(0xFF));
+        let gt65535 = vcgtq_u32(v32, vdupq_n_u32(0xFFFF));
+        let gt16m = vcgtq_u32(v32, vdupq_n_u32(0xFF_FFFF));
+        let b1 = vshrq_n_u32::<31>(gt255);
+        let b2 = vshrq_n_u32::<31>(gt65535);
+        let b3 = vshrq_n_u32::<31>(gt16m);
+        let tag_vec = vaddq_u32(vaddq_u32(b1, b2), b3);
 
-        let tag_bytes = _mm_shuffle_epi8(
-            tag_vec,
-            _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 8, 4, 0),
-        );
-        let tags = _mm_cvtsi128_si32(tag_bytes) as u32;
-        let ctrl = ((tags & 0x3)
-            | ((tags >> 6) & 0x0C)
-            | ((tags >> 12) & 0x30)
-            | ((tags >> 18) & 0xC0)) as u8;
+        let tag16 = vmovn_u32(tag_vec);
+        let tag8 = vmovn_u16(vcombine_u16(tag16, vdup_n_u16(0)));
+        let weighted = vmul_u8(tag8, weights);
+        let ctrl = vaddv_u8(weighted);
 
         unsafe {
             // SAFETY: ctrl_start + block < ctrl_start + ctrl_len <= out.len().
             *base_ptr.add(ctrl_start + block) = ctrl;
 
+            let v_bytes = vreinterpretq_u8_u32(v32);
             // SAFETY: ENCODE_TABLE_1234[ctrl] is 16 bytes; ctrl < 256 (u8).
-            let enc_mask =
-                _mm_loadu_si128(ENCODE_TABLE_1234[ctrl as usize].as_ptr() as *const __m128i);
-            let packed = _mm_shuffle_epi8(v32, enc_mask);
+            let mask = vld1q_u8(ENCODE_TABLE_1234[ctrl as usize].as_ptr());
+            let packed = vqtbl1q_u8(v_bytes, mask);
             // SAFETY: data_start + data_pos + 16 <= data_start + 4*n + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed);
+            vst1q_u8(base_ptr.add(data_start + data_pos), packed);
         }
 
         data_pos += DATA_LEN_1234[ctrl as usize] as usize;
@@ -136,16 +130,16 @@ pub(super) unsafe fn encode_into_1234(values: &[u64], out: &mut Vec<u8>) {
     }
 }
 
-/// Encode `values` into U64Coder1248 format using SSSE3 `PSHUFB`.
+/// Encode `values` into U64Coder1248 format using NEON `vqtbl1q_u8`.
 ///
 /// Processes 4 values (2 pairs) per ctrl byte. Tags are computed via scalar
-/// code (SSSE3 lacks 64-bit comparison); SIMD is used only for data packing
-/// via `PSHUFB` on the 16-byte pair registers.
+/// code (to handle the full u64 range); SIMD is used for data packing via
+/// `vqtbl1q_u8` on 16-byte pair registers.
 ///
 /// # Safety
-/// The executing CPU must support SSSE3.
+/// Must run on AArch64 (NEON is mandatory on that architecture).
 #[allow(dead_code)]
-#[target_feature(enable = "ssse3")]
+#[target_feature(enable = "neon")]
 pub(super) unsafe fn encode_into_1248(values: &[u64], out: &mut Vec<u8>) {
     let n = values.len();
     if n == 0 {
@@ -165,7 +159,6 @@ pub(super) unsafe fn encode_into_1248(values: &[u64], out: &mut Vec<u8>) {
     let base_ptr = out.as_mut_ptr();
     let mut data_pos = 0usize;
 
-    // Helper closure for 1248 tag computation (scalar, since SSSE3 has no 64-bit cmpgt).
     let tag1248 = |v: u64| -> u8 {
         if v <= 0xFF {
             0
@@ -200,28 +193,24 @@ pub(super) unsafe fn encode_into_1248(values: &[u64], out: &mut Vec<u8>) {
             // SAFETY: ctrl_start + block < ctrl_start + ctrl_len <= out.len().
             *base_ptr.add(ctrl_start + block) = ctrl;
 
-            // Pack lo pair (values 0,1): load 16 bytes (2 u64s), apply PSHUFB.
+            // Pack lo pair (values 0,1): load 16 bytes (2 u64s), apply vqtbl1q_u8.
             // SAFETY: i + 2 <= simd_n <= n; pointer valid.
-            let pair_lo = _mm_loadu_si128(values.as_ptr().add(i) as *const __m128i);
+            let pair_lo = vld1q_u8(values.as_ptr().add(i) as *const u8);
             // SAFETY: ENCODE_TABLE_1248_PAIR[lo_key] is 16 bytes; lo_key < 16.
-            let enc_mask_lo = _mm_loadu_si128(
-                ENCODE_TABLE_1248_PAIR[lo_key].as_ptr() as *const __m128i,
-            );
-            let packed_lo = _mm_shuffle_epi8(pair_lo, enc_mask_lo);
+            let mask_lo = vld1q_u8(ENCODE_TABLE_1248_PAIR[lo_key].as_ptr());
+            let packed_lo = vqtbl1q_u8(pair_lo, mask_lo);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_lo);
+            vst1q_u8(base_ptr.add(data_start + data_pos), packed_lo);
             data_pos += DATA_LEN_1248_PAIR[lo_key] as usize;
 
             // Pack hi pair (values 2,3).
             // SAFETY: i + 4 <= simd_n <= n; pointer valid.
-            let pair_hi = _mm_loadu_si128(values.as_ptr().add(i + 2) as *const __m128i);
+            let pair_hi = vld1q_u8(values.as_ptr().add(i + 2) as *const u8);
             // SAFETY: ENCODE_TABLE_1248_PAIR[hi_key] is 16 bytes; hi_key < 16.
-            let enc_mask_hi = _mm_loadu_si128(
-                ENCODE_TABLE_1248_PAIR[hi_key].as_ptr() as *const __m128i,
-            );
-            let packed_hi = _mm_shuffle_epi8(pair_hi, enc_mask_hi);
+            let mask_hi = vld1q_u8(ENCODE_TABLE_1248_PAIR[hi_key].as_ptr());
+            let packed_hi = vqtbl1q_u8(pair_hi, mask_hi);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_hi);
+            vst1q_u8(base_ptr.add(data_start + data_pos), packed_hi);
             data_pos += DATA_LEN_1248_PAIR[hi_key] as usize;
         }
 
@@ -252,16 +241,16 @@ pub(super) unsafe fn encode_into_1248(values: &[u64], out: &mut Vec<u8>) {
     }
 }
 
-/// Decode `n` u64 values from a U64Coder1234-encoded buffer using SSSE3 `PSHUFB`.
+/// Decode `n` u64 values from a U64Coder1234-encoded buffer using NEON `vqtbl1q_u8`.
 ///
 /// Processes 4 values per ctrl byte. PSHUFB expands the data bytes into 4 u32
-/// slots; `_mm_unpacklo/hi_epi32` zero-extends them to u64. Falls back to the
-/// scalar path when fewer than 16 data bytes remain.
+/// slots; `vmovl_u32` zero-extends them to u64. Falls back to the scalar path
+/// when fewer than 16 data bytes remain.
 ///
 /// # Safety
-/// The executing CPU must support SSSE3.
+/// Must run on AArch64 (NEON is mandatory on that architecture).
 #[allow(dead_code)]
-#[target_feature(enable = "ssse3")]
+#[target_feature(enable = "neon")]
 pub(super) unsafe fn decode_into_1234(
     data: &[u8],
     n: usize,
@@ -288,8 +277,6 @@ pub(super) unsafe fn decode_into_1234(
     let mut data_pos = 0usize;
     let mut decoded = 0usize;
 
-    let zero = _mm_setzero_si128();
-
     while decoded + 4 <= n {
         let cb = ctrl[ctrl_pos];
 
@@ -300,25 +287,23 @@ pub(super) unsafe fn decode_into_1234(
 
         let u32s = unsafe {
             // SAFETY: TABLE_1234[cb] is 16 bytes; cb < 256 (u8).
-            let mask = _mm_loadu_si128(TABLE_1234[cb as usize].as_ptr() as *const __m128i);
+            let mask = vld1q_u8(TABLE_1234[cb as usize].as_ptr());
             // SAFETY: data_pos + 16 <= data_bytes.len() verified above.
-            let chunk = _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
-            _mm_shuffle_epi8(chunk, mask)
+            let chunk = vld1q_u8(data_bytes.as_ptr().add(data_pos));
+            vreinterpretq_u32_u8(vqtbl1q_u8(chunk, mask))
         };
 
-        // Zero-extend 4 × u32 → 4 × u64 across two 128-bit registers.
-        // _mm_unpacklo_epi32(a, zero) = [a[31:0], 0, a[63:32], 0] = [u64[0], u64[1]]
-        // _mm_unpackhi_epi32(a, zero) = [a[95:64], 0, a[127:96], 0] = [u64[2], u64[3]]
-        let lo = _mm_unpacklo_epi32(u32s, zero);
-        let hi = _mm_unpackhi_epi32(u32s, zero);
+        // Zero-extend 4 × u32 → 4 × u64 across two uint64x2_t registers.
+        // vmovl_u32: uint32x2_t → uint64x2_t (zero-extend each lane)
+        let lo = vmovl_u32(vget_low_u32(u32s)); // uint64x2_t: [u64[0], u64[1]]
+        let hi = vmovl_high_u32(u32s); // uint64x2_t: [u64[2], u64[3]]
 
         unsafe {
             // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n, so
             // base + decoded + 4 <= base + n <= out.capacity().
-            // Each __m128i is 16 bytes = 2 u64s; lo covers [0,1], hi covers [2,3].
-            let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
-            _mm_storeu_si128(out_ptr, lo);
-            _mm_storeu_si128(out_ptr.add(1), hi);
+            let out_ptr = out.as_mut_ptr().add(base + decoded);
+            vst1q_u64(out_ptr, lo);
+            vst1q_u64(out_ptr.add(2), hi);
         }
 
         data_pos += DATA_LEN_1234[cb as usize] as usize;
@@ -343,7 +328,7 @@ pub(super) unsafe fn decode_into_1234(
     Ok(())
 }
 
-/// Decode `n` u64 values from a U64Coder1248-encoded buffer using SSSE3 `PSHUFB`.
+/// Decode `n` u64 values from a U64Coder1248-encoded buffer using NEON `vqtbl1q_u8`.
 ///
 /// Processes 4 values (2 pairs) per ctrl byte. The ctrl byte is split into a
 /// low nibble (tags for values 0 and 1) and high nibble (tags for values 2 and
@@ -351,9 +336,9 @@ pub(super) unsafe fn decode_into_1234(
 /// when fewer than 32 data bytes remain (the worst-case for one ctrl byte).
 ///
 /// # Safety
-/// The executing CPU must support SSSE3.
+/// Must run on AArch64 (NEON is mandatory on that architecture).
 #[allow(dead_code)]
-#[target_feature(enable = "ssse3")]
+#[target_feature(enable = "neon")]
 pub(super) unsafe fn decode_into_1248(
     data: &[u8],
     n: usize,
@@ -393,28 +378,24 @@ pub(super) unsafe fn decode_into_1248(
 
         let (lo_pair, hi_pair) = unsafe {
             // SAFETY: TABLE_1248_PAIR indices are < 16 (4-bit keys).
-            let mask_lo =
-                _mm_loadu_si128(TABLE_1248_PAIR[lo_key].as_ptr() as *const __m128i);
+            let mask_lo = vld1q_u8(TABLE_1248_PAIR[lo_key].as_ptr());
             // SAFETY: data_pos + 32 <= data_bytes.len() checked above; lo_bytes <= 16.
-            let chunk_lo =
-                _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
-            let lo = _mm_shuffle_epi8(chunk_lo, mask_lo);
+            let chunk_lo = vld1q_u8(data_bytes.as_ptr().add(data_pos));
+            let lo = vqtbl1q_u8(chunk_lo, mask_lo);
 
-            let mask_hi =
-                _mm_loadu_si128(TABLE_1248_PAIR[hi_key].as_ptr() as *const __m128i);
+            let mask_hi = vld1q_u8(TABLE_1248_PAIR[hi_key].as_ptr());
             // SAFETY: data_pos + lo_bytes + 16 <= data_pos + 16 + 16 <= data_pos + 32.
-            let chunk_hi =
-                _mm_loadu_si128(data_bytes.as_ptr().add(data_pos + lo_bytes) as *const __m128i);
-            let hi = _mm_shuffle_epi8(chunk_hi, mask_hi);
+            let chunk_hi = vld1q_u8(data_bytes.as_ptr().add(data_pos + lo_bytes));
+            let hi = vqtbl1q_u8(chunk_hi, mask_hi);
 
             (lo, hi)
         };
 
         unsafe {
-            // SAFETY: decoded + 4 <= n; 4 u64s = 32 bytes; each __m128i covers 2 u64s.
-            let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
-            _mm_storeu_si128(out_ptr, lo_pair);
-            _mm_storeu_si128(out_ptr.add(1), hi_pair);
+            // SAFETY: decoded + 4 <= n; 4 u64s = 32 bytes = 2 × uint8x16_t.
+            let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut u8;
+            vst1q_u8(out_ptr, lo_pair);
+            vst1q_u8(out_ptr.add(16), hi_pair);
         }
 
         data_pos += lo_bytes + DATA_LEN_1248_PAIR[hi_key] as usize;
