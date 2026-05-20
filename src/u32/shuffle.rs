@@ -72,3 +72,65 @@ const fn make_data_len() -> [u8; 256] {
 }
 
 pub(super) static DATA_LEN: [u8; 256] = make_data_len();
+
+// ── Variant0124 decode table ──────────────────────────────────────────────────
+//
+// Same layout as TABLE above, but tag → byte width: [0, 1, 2, 4]
+// tag=0 → 0 bytes (value is always 0; all 4 output bytes get 0x80 = zero-fill)
+// tag=1 → 1 byte
+// tag=2 → 2 bytes
+// tag=3 → 4 bytes  (no 3-byte option)
+
+const fn make_decode_0124() -> [[u8; 16]; 256] {
+    const WIDTHS: [usize; 4] = [0, 1, 2, 4];
+    let mut table = [[0u8; 16]; 256];
+    let mut ctrl = 0usize;
+    while ctrl < 256 {
+        let mut src = 0u8;
+        let mut i = 0usize;
+        while i < 4 {
+            let tag = (ctrl >> (2 * i)) & 3;
+            let width = WIDTHS[tag];
+            let base = 4 * i;
+            let mut b = 0usize;
+            while b < 4 {
+                if b < width {
+                    table[ctrl][base + b] = src + b as u8;
+                } else {
+                    table[ctrl][base + b] = 0x80;
+                }
+                b += 1;
+            }
+            src += width as u8;
+            i += 1;
+        }
+        ctrl += 1;
+    }
+    table
+}
+
+pub(super) static TABLE_0124: [[u8; 16]; 256] = make_decode_0124();
+
+// ── Variant0124 data-length table ─────────────────────────────────────────────
+//
+// Entry `c` = data bytes consumed for 4 values with control byte `c`.
+// data_len(c) = sum of [0, 1, 2, 4][(c >> (2*i)) & 3] for i in 0..4
+
+const fn make_data_len_0124() -> [u8; 256] {
+    const WIDTHS: [u8; 4] = [0, 1, 2, 4];
+    let mut table = [0u8; 256];
+    let mut ctrl = 0usize;
+    while ctrl < 256 {
+        let mut sum = 0u8;
+        let mut i = 0usize;
+        while i < 4 {
+            sum += WIDTHS[(ctrl >> (2 * i)) & 3];
+            i += 1;
+        }
+        table[ctrl] = sum;
+        ctrl += 1;
+    }
+    table
+}
+
+pub(super) static DATA_LEN_0124: [u8; 256] = make_data_len_0124();

@@ -112,6 +112,40 @@ fn dispatch_encode_0124(values: &[u32], out: &mut Vec<u8>) {
 }
 
 fn dispatch_decode_0124(data: &[u8], n: usize, out: &mut Vec<u32>) -> Result<(), DecodeError> {
+    #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
+    {
+        // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
+        return unsafe { avx2::decode_into_0124(data, n, out) };
+    }
+
+    #[cfg(all(
+        feature = "simd-sse2",
+        not(feature = "simd-avx2"),
+        target_arch = "x86_64"
+    ))]
+    {
+        // SAFETY: simd-sse2 feature declares SSSE3 is available at runtime.
+        return unsafe { sse2::decode_into_0124(data, n, out) };
+    }
+
+    #[cfg(all(
+        feature = "simd-auto",
+        not(any(feature = "simd-avx2", feature = "simd-sse2"))
+    ))]
+    {
+        #[cfg(all(feature = "std", target_arch = "x86_64"))]
+        {
+            if is_x86_feature_detected!("avx2") {
+                // SAFETY: AVX2 confirmed at runtime.
+                return unsafe { avx2::decode_into_0124(data, n, out) };
+            }
+            if is_x86_feature_detected!("ssse3") {
+                // SAFETY: SSSE3 confirmed at runtime.
+                return unsafe { sse2::decode_into_0124(data, n, out) };
+            }
+        }
+    }
+
     scalar::decode_into_0124(data, n, out)
 }
 
@@ -317,6 +351,146 @@ mod cross_path {
             for &v in &[
                 0u32, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFF_FFFF, 0x100_0000, u32::MAX,
             ] {
+                check(&[v]);
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", feature = "std"))]
+    mod x86_0124 {
+        use super::super::{avx2, scalar, sse2};
+        use std::vec::Vec;
+
+        fn encode(values: &[u32]) -> Vec<u8> {
+            let mut out = Vec::new();
+            scalar::encode_into_0124(values, &mut out);
+            out
+        }
+
+        fn scalar_decode(data: &[u8], n: usize) -> Vec<u32> {
+            let mut out = Vec::new();
+            scalar::decode_into_0124(data, n, &mut out).unwrap();
+            out
+        }
+
+        fn ssse3_decode(data: &[u8], n: usize) -> Option<Vec<u32>> {
+            if !is_x86_feature_detected!("ssse3") {
+                return None;
+            }
+            let mut out = Vec::new();
+            unsafe { sse2::decode_into_0124(data, n, &mut out).unwrap() };
+            Some(out)
+        }
+
+        fn avx2_decode(data: &[u8], n: usize) -> Option<Vec<u32>> {
+            if !is_x86_feature_detected!("avx2") {
+                return None;
+            }
+            let mut out = Vec::new();
+            unsafe { avx2::decode_into_0124(data, n, &mut out).unwrap() };
+            Some(out)
+        }
+
+        fn check(values: &[u32]) {
+            let n = values.len();
+            let enc = encode(values);
+            let expected = scalar_decode(&enc, n);
+            if let Some(got) = ssse3_decode(&enc, n) {
+                assert_eq!(expected, got, "SSSE3 mismatch n={n}");
+            }
+            if let Some(got) = avx2_decode(&enc, n) {
+                assert_eq!(expected, got, "AVX2 mismatch n={n}");
+            }
+        }
+
+        // exhaustive coverage of all 256 ctrl byte patterns
+        #[test]
+        fn all_ctrl_byte_values_0124() {
+            for ctrl in 0u8..=255 {
+                let values: Vec<u32> = (0..4u32)
+                    .map(|i| match (ctrl >> (2 * i as usize)) & 3 {
+                        0 => 0,          // tag 0: 0 bytes
+                        1 => i + 1,      // tag 1: 1 byte (1..=255)
+                        2 => 256 + i,    // tag 2: 2 bytes
+                        _ => 65536 + i,  // tag 3: 4 bytes
+                    })
+                    .collect();
+                check(&values);
+            }
+        }
+
+        #[test]
+        fn all_tail_lengths_0124() {
+            if ssse3_decode(&encode(&[1u32]), 1).is_none() {
+                return;
+            }
+            let pool: Vec<u32> = (0..20u32)
+                .map(|i| match i % 4 {
+                    0 => 0,
+                    1 => i + 1,
+                    2 => 256 + i,
+                    _ => 65536 + i,
+                })
+                .collect();
+            for n in 0..=20usize {
+                let enc = encode(&pool[..n]);
+                let expected = scalar_decode(&enc, n);
+                if let Some(got) = ssse3_decode(&enc, n) {
+                    assert_eq!(expected, got, "SSSE3 tail n={n}");
+                }
+                if let Some(got) = avx2_decode(&enc, n) {
+                    assert_eq!(expected, got, "AVX2 tail n={n}");
+                }
+            }
+        }
+
+        #[test]
+        fn homogeneous_tags_0124() {
+            // all zeros (tag 0), all 1-byte, all 2-byte, all 4-byte
+            for (tag, base) in [(0, 0u32), (1, 1), (2, 256), (3, 65536)] {
+                let _ = tag;
+                let values: Vec<u32> = (0..32).map(|i| base + i).collect();
+                check(&values);
+            }
+        }
+
+        // 16-byte boundary guard: 4 tag-3 values exhaust the SSSE3 16-byte window
+        #[test]
+        fn ssse3_16byte_boundary_guard_0124() {
+            let block1: Vec<u32> = (65536..65540).collect(); // 4 × tag-3
+            let block2: Vec<u32> = vec![0, 1, 256, 65536];  // mixed tags
+            check(&block1.into_iter().chain(block2).collect::<Vec<_>>());
+        }
+
+        // 32-byte boundary guard: 8 tag-3 values exhaust the AVX2 32-byte window
+        #[test]
+        fn avx2_32byte_boundary_guard_0124() {
+            let block12: Vec<u32> = (65536..65544).collect(); // 8 × tag-3
+            let block3: Vec<u32> = vec![0, 1, 256, 65536];
+            check(&block12.into_iter().chain(block3).collect::<Vec<_>>());
+        }
+
+        #[test]
+        fn all_zeros_0124() {
+            // all-zero input: ctrl bytes only, zero data bytes
+            check(&vec![0u32; 32]);
+        }
+
+        #[test]
+        fn boundary_values_0124() {
+            let values: Vec<u32> = [0u32, 1, 0xFF, 0x100, 0xFFFF, 0x10000, u32::MAX]
+                .iter()
+                .copied()
+                .cycle()
+                .take(32)
+                .collect();
+            check(&values);
+        }
+
+        #[test]
+        fn empty_and_single_0124() {
+            check(&[]);
+            for &v in &[0u32, 1, 0xFF, 0x100, 0xFFFF, 0x10000, u32::MAX] {
                 check(&[v]);
             }
         }
