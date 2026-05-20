@@ -123,17 +123,49 @@ U32Classic.encode_into(&[4u32, 5, 6], &mut buf);
 
 ## `no_std` support
 
+`no_std` is useful whenever the Rust standard library is not available: microcontrollers and embedded targets, WebAssembly modules that need a minimal binary, or OS-level code (bootloaders, kernel modules). In those environments you still get allocations through a custom allocator, but not the full `std` runtime.
+
 Disable the default `std` feature and enable `alloc`:
 
 ```toml
 svb = { version = "0.1", default-features = false, features = ["alloc"] }
 ```
 
-All encode/decode APIs are available. SIMD runtime detection (`simd-auto`) requires `std`; use a compile-time SIMD flag instead if you need SIMD in a `no_std` context.
+All encode/decode APIs are available. SIMD runtime detection (`simd-auto`) requires `std` (for `is_x86_feature_detected!`); use a compile-time SIMD flag instead if you need SIMD in a `no_std` context.
+
+## Delta and zigzag
+
+Both transforms are generic and work with all integer types used by the codecs.
+
+`delta` is implemented for `i16`, `i32`, `i64`, `u32`, and `u64`. Use a signed type when the sequence is non-monotone and you intend to follow with zigzag; use an unsigned type for sorted/non-decreasing sequences where all differences are non-negative.
+
+`zigzag` is implemented for `i16` (→`u16`), `i32` (→`u32`), and `i64` (→`u64`).
+
+```rust
+use svb::{delta, zigzag, u32::U32Classic, u64::U64Coder1248};
+
+// Arbitrary i32 data: delta → zigzag → U32Classic
+let samples: Vec<i32> = vec![-500, 200, -100, 900];
+let deltas: Vec<i32> = delta::encode(&samples);
+let codes: Vec<u32> = zigzag::encode(&deltas);
+let encoded = U32Classic.encode(&codes);
+let decoded_codes = U32Classic.decode(&encoded, codes.len()).unwrap();
+let decoded_deltas: Vec<i32> = zigzag::decode(&decoded_codes);
+let decoded: Vec<i32> = delta::decode(&decoded_deltas);
+assert_eq!(decoded, samples);
+
+// Sorted u64 timestamps: delta only (differences are always positive)
+let timestamps: Vec<u64> = vec![1_000_000, 1_001_500, 1_003_000, 1_010_000];
+let deltas: Vec<u64> = delta::encode(&timestamps);
+let encoded = U64Coder1248.encode(&deltas);
+let decoded_deltas = U64Coder1248.decode(&encoded, deltas.len()).unwrap();
+let decoded: Vec<u64> = delta::decode(&decoded_deltas);
+assert_eq!(decoded, timestamps);
+```
 
 ## MSRV
 
-Rust **1.85** (edition 2024).
+The Minimum Supported Rust Version is **1.85** (edition 2024). This is the oldest Rust release guaranteed to compile this crate. Check your installed version with `rustup show`; update with `rustup update stable`.
 
 ## Performance
 
@@ -144,3 +176,7 @@ cargo bench --features simd-auto
 ```
 
 Benchmarks cover all five codec variants × encode/decode × three slice sizes (128, 1 024, 8 192 elements).
+
+## License
+
+MIT — see [LICENSE](LICENSE). Copyright 2026 James Ferguson.

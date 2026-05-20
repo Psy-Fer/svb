@@ -43,7 +43,7 @@ fn zigzag_known_values_decode() {
     ];
     for &(input, expected) in cases {
         assert_eq!(
-            zigzag::decode(&[input]),
+            zigzag::decode::<i16>(&[input]),
             [expected],
             "zigzag decode {input}"
         );
