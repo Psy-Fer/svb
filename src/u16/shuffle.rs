@@ -1,4 +1,7 @@
 // Shuffle table shared by the SSSE3 and NEON decode paths.
+// Always compiled on x86_64/aarch64 to catch compile errors even when no SIMD
+// feature is active; dead_code suppressed because use is feature-gated.
+#![allow(dead_code)]
 //
 // Entry `c` is the 16-byte PSHUFB / vqtbl1q_u8 mask that expands the
 // variable-width data bytes for control byte value `c` into 8 fixed-width

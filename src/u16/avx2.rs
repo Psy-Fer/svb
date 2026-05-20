@@ -24,6 +24,7 @@ use crate::error::DecodeError;
 ///
 /// # Safety
 /// The executing CPU must support AVX2.
+#[allow(dead_code)]
 #[target_feature(enable = "avx2")]
 pub(super) unsafe fn decode_into(
     data: &[u8],

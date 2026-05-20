@@ -22,6 +22,7 @@ use crate::error::DecodeError;
 ///
 /// # Safety
 /// The executing CPU must support SSSE3.
+#[allow(dead_code)]
 #[target_feature(enable = "ssse3")]
 pub(super) unsafe fn decode_into(
     data: &[u8],

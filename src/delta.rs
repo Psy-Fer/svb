@@ -53,7 +53,10 @@ fn decode_with_initial_into(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
 }
 
 #[cfg_attr(
-    all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"),
+    all(
+        any(feature = "simd-auto", feature = "simd-sse2"),
+        target_arch = "x86_64"
+    ),
     allow(dead_code)
 )]
 fn decode_scalar(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {

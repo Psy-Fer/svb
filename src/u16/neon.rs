@@ -19,6 +19,7 @@ use crate::error::DecodeError;
 ///
 /// # Safety
 /// Must run on AArch64 (NEON is mandatory on that architecture).
+#[allow(dead_code)]
 #[target_feature(enable = "neon")]
 pub(super) unsafe fn decode_into(
     data: &[u8],
