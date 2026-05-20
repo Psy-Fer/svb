@@ -44,6 +44,56 @@ pub(super) fn encode_into_1234(values: &[u64], out: &mut Vec<u8>) {
     }
 }
 
+/// Decode `n` U64Coder1234 values from pre-split `ctrl` and `data` byte slices.
+///
+/// Used by SIMD decode paths to handle the scalar tail.
+pub(super) fn decode_1234_from_raw(
+    ctrl: &[u8],
+    data: &[u8],
+    n: usize,
+    out: &mut Vec<u64>,
+) -> Result<(), DecodeError> {
+    out.reserve(n);
+    let mut pos = 0usize;
+    for i in 0..n {
+        let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
+        let count = (tag + 1) as usize;
+        if pos + count > data.len() {
+            return Err(DecodeError::DataTruncated { index: i });
+        }
+        let mut bytes = [0u8; 4];
+        bytes[..count].copy_from_slice(&data[pos..pos + count]);
+        out.push(u32::from_le_bytes(bytes) as u64);
+        pos += count;
+    }
+    Ok(())
+}
+
+/// Decode `n` U64Coder1248 values from pre-split `ctrl` and `data` byte slices.
+///
+/// Used by SIMD decode paths to handle the scalar tail.
+pub(super) fn decode_1248_from_raw(
+    ctrl: &[u8],
+    data: &[u8],
+    n: usize,
+    out: &mut Vec<u64>,
+) -> Result<(), DecodeError> {
+    out.reserve(n);
+    let mut pos = 0usize;
+    for i in 0..n {
+        let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
+        let count = WIDTHS_1248[tag as usize];
+        if pos + count > data.len() {
+            return Err(DecodeError::DataTruncated { index: i });
+        }
+        let mut bytes = [0u8; 8];
+        bytes[..count].copy_from_slice(&data[pos..pos + count]);
+        out.push(u64::from_le_bytes(bytes));
+        pos += count;
+    }
+    Ok(())
+}
+
 pub(super) fn decode_into_1234(
     data: &[u8],
     n: usize,
