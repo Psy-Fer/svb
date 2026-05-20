@@ -1,2 +1,146 @@
 # svb
-streamVbyte in pure rust for u16/u32/u64 plus extras
+
+Pure-Rust [StreamVByte](https://lemire.me/blog/2017/09/27/stream-vbyte-breaking-new-speed-records-for-integer-compression/) covering all major codec variants for `u16`, `u32`, and `u64` integers. Delta and zigzag encoding are composable layers on top. SIMD back-ends are available for x86-64 (SSSE3, AVX2) and AArch64 (NEON).
+
+## Codec variants
+
+| Type | Variant | Tag width | Byte widths | Notes |
+|---|---|---|---|---|
+| `u16` | `Svb16` | 1 bit | 1/2 | ONT VBZ format |
+| `u32` | `U32Classic` | 2 bits | 1/2/3/4 | Lemire / C library compatible |
+| `u32` | `U32Variant0124` | 2 bits | 0/1/2/4 | Better compression for sparse data |
+| `u64` | `U64Coder1234` | 2 bits | 1/2/3/4 | As in `streamvbyte64` |
+| `u64` | `U64Coder1248` | 2 bits | 1/2/4/8 | As in `streamvbyte64` |
+
+## Feature flags
+
+| Flag | Effect |
+|---|---|
+| `std` (default) | Enables `std`; implies `alloc` |
+| `alloc` | Enables all encode/decode APIs with no other dependencies |
+| `simd-auto` | Runtime CPU detection; selects the best available SIMD path |
+| `simd-avx2` | Compile-time AVX2 (implies AVX2 is available at runtime) |
+| `simd-sse2` | Compile-time SSSE3 |
+| `simd-neon` | Compile-time NEON (AArch64 only; NEON is always available there) |
+
+For most users, `simd-auto` is the right choice. The compile-time flags (`simd-avx2`, `simd-sse2`, `simd-neon`) are for environments where the target is known at build time, such as cross-compilation or `RUSTFLAGS="-C target-cpu=native"`.
+
+```toml
+[dependencies]
+svb = { version = "0.1", features = ["simd-auto"] }
+```
+
+## Usage
+
+### VBZ pipeline (Oxford Nanopore POD5 signal codec)
+
+The VBZ codec chains delta → zigzag → SVB16. The outer zstd layer is left to the caller.
+
+```rust
+use svb::{encode_vbz, decode_vbz};
+
+let samples: Vec<i16> = vec![100, 101, 103, 102, 98];
+
+// Encode: i16 → delta → zigzag → SVB16 bytes
+let encoded = encode_vbz(&samples);
+
+// Decode: SVB16 bytes → zigzag → delta → i16
+let decoded = decode_vbz(&encoded, samples.len()).unwrap();
+assert_eq!(decoded, samples);
+```
+
+### SVB16
+
+```rust
+use svb::u16::Svb16;
+
+let values: Vec<u16> = vec![1, 300, 0, 65000];
+let encoded = Svb16.encode(&values);
+let decoded = Svb16.decode(&encoded, values.len()).unwrap();
+assert_eq!(decoded, values);
+```
+
+### U32Classic
+
+```rust
+use svb::u32::U32Classic;
+
+let values: Vec<u32> = vec![1, 500, 70_000, 16_000_000];
+let encoded = U32Classic.encode(&values);
+let decoded = U32Classic.decode(&encoded, values.len()).unwrap();
+assert_eq!(decoded, values);
+```
+
+### U32Variant0124 — sparse data
+
+```rust
+use svb::u32::U32Variant0124;
+
+// 0-valued elements cost 0 bytes in the data stream.
+let values: Vec<u32> = vec![0, 0, 42, 0, 0, 255, 0];
+let encoded = U32Variant0124.encode(&values);
+let decoded = U32Variant0124.decode(&encoded, values.len()).unwrap();
+assert_eq!(decoded, values);
+```
+
+### U64 codecs
+
+```rust
+use svb::u64::{U64Coder1234, U64Coder1248};
+
+let values: Vec<u64> = vec![1, 500, 1 << 32, u64::MAX / 2];
+
+let enc_1234 = U64Coder1234.encode(&values);
+assert_eq!(U64Coder1234.decode(&enc_1234, values.len()).unwrap(), values);
+
+let enc_1248 = U64Coder1248.encode(&values);
+assert_eq!(U64Coder1248.decode(&enc_1248, values.len()).unwrap(), values);
+```
+
+### Delta and zigzag as standalone transforms
+
+```rust
+use svb::{delta, zigzag};
+
+// Delta-encode a sorted list, then zigzag for signed-friendly compression.
+let values: Vec<i16> = vec![100, 105, 103, 110];
+let deltas = delta::encode(&values);
+let codes  = zigzag::encode(&deltas);
+// ... encode codes with any u16 codec ...
+```
+
+### Appending to an existing buffer
+
+Every codec exposes `encode_into` / `decode_into` variants that append to a caller-supplied `Vec`, avoiding allocation:
+
+```rust
+use svb::u32::U32Classic;
+
+let mut buf = Vec::new();
+U32Classic.encode_into(&[1u32, 2, 3], &mut buf);
+U32Classic.encode_into(&[4u32, 5, 6], &mut buf);
+```
+
+## `no_std` support
+
+Disable the default `std` feature and enable `alloc`:
+
+```toml
+svb = { version = "0.1", default-features = false, features = ["alloc"] }
+```
+
+All encode/decode APIs are available. SIMD runtime detection (`simd-auto`) requires `std`; use a compile-time SIMD flag instead if you need SIMD in a `no_std` context.
+
+## MSRV
+
+Rust **1.85** (edition 2024).
+
+## Performance
+
+With `simd-auto` on a modern x86-64 machine, SVB16 and VBZ decode throughput is several GB/s. Run the included Criterion benchmarks to measure on your hardware:
+
+```sh
+cargo bench --features simd-auto
+```
+
+Benchmarks cover all five codec variants × encode/decode × three slice sizes (128, 1 024, 8 192 elements).
