@@ -1,3 +1,9 @@
+//! StreamVByte codec for `u16` values using 1-bit control tags.
+//!
+//! Each value is stored in 1 byte if it fits in `0..=255`, or 2 bytes otherwise.
+//! One control bit per value is packed into a prefix control stream.
+//! The encoding is wire-compatible with Oxford Nanopore's VBZ format.
+
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
@@ -135,28 +141,49 @@ fn dispatch_decode(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<(), Deco
 
 // ── public API ────────────────────────────────────────────────────────────────
 
-/// StreamVByte codec for u16 values (1-bit control stream, 1 or 2 bytes per value).
+/// StreamVByte codec for `u16` values (1-bit control stream, 1 or 2 bytes per value).
 ///
-/// Wire-compatible with ONT's VBZ format.
+/// Wire-compatible with ONT's VBZ format. Construct with `Svb16` — it is a
+/// zero-sized type with no configuration.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::u16::Svb16;
+/// let values: Vec<u16> = vec![0, 255, 256, 1000, u16::MAX];
+/// let encoded = Svb16.encode(&values);
+/// let decoded = Svb16.decode(&encoded, values.len()).unwrap();
+/// assert_eq!(decoded, values);
+/// ```
 pub struct Svb16;
 
 impl Svb16 {
+    /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
     pub fn encode(&self, values: &[u16]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode(values, &mut out);
         out
     }
 
+    /// Encode `values`, appending the encoded bytes to `out`.
     pub fn encode_into(&self, values: &[u16], out: &mut Vec<u8>) {
         dispatch_encode(values, out);
     }
 
+    /// Decode exactly `n` values from `data`, returning them in a new `Vec<u16>`.
+    ///
+    /// `n` must equal the number of values that were originally encoded; a wrong
+    /// value will produce incorrect output or a [`DecodeError`].
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u16>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode(data, n, &mut out)?;
         Ok(out)
     }
 
+    /// Decode exactly `n` values from `data`, appending them to `out`.
+    ///
+    /// `n` must equal the number of values that were originally encoded; a wrong
+    /// value will produce incorrect output or a [`DecodeError`].
     pub fn decode_into(
         &self,
         data: &[u8],

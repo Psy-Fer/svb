@@ -1,3 +1,12 @@
+//! Zigzag encoding and decoding as a composable layer over signed integer types.
+//!
+//! Zigzag maps a signed integer to an unsigned integer so that values with
+//! small absolute value produce small unsigned codes: `0→0`, `-1→1`, `1→2`,
+//! `-2→3`, and so on.  This makes signed deltas compatible with StreamVByte
+//! codecs that encode smaller unsigned values more compactly.
+//!
+//! The functions in this module accept any type that implements [`Zigzag`].
+
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
@@ -7,12 +16,15 @@ mod private {
     pub trait Sealed {}
 }
 
-/// Types that can be zigzag-encoded and decoded.
+/// Marker trait for signed integer types that support zigzag encoding.
 ///
-/// Maps signed integers to unsigned integers so that values with small absolute
-/// value produce small unsigned codes: 0→0, -1→1, 1→2, -2→3, …
+/// This trait is sealed; it cannot be implemented outside this crate.
+/// Implemented for `i16` (unsigned counterpart `u16`), `i32` (`u32`), and
+/// `i64` (`u64`).
 ///
-/// Implemented for `i16` (→`u16`), `i32` (→`u32`), and `i64` (→`u64`).
+/// Zigzag is most useful after [`crate::delta`] encoding: delta produces
+/// signed differences, and zigzag remaps them to small unsigned values that
+/// StreamVByte can pack tightly.
 pub trait Zigzag: private::Sealed + Sized + Copy {
     type Unsigned: Copy;
     fn encode_one(self) -> Self::Unsigned;
@@ -102,22 +114,42 @@ impl Zigzag for i64 {
     }
 }
 
+/// Zigzag-encode `samples`, mapping each signed value to a compact unsigned code.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::zigzag;
+/// let codes: Vec<u16> = zigzag::encode(&[0i16, -1, 1, -2]);
+/// assert_eq!(codes, [0, 1, 2, 3]);
+/// ```
 pub fn encode<T: Zigzag>(samples: &[T]) -> Vec<T::Unsigned> {
     let mut out = Vec::with_capacity(samples.len());
     T::__encode_into(samples, &mut out);
     out
 }
 
+/// Zigzag-encode `samples`, appending the unsigned codes to `out`.
 pub fn encode_into<T: Zigzag>(samples: &[T], out: &mut Vec<T::Unsigned>) {
     T::__encode_into(samples, out);
 }
 
+/// Zigzag-decode `codes`, recovering the original signed values.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::zigzag;
+/// let samples: Vec<i16> = zigzag::decode(&[0u16, 1, 2, 3]);
+/// assert_eq!(samples, [0, -1, 1, -2]);
+/// ```
 pub fn decode<T: Zigzag>(codes: &[T::Unsigned]) -> Vec<T> {
     let mut out = Vec::with_capacity(codes.len());
     T::__decode_into(codes, &mut out);
     out
 }
 
+/// Zigzag-decode `codes`, appending the recovered signed values to `out`.
 pub fn decode_into<T: Zigzag>(codes: &[T::Unsigned], out: &mut Vec<T>) {
     T::__decode_into(codes, out);
 }

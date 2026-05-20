@@ -1,3 +1,15 @@
+//! StreamVByte codecs for `u64` values using 2-bit control tags.
+//!
+//! Two variants are provided:
+//!
+//! - [`U64Coder1234`]: tag encodes 1/2/3/4 data bytes per value, matching the
+//!   tag table of [`crate::u32::U32Classic`]. Values above `u32::MAX` are
+//!   silently truncated; call [`U64Coder1234::check_range`] first if this
+//!   matters.
+//! - [`U64Coder1248`]: tag encodes 1/2/4/8 data bytes per value, covering
+//!   the full `u64` range at the cost of a 4-byte gap (values in
+//!   `0x10000..=0xFFFFFFFF` use 4 bytes rather than 3).
+
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
@@ -116,38 +128,63 @@ fn dispatch_decode_1234(data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(),
     scalar::decode_into_1234(data, n, out)
 }
 
-/// StreamVByte codec for u64 values (1/2/3/4 bytes per value).
+/// StreamVByte codec for `u64` values using 2-bit tags encoding 1, 2, 3, or 4 data bytes per value.
 ///
-/// Same tag/width table as U32Classic but operates on `u64` slices. Values greater
-/// than `u32::MAX` are silently truncated to their low 32 bits — this matches the
-/// behaviour of other StreamVByte libraries and is defined, not accidental. Use
-/// [`U64Coder1234::check_range`] before encoding if you need to detect out-of-range
-/// values. For data that may genuinely exceed `u32::MAX`, use [`U64Coder1248`].
+/// Same tag/width table as [`crate::u32::U32Classic`] but operates on `u64` slices.
+/// Values greater than `u32::MAX` are silently truncated to their low 32 bits on
+/// encode — this matches the behaviour of other StreamVByte libraries and is
+/// defined, not accidental. Call [`U64Coder1234::check_range`] before encoding if
+/// you need to detect out-of-range values. For data that may genuinely exceed
+/// `u32::MAX`, use [`U64Coder1248`] instead.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::u64::U64Coder1234;
+/// let values: Vec<u64> = vec![1, 256, 65536, u32::MAX as u64];
+/// let encoded = U64Coder1234.encode(&values);
+/// let decoded = U64Coder1234.decode(&encoded, values.len()).unwrap();
+/// assert_eq!(decoded, values);
+/// ```
 pub struct U64Coder1234;
 
 impl U64Coder1234 {
     /// Returns the index of the first value that exceeds `u32::MAX`, or `None` if
-    /// all values can be encoded without truncation.
+    /// all values fit within the 1–4 byte encoding range.
+    ///
+    /// Call this before [`encode`](U64Coder1234::encode) whenever the input may
+    /// contain values larger than `u32::MAX`; encoding such values silently
+    /// truncates them.
     pub fn check_range(&self, values: &[u64]) -> Option<usize> {
         values.iter().position(|&v| v > u64::from(u32::MAX))
     }
 
+    /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
     pub fn encode(&self, values: &[u64]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode_1234(values, &mut out);
         out
     }
 
+    /// Encode `values`, appending the encoded bytes to `out`.
     pub fn encode_into(&self, values: &[u64], out: &mut Vec<u8>) {
         dispatch_encode_1234(values, out);
     }
 
+    /// Decode exactly `n` values from `data`, returning them in a new `Vec<u64>`.
+    ///
+    /// `n` must equal the number of values that were originally encoded; a wrong
+    /// value will produce incorrect output or a [`DecodeError`].
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u64>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_1234(data, n, &mut out)?;
         Ok(out)
     }
 
+    /// Decode exactly `n` values from `data`, appending them to `out`.
+    ///
+    /// `n` must equal the number of values that were originally encoded; a wrong
+    /// value will produce incorrect output or a [`DecodeError`].
     pub fn decode_into(
         &self,
         data: &[u8],
@@ -274,28 +311,51 @@ fn dispatch_decode_1248(data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(),
     scalar::decode_into_1248(data, n, out)
 }
 
-/// StreamVByte codec for u64 values (1/2/4/8 bytes per value).
-/// Covers the full u64 range. Values in 0x10000–0xFFFFFF use 4 bytes
-/// (no 3-byte option); values in 0x100000000–u64::MAX use 8 bytes.
+/// StreamVByte codec for `u64` values using 2-bit tags encoding 1, 2, 4, or 8 data bytes per value.
+///
+/// Covers the full `u64` range without truncation. There is no 3-byte width:
+/// values in `0x10000..=0xFFFFFFFF` use 4 bytes, and values above `0xFFFFFFFF`
+/// use 8 bytes. Use [`U64Coder1234`] instead when all values are known to fit
+/// within `u32::MAX` and you want the compact 3-byte option.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::u64::U64Coder1248;
+/// let values: Vec<u64> = vec![1, 256, 65536, u64::MAX];
+/// let encoded = U64Coder1248.encode(&values);
+/// let decoded = U64Coder1248.decode(&encoded, values.len()).unwrap();
+/// assert_eq!(decoded, values);
+/// ```
 pub struct U64Coder1248;
 
 impl U64Coder1248 {
+    /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
     pub fn encode(&self, values: &[u64]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode_1248(values, &mut out);
         out
     }
 
+    /// Encode `values`, appending the encoded bytes to `out`.
     pub fn encode_into(&self, values: &[u64], out: &mut Vec<u8>) {
         dispatch_encode_1248(values, out);
     }
 
+    /// Decode exactly `n` values from `data`, returning them in a new `Vec<u64>`.
+    ///
+    /// `n` must equal the number of values that were originally encoded; a wrong
+    /// value will produce incorrect output or a [`DecodeError`].
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u64>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_1248(data, n, &mut out)?;
         Ok(out)
     }
 
+    /// Decode exactly `n` values from `data`, appending them to `out`.
+    ///
+    /// `n` must equal the number of values that were originally encoded; a wrong
+    /// value will produce incorrect output or a [`DecodeError`].
     pub fn decode_into(
         &self,
         data: &[u8],

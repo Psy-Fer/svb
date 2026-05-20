@@ -1,3 +1,14 @@
+//! Delta encoding and decoding as a composable layer over any integer type.
+//!
+//! Delta encoding replaces each value with the difference from the previous
+//! value, which typically produces smaller numbers that compress well with
+//! StreamVByte. Decoding reconstructs the original values by computing a
+//! running prefix sum over the delta sequence.
+//!
+//! The functions in this module accept any type that implements [`Delta`].
+//! Call [`encode`] / [`decode`] for standalone sequences, or the
+//! `_with_initial` / `_into` variants for streaming use.
+
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
@@ -7,12 +18,19 @@ mod private {
     pub trait Sealed {}
 }
 
-/// Types that can be delta-encoded and decoded.
+/// Marker trait for types that support delta encoding and decoding.
 ///
-/// Implemented for `i16`, `i32`, `i64`, `u32`, and `u64`. Use signed types
-/// (`i16`/`i32`/`i64`) when the sequence is non-monotone and you intend to
-/// follow delta encoding with zigzag; use unsigned types (`u32`/`u64`) for
-/// sorted/non-decreasing sequences where all differences are non-negative.
+/// This trait is sealed; it cannot be implemented outside this crate.
+/// Implemented for `i16`, `i32`, `i64`, `u32`, and `u64`.
+///
+/// Choose the concrete type based on your data:
+/// - Use `i16`, `i32`, or `i64` when the sequence is non-monotone and you
+///   plan to follow delta encoding with [`crate::zigzag`] to map signed
+///   differences back to small unsigned values.
+/// - Use `u32` or `u64` for sorted or non-decreasing sequences where all
+///   differences are non-negative.
+///
+/// All arithmetic is wrapping, so overflow is defined and lossless.
 pub trait Delta: private::Sealed + Copy + Default {
     #[doc(hidden)]
     fn __sub(self, rhs: Self) -> Self;
@@ -345,30 +363,87 @@ fn decode_into_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Delta-encode `samples`, using `T::default()` (typically `0`) as the implicit value before the first element.
+///
+/// Each output element is `samples[i] - samples[i-1]` (wrapping), with `0`
+/// used as `samples[-1]`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let deltas = delta::encode(&[10i16, 11, 13]);
+/// assert_eq!(deltas, [10, 1, 2]);
+/// ```
 pub fn encode<T: Delta>(samples: &[T]) -> Vec<T> {
     encode_with_initial(T::default(), samples)
 }
 
+/// Delta-encode `samples`, treating `initial` as the value logically preceding the first element.
+///
+/// Pass `0` (or `T::default()`) for a standalone sequence; pass the last value
+/// from the previous chunk when encoding a stream in multiple pieces.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// // Encode two chunks of a stream so decode can be chained.
+/// let chunk1 = delta::encode_with_initial(0i16, &[10, 11, 13]);
+/// let chunk2 = delta::encode_with_initial(13i16, &[14, 20]);
+/// assert_eq!(chunk1, [10, 1, 2]);
+/// assert_eq!(chunk2, [1, 6]);
+/// ```
 pub fn encode_with_initial<T: Delta>(initial: T, samples: &[T]) -> Vec<T> {
     let mut out = Vec::with_capacity(samples.len());
     encode_with_initial_into(initial, samples, &mut out);
     out
 }
 
+/// Delta-encode `samples` using `T::default()` as the initial value, appending the result to `out`.
 pub fn encode_into<T: Delta>(samples: &[T], out: &mut Vec<T>) {
     encode_with_initial_into(T::default(), samples, out);
 }
 
+/// Delta-decode `deltas`, using `T::default()` (typically `0`) as the initial accumulator.
+///
+/// This is the inverse of [`encode`]; pass the same sequence of delta values
+/// that `encode` produced to recover the original samples.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let samples = delta::decode(&[10i16, 1, 2]);
+/// assert_eq!(samples, [10, 11, 13]);
+/// ```
 pub fn decode<T: Delta>(deltas: &[T]) -> Vec<T> {
     decode_with_initial(T::default(), deltas)
 }
 
+/// Delta-decode `deltas`, starting the prefix sum from `initial`.
+///
+/// Use `initial = 0` (or `T::default()`) for a standalone sequence; for
+/// streaming use, pass the last decoded value from the previous chunk so the
+/// prefix sum continues from where it left off.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// // Decode two independently-encoded chunks:
+/// let s1 = delta::decode_with_initial(0i16, &[10i16, 1, 2]);   // [10, 11, 13]
+/// let s2 = delta::decode_with_initial(13i16, &[1i16, 6]);       // [14, 20]
+/// assert_eq!(s1, [10, 11, 13]);
+/// assert_eq!(s2, [14, 20]);
+/// ```
 pub fn decode_with_initial<T: Delta>(initial: T, deltas: &[T]) -> Vec<T> {
     let mut out = Vec::with_capacity(deltas.len());
     T::__decode_into(initial, deltas, &mut out);
     out
 }
 
+/// Delta-decode `deltas` using `T::default()` as the initial accumulator, appending the result to `out`.
 pub fn decode_into<T: Delta>(deltas: &[T], out: &mut Vec<T>) {
     T::__decode_into(T::default(), deltas, out);
 }

@@ -1,3 +1,12 @@
+//! StreamVByte codecs for `u32` values using 2-bit control tags.
+//!
+//! Two variants are provided:
+//!
+//! - [`U32Classic`]: tag encodes 1/2/3/4 data bytes; wire-compatible with
+//!   Lemire's reference C library and the original StreamVByte paper.
+//! - [`U32Variant0124`]: tag encodes 0/1/2/4 data bytes; zero values consume
+//!   no data bytes, making this more compact for sparse (mostly-zero) input.
+
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
@@ -116,27 +125,50 @@ fn dispatch_decode_classic(data: &[u8], n: usize, out: &mut Vec<u32>) -> Result<
     scalar::decode_into_classic(data, n, out)
 }
 
-/// StreamVByte codec for u32 values.
-/// 2-bit tags, 1/2/3/4 bytes per value. Wire-compatible with Lemire's C library.
+/// StreamVByte codec for `u32` values using 2-bit tags encoding 1, 2, 3, or 4 data bytes per value.
+///
+/// Wire-compatible with Lemire's C library and the original StreamVByte paper.
+/// All non-zero values use at least 1 data byte; use [`U32Variant0124`] if
+/// your data contains many zeros and you want 0-byte encoding for them.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::u32::U32Classic;
+/// let values: Vec<u32> = vec![0, 1, 256, 65536, u32::MAX];
+/// let encoded = U32Classic.encode(&values);
+/// let decoded = U32Classic.decode(&encoded, values.len()).unwrap();
+/// assert_eq!(decoded, values);
+/// ```
 pub struct U32Classic;
 
 impl U32Classic {
+    /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
     pub fn encode(&self, values: &[u32]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode_classic(values, &mut out);
         out
     }
 
+    /// Encode `values`, appending the encoded bytes to `out`.
     pub fn encode_into(&self, values: &[u32], out: &mut Vec<u8>) {
         dispatch_encode_classic(values, out);
     }
 
+    /// Decode exactly `n` values from `data`, returning them in a new `Vec<u32>`.
+    ///
+    /// `n` must equal the number of values that were originally encoded; a wrong
+    /// value will produce incorrect output or a [`DecodeError`].
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_classic(data, n, &mut out)?;
         Ok(out)
     }
 
+    /// Decode exactly `n` values from `data`, appending them to `out`.
+    ///
+    /// `n` must equal the number of values that were originally encoded; a wrong
+    /// value will produce incorrect output or a [`DecodeError`].
     pub fn decode_into(
         &self,
         data: &[u8],
@@ -263,28 +295,51 @@ fn dispatch_decode_0124(data: &[u8], n: usize, out: &mut Vec<u32>) -> Result<(),
     scalar::decode_into_0124(data, n, out)
 }
 
-/// StreamVByte codec for u32 values.
-/// 2-bit tags, 0/1/2/4 bytes per value. Zero values use 0 data bytes, making
-/// this more compact than U32Classic for sparse (mostly-zero) data.
+/// StreamVByte codec for `u32` values using 2-bit tags encoding 0, 1, 2, or 4 data bytes per value.
+///
+/// The key difference from [`U32Classic`] is that the value `0` encodes with
+/// 0 data bytes (tag `00`), making this variant substantially more compact for
+/// sparse data sets where most values are zero.  Note that there is no 3-byte
+/// width; values in `0x10000..=0xFFFFFFFF` use 4 bytes.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::u32::U32Variant0124;
+/// let values: Vec<u32> = vec![0, 0, 1, 0, 65536, 0];
+/// let encoded = U32Variant0124.encode(&values);
+/// let decoded = U32Variant0124.decode(&encoded, values.len()).unwrap();
+/// assert_eq!(decoded, values);
+/// ```
 pub struct U32Variant0124;
 
 impl U32Variant0124 {
+    /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
     pub fn encode(&self, values: &[u32]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode_0124(values, &mut out);
         out
     }
 
+    /// Encode `values`, appending the encoded bytes to `out`.
     pub fn encode_into(&self, values: &[u32], out: &mut Vec<u8>) {
         dispatch_encode_0124(values, out);
     }
 
+    /// Decode exactly `n` values from `data`, returning them in a new `Vec<u32>`.
+    ///
+    /// `n` must equal the number of values that were originally encoded; a wrong
+    /// value will produce incorrect output or a [`DecodeError`].
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_0124(data, n, &mut out)?;
         Ok(out)
     }
 
+    /// Decode exactly `n` values from `data`, appending them to `out`.
+    ///
+    /// `n` must equal the number of values that were originally encoded; a wrong
+    /// value will produce incorrect output or a [`DecodeError`].
     pub fn decode_into(
         &self,
         data: &[u8],

@@ -1,3 +1,23 @@
+//! Pure-Rust [StreamVByte](https://lemire.me/blog/2017/09/27/stream-vbyte-breaking-new-speed-records-for-integer-compression/) covering u16, u32, and u64 integer codecs with optional SIMD acceleration.
+//!
+//! # Codec variants
+//!
+//! | Type | Struct | Tag | Byte widths | Notes |
+//! |------|--------|-----|-------------|-------|
+//! | u16 | [`u16::Svb16`] | 1-bit | 1/2 | ONT VBZ format |
+//! | u32 | [`u32::U32Classic`] | 2-bit | 1/2/3/4 | Lemire reference-compatible |
+//! | u32 | [`u32::U32Variant0124`] | 2-bit | 0/1/2/4 | Sparse-data variant |
+//! | u64 | [`u64::U64Coder1234`] | 2-bit | 1/2/3/4 | Values must fit in u32 |
+//! | u64 | [`u64::U64Coder1248`] | 2-bit | 1/2/4/8 | Full u64 range |
+//!
+//! Delta and zigzag transforms are composable layers in [`delta`] and [`zigzag`].
+//!
+//! # Feature flags
+//!
+//! Enable `simd-auto` for runtime CPU detection (recommended). Use `simd-avx2`,
+//! `simd-sse2`, or `simd-neon` for compile-time SIMD when the target is known.
+//! Disable `std` and enable `alloc` for `no_std` use; all codec functionality
+//! requires at least the `alloc` feature.
 #![cfg_attr(not(feature = "std"), no_std)]
 #![deny(clippy::all)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -44,29 +64,44 @@ mod vbz {
     use crate::error::DecodeError;
     use crate::{delta, u16::Svb16, zigzag};
 
-    /// Encode `i16` samples through delta → zigzag → SVB16.
-    /// Returns raw SVB16 bytes ready to pass to zstd.
+    /// Encode `i16` samples through delta, zigzag, then SVB16, returning raw bytes ready to pass to zstd.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::{encode_vbz, decode_vbz};
+    /// let samples = [10i16, 11, 12, 13];
+    /// let encoded = encode_vbz(&samples);
+    /// let decoded = decode_vbz(&encoded, samples.len()).unwrap();
+    /// assert_eq!(decoded, samples);
+    /// ```
     pub fn encode_vbz(samples: &[i16]) -> Vec<u8> {
         let mut out = Vec::new();
         encode_vbz_into(samples, &mut out);
         out
     }
 
-    /// Encode into a caller-supplied buffer, appending the SVB16 bytes.
+    /// Encode `i16` samples through delta, zigzag, then SVB16, appending the result to `out`.
     pub fn encode_vbz_into(samples: &[i16], out: &mut Vec<u8>) {
         let deltas = delta::encode(samples);
         let codes = zigzag::encode(&deltas);
         Svb16.encode_into(&codes, out);
     }
 
-    /// Decode `n` `i16` samples from SVB16 bytes (after zstd decompression).
+    /// Decode exactly `n` `i16` samples from SVB16 bytes (after zstd decompression).
+    ///
+    /// `n` must equal the number of samples that were originally encoded; passing a
+    /// wrong value produces incorrect output or a [`DecodeError`].
     pub fn decode_vbz(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         decode_vbz_into(data, n, &mut out)?;
         Ok(out)
     }
 
-    /// Decode into a caller-supplied buffer, appending the decoded samples.
+    /// Decode exactly `n` `i16` samples from SVB16 bytes, appending them to `out`.
+    ///
+    /// `n` must equal the number of samples that were originally encoded; passing a
+    /// wrong value produces incorrect output or a [`DecodeError`].
     pub fn decode_vbz_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
         let codes = Svb16.decode(data, n)?;
         let deltas = zigzag::decode(&codes);
