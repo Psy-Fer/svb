@@ -291,7 +291,38 @@ pub(super) unsafe fn decode_into_classic(
         out.set_len(base + decoded);
     }
 
-    // Scalar tail: remaining values, or the final iteration that lacked ≥16 data bytes.
+    // Padded tail: guard fired (rem < 16) but complete groups of 4 may remain.
+    // DATA_LEN ≥ 4 for Classic; padded_pos ≤ rem−4 ≤ 11; load [11,27) ⊆ [0,32). ✓
+    if decoded + 4 <= n {
+        let mut padded = [0u8; 32];
+        let rem = data_bytes.len() - data_pos;
+        padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
+        let mut padded_pos = 0usize;
+
+        while decoded + 4 <= n {
+            let cb = ctrl[ctrl_pos];
+            let result = unsafe {
+                // SAFETY: padded is 32 bytes; padded_pos ≤ rem−4 ≤ 11;
+                // load [padded_pos, padded_pos+16) ⊆ [0, 27) ⊆ [0, 32).
+                let mask = vld1q_u8(TABLE[cb as usize].as_ptr());
+                let chunk = vld1q_u8(padded.as_ptr().add(padded_pos));
+                vqtbl1q_u8(chunk, mask)
+            };
+            unsafe {
+                // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
+                let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut u8;
+                vst1q_u8(out_ptr, result);
+            }
+            let consumed = DATA_LEN[cb as usize] as usize;
+            padded_pos += consumed;
+            data_pos += consumed;
+            ctrl_pos += 1;
+            decoded += 4;
+        }
+        unsafe { out.set_len(base + decoded); }
+    }
+
+    // Scalar for n % 4 remainder (0–3 values).
     if decoded < n {
         super::scalar::decode_classic_from_raw(
             &ctrl[ctrl_pos..],
@@ -371,6 +402,38 @@ pub(super) unsafe fn decode_into_0124(
         out.set_len(base + decoded);
     }
 
+    // Padded tail: guard fired (rem < 16) but complete groups of 4 may remain.
+    // For 0124 DATA_LEN can be 0; padded_pos ≤ rem ≤ 15; load [15,31) ⊆ [0,32). ✓
+    if decoded + 4 <= n {
+        let mut padded = [0u8; 32];
+        let rem = data_bytes.len() - data_pos;
+        padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
+        let mut padded_pos = 0usize;
+
+        while decoded + 4 <= n {
+            let cb = ctrl[ctrl_pos];
+            let result = unsafe {
+                // SAFETY: padded is 32 bytes; padded_pos ≤ rem ≤ 15;
+                // load [padded_pos, padded_pos+16) ⊆ [0, 31) ⊆ [0, 32).
+                let mask = vld1q_u8(TABLE_0124[cb as usize].as_ptr());
+                let chunk = vld1q_u8(padded.as_ptr().add(padded_pos));
+                vqtbl1q_u8(chunk, mask)
+            };
+            unsafe {
+                // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
+                let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut u8;
+                vst1q_u8(out_ptr, result);
+            }
+            let consumed = DATA_LEN_0124[cb as usize] as usize;
+            padded_pos += consumed;
+            data_pos += consumed;
+            ctrl_pos += 1;
+            decoded += 4;
+        }
+        unsafe { out.set_len(base + decoded); }
+    }
+
+    // Scalar for n % 4 remainder (0–3 values).
     if decoded < n {
         super::scalar::decode_0124_from_raw(
             &ctrl[ctrl_pos..],

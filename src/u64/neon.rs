@@ -316,6 +316,41 @@ pub(super) unsafe fn decode_into_1234(
         out.set_len(base + decoded);
     }
 
+    // Padded tail: guard fired (rem < 16) but complete groups of 4 may remain.
+    // DATA_LEN_1234 ≥ 4; padded_pos ≤ rem−4 ≤ 11; load [11,27) ⊆ [0,32). ✓
+    if decoded + 4 <= n {
+        let mut padded = [0u8; 32];
+        let rem = data_bytes.len() - data_pos;
+        padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
+        let mut padded_pos = 0usize;
+
+        while decoded + 4 <= n {
+            let cb = ctrl[ctrl_pos];
+            let u32s = unsafe {
+                // SAFETY: padded is 32 bytes; padded_pos ≤ rem−4 ≤ 11;
+                // load [padded_pos, padded_pos+16) ⊆ [0, 27) ⊆ [0, 32).
+                let mask = vld1q_u8(TABLE_1234[cb as usize].as_ptr());
+                let chunk = vld1q_u8(padded.as_ptr().add(padded_pos));
+                vreinterpretq_u32_u8(vqtbl1q_u8(chunk, mask))
+            };
+            let lo = vmovl_u32(vget_low_u32(u32s));
+            let hi = vmovl_high_u32(u32s);
+            unsafe {
+                // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
+                let out_ptr = out.as_mut_ptr().add(base + decoded);
+                vst1q_u64(out_ptr, lo);
+                vst1q_u64(out_ptr.add(2), hi);
+            }
+            let consumed = DATA_LEN_1234[cb as usize] as usize;
+            padded_pos += consumed;
+            data_pos += consumed;
+            ctrl_pos += 1;
+            decoded += 4;
+        }
+        unsafe { out.set_len(base + decoded); }
+    }
+
+    // Scalar for n % 4 remainder (0–3 values).
     if decoded < n {
         super::scalar::decode_1234_from_raw(
             &ctrl[ctrl_pos..],
@@ -371,20 +406,20 @@ pub(super) unsafe fn decode_into_1248(
         let hi_key = (cb >> 4) as usize;
         let lo_bytes = DATA_LEN_1248_PAIR[lo_key] as usize;
 
-        // Worst case: lo pair is 8+8=16 bytes, hi pair is 8+8=16 bytes → 32 total.
-        if data_pos + 32 > data_bytes.len() {
+        // The hi load starts at data_pos + lo_bytes and reads 16 bytes.
+        if data_pos + lo_bytes + 16 > data_bytes.len() {
             break;
         }
 
         let (lo_pair, hi_pair) = unsafe {
             // SAFETY: TABLE_1248_PAIR indices are < 16 (4-bit keys).
             let mask_lo = vld1q_u8(TABLE_1248_PAIR[lo_key].as_ptr());
-            // SAFETY: data_pos + 32 <= data_bytes.len() checked above; lo_bytes <= 16.
+            // SAFETY: data_pos + lo_bytes + 16 <= data_bytes.len() checked above;
+            // lo load: data_pos + 16 ≤ data_pos + lo_bytes + 16 (lo_bytes ≥ 0).
             let chunk_lo = vld1q_u8(data_bytes.as_ptr().add(data_pos));
             let lo = vqtbl1q_u8(chunk_lo, mask_lo);
 
             let mask_hi = vld1q_u8(TABLE_1248_PAIR[hi_key].as_ptr());
-            // SAFETY: data_pos + lo_bytes + 16 <= data_pos + 16 + 16 <= data_pos + 32.
             let chunk_hi = vld1q_u8(data_bytes.as_ptr().add(data_pos + lo_bytes));
             let hi = vqtbl1q_u8(chunk_hi, mask_hi);
 
@@ -408,6 +443,47 @@ pub(super) unsafe fn decode_into_1248(
         out.set_len(base + decoded);
     }
 
+    // Padded tail: guard fired (rem < lo_bytes+16 ≤ 32) but groups of 4 may remain.
+    // At hi load: padded_pos+lo_bytes ≤ rem−hi_bytes ≤ 29; [29,45) ⊆ [0,64). ✓
+    if decoded + 4 <= n {
+        let mut padded = [0u8; 64];
+        let rem = data_bytes.len() - data_pos;
+        padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
+        let mut padded_pos = 0usize;
+
+        while decoded + 4 <= n {
+            let cb = ctrl[ctrl_pos];
+            let lo_key = (cb & 0x0F) as usize;
+            let hi_key = (cb >> 4) as usize;
+            let lo_bytes = DATA_LEN_1248_PAIR[lo_key] as usize;
+            let (lo_pair, hi_pair) = unsafe {
+                // SAFETY: padded is 64 bytes; padded_pos+lo_bytes ≤ rem−hi_bytes ≤ 29;
+                // lo load [padded_pos, padded_pos+16) ⊆ [0,46) ⊆ [0,64);
+                // hi load [padded_pos+lo_bytes, padded_pos+lo_bytes+16) ⊆ [0,45) ⊆ [0,64).
+                let mask_lo = vld1q_u8(TABLE_1248_PAIR[lo_key].as_ptr());
+                let chunk_lo = vld1q_u8(padded.as_ptr().add(padded_pos));
+                let lo = vqtbl1q_u8(chunk_lo, mask_lo);
+                let mask_hi = vld1q_u8(TABLE_1248_PAIR[hi_key].as_ptr());
+                let chunk_hi = vld1q_u8(padded.as_ptr().add(padded_pos + lo_bytes));
+                let hi = vqtbl1q_u8(chunk_hi, mask_hi);
+                (lo, hi)
+            };
+            unsafe {
+                // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
+                let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut u8;
+                vst1q_u8(out_ptr, lo_pair);
+                vst1q_u8(out_ptr.add(16), hi_pair);
+            }
+            let consumed = lo_bytes + DATA_LEN_1248_PAIR[hi_key] as usize;
+            padded_pos += consumed;
+            data_pos += consumed;
+            ctrl_pos += 1;
+            decoded += 4;
+        }
+        unsafe { out.set_len(base + decoded); }
+    }
+
+    // Scalar for n % 4 remainder (0–3 values).
     if decoded < n {
         super::scalar::decode_1248_from_raw(
             &ctrl[ctrl_pos..],

@@ -167,6 +167,38 @@ pub(super) unsafe fn decode_into(
         out.set_len(base + decoded);
     }
 
+    // Padded tail: guard fired (rem < 16) but complete groups of 8 may remain.
+    // bytes_consumed ∈ [8,16]; padded_pos ≤ rem−8 ≤ 7; load [7,23) ⊆ [0,32). ✓
+    if decoded + 8 <= n {
+        let mut padded = [0u8; 32];
+        let rem = data_bytes.len() - data_pos;
+        padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
+        let mut padded_pos = 0usize;
+
+        while decoded + 8 <= n {
+            let cb = ctrl[ctrl_pos];
+            let result = unsafe {
+                // SAFETY: padded is 32 bytes; padded_pos ≤ rem−8 ≤ 7;
+                // load [padded_pos, padded_pos+16) ⊆ [0, 23) ⊆ [0, 32).
+                let mask = vld1q_u8(TABLE[cb as usize].as_ptr());
+                let chunk = vld1q_u8(padded.as_ptr().add(padded_pos));
+                vqtbl1q_u8(chunk, mask)
+            };
+            unsafe {
+                // SAFETY: out.reserve(n) ensures capacity; decoded + 8 <= n.
+                let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut u8;
+                vst1q_u8(out_ptr, result);
+            }
+            let consumed = 8 + cb.count_ones() as usize;
+            padded_pos += consumed;
+            data_pos += consumed;
+            ctrl_pos += 1;
+            decoded += 8;
+        }
+        unsafe { out.set_len(base + decoded); }
+    }
+
+    // Scalar for n % 8 remainder (0–7 values).
     if decoded < n {
         super::scalar::decode_from_raw(
             &ctrl[ctrl_pos..],
