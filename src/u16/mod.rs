@@ -3,6 +3,17 @@
 //! Each value is stored in 1 byte if it fits in `0..=255`, or 2 bytes otherwise.
 //! One control bit per value is packed into a prefix control stream.
 //! The encoding is wire-compatible with Oxford Nanopore's VBZ format.
+//!
+//! # Format
+//!
+//! ```text
+//! [ ctrl_0 | ctrl_1 | … | ctrl_{ceil(n/8)-1} | data bytes … ]
+//! ```
+//!
+//! The control stream occupies `ceil(n / 8)` bytes and precedes the data stream.
+//! Within each control byte, bit `k` (LSB = bit 0) corresponds to the `k`-th
+//! value in that group of eight: `0` = 1-byte value, `1` = 2-byte value.
+//! Data bytes follow in the same order as the values, with no padding between them.
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -172,8 +183,9 @@ impl Svb16 {
 
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u16>`.
     ///
-    /// `n` must equal the number of values that were originally encoded; a wrong
-    /// value will produce incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of values that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u16>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode(data, n, &mut out)?;
@@ -182,8 +194,9 @@ impl Svb16 {
 
     /// Decode exactly `n` values from `data`, appending them to `out`.
     ///
-    /// `n` must equal the number of values that were originally encoded; a wrong
-    /// value will produce incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of values that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode_into(
         &self,
         data: &[u8],

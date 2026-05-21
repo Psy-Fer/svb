@@ -21,7 +21,7 @@ mod private {
 /// Marker trait for types that support delta encoding and decoding.
 ///
 /// This trait is sealed; it cannot be implemented outside this crate.
-/// Implemented for `i16`, `i32`, `i64`, `u32`, and `u64`.
+/// Implemented for `i16`, `u16`, `i32`, `u32`, `i64`, and `u64`.
 ///
 /// Choose the concrete type based on your data:
 /// - Use `i16`, `i32`, or `i64` when the sequence is non-monotone and you
@@ -103,6 +103,58 @@ fn decode_into_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
     {
         // SAFETY: NEON is mandatory on AArch64.
         unsafe { decode_neon_i16(initial, deltas, out) };
+    }
+    // Scalar fallback: only compiled when no SIMD path covers this target.
+    #[cfg(not(any(
+        all(any(feature = "simd-avx2", feature = "simd-ssse3"), target_arch = "x86_64"),
+        all(feature = "simd-neon", target_arch = "aarch64"),
+        all(feature = "simd-auto", not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")), any(target_arch = "x86_64", target_arch = "aarch64"))
+    )))]
+    decode_scalar(initial, deltas, out);
+}
+
+// ── u16 ──────────────────────────────────────────────────────────────────────
+
+impl private::Sealed for u16 {}
+impl Delta for u16 {
+    fn __sub(self, rhs: Self) -> Self { self.wrapping_sub(rhs) }
+    fn __add(self, rhs: Self) -> Self { self.wrapping_add(rhs) }
+    fn __decode_into(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
+        decode_into_u16(initial, deltas, out);
+    }
+}
+
+fn decode_into_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
+    #[cfg(all(
+        any(feature = "simd-avx2", feature = "simd-ssse3"),
+        target_arch = "x86_64"
+    ))]
+    {
+        // SAFETY: SSE2 is always available on x86_64.
+        unsafe { decode_sse2_u16(initial, deltas, out) };
+    }
+    #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
+    {
+        // SAFETY: NEON is mandatory on AArch64.
+        unsafe { decode_neon_u16(initial, deltas, out) };
+    }
+    #[cfg(all(
+        feature = "simd-auto",
+        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
+        target_arch = "x86_64"
+    ))]
+    {
+        // SAFETY: SSE2 is always available on x86_64.
+        unsafe { decode_sse2_u16(initial, deltas, out) };
+    }
+    #[cfg(all(
+        feature = "simd-auto",
+        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
+        target_arch = "aarch64"
+    ))]
+    {
+        // SAFETY: NEON is mandatory on AArch64.
+        unsafe { decode_neon_u16(initial, deltas, out) };
     }
     // Scalar fallback: only compiled when no SIMD path covers this target.
     #[cfg(not(any(
@@ -584,6 +636,18 @@ unsafe fn decode_sse2_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
     unsafe { decode_sse2_i32(initial as i32, deltas_i32, out_i32) };
 }
 
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+unsafe fn decode_sse2_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
+    // Wrapping add is identical for i16 and u16 at the bit level.
+    // SAFETY: u16 and i16 have the same size/alignment; wrapping arithmetic is identical.
+    let deltas_i16 = unsafe {
+        core::slice::from_raw_parts(deltas.as_ptr() as *const i16, deltas.len())
+    };
+    let out_i16 = unsafe { &mut *(out as *mut Vec<u16> as *mut Vec<i16>) };
+    unsafe { decode_sse2_i16(initial as i16, deltas_i16, out_i16) };
+}
+
 // SSE2 prefix-sum delta decode for i64: 2 values per iteration.
 //
 // One-step scan:
@@ -909,6 +973,18 @@ unsafe fn decode_neon_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
         acc = acc.wrapping_add(d);
         out.push(acc);
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
+unsafe fn decode_neon_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
+    // Wrapping add is identical for i16 and u16 at the bit level.
+    // SAFETY: u16 and i16 have the same size/alignment; wrapping arithmetic is identical.
+    let deltas_i16 = unsafe {
+        core::slice::from_raw_parts(deltas.as_ptr() as *const i16, deltas.len())
+    };
+    let out_i16 = unsafe { &mut *(out as *mut Vec<u16> as *mut Vec<i16>) };
+    unsafe { decode_neon_i16(initial as i16, deltas_i16, out_i16) };
 }
 
 // NEON prefix-sum delta decode for i32: 4 values per iteration.
@@ -1899,6 +1975,35 @@ mod tests {
         let mut out = vec![99i16];
         encode_into(&[3i16, 6, 9], &mut out);
         assert_eq!(out, [99, 3, 3, 3]);
+    }
+
+    // ── u16 roundtrip ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn u16_roundtrip_sorted() {
+        let values: Vec<u16> = vec![100, 200, 350, 700, 1000];
+        assert_eq!(decode(&encode(&values)), values);
+    }
+
+    #[test]
+    fn u16_roundtrip_wrapping() {
+        let values: Vec<u16> = vec![10, 5, u16::MAX, 0];
+        assert_eq!(decode(&encode(&values)), values);
+    }
+
+    #[test]
+    fn u16_encode_produces_differences() {
+        let values: Vec<u16> = vec![100u16, 200, 350];
+        let deltas = encode(&values);
+        assert_eq!(deltas, [100u16, 100, 150]);
+    }
+
+    #[test]
+    fn u16_encode_with_initial() {
+        let values: Vec<u16> = vec![200u16, 300, 500];
+        let deltas = encode_with_initial(100u16, &values);
+        assert_eq!(deltas, [100u16, 100, 200]);
+        assert_eq!(decode_with_initial(100u16, &deltas), values);
     }
 
     // ── u32 roundtrip ─────────────────────────────────────────────────────────

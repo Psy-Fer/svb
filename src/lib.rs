@@ -90,8 +90,9 @@ mod vbz {
 
     /// Decode exactly `n` `i16` samples from SVB16 bytes (after zstd decompression).
     ///
-    /// `n` must equal the number of samples that were originally encoded; passing a
-    /// wrong value produces incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of samples that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode_vbz(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         decode_vbz_into(data, n, &mut out)?;
@@ -100,8 +101,9 @@ mod vbz {
 
     /// Decode exactly `n` `i16` samples from SVB16 bytes, appending them to `out`.
     ///
-    /// `n` must equal the number of samples that were originally encoded; passing a
-    /// wrong value produces incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of samples that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode_vbz_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
         let codes = Svb16.decode(data, n)?;
         let deltas = zigzag::decode(&codes);

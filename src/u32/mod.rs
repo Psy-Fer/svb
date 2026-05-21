@@ -6,6 +6,28 @@
 //!   Lemire's reference C library and the original StreamVByte paper.
 //! - [`U32Variant0124`]: tag encodes 0/1/2/4 data bytes; zero values consume
 //!   no data bytes, making this more compact for sparse (mostly-zero) input.
+//!
+//! # Format
+//!
+//! ```text
+//! [ ctrl_0 | ctrl_1 | … | ctrl_{ceil(n/4)-1} | data bytes … ]
+//! ```
+//!
+//! The control stream occupies `ceil(n / 4)` bytes and precedes the data stream.
+//! Within each control byte, two bits `[2k+1 : 2k]` encode the tag for the
+//! `k`-th value in that group of four (bits 1:0 = value 0, bits 3:2 = value 1,
+//! bits 5:4 = value 2, bits 7:6 = value 3).
+//!
+//! Tag encoding:
+//!
+//! | Tag | Classic bytes | Variant0124 bytes |
+//! |-----|--------------|-------------------|
+//! | 0   | 1            | 0 (value is zero) |
+//! | 1   | 2            | 1                 |
+//! | 2   | 3            | 2                 |
+//! | 3   | 4            | 4                 |
+//!
+//! Data bytes follow in the same order as the values, with no padding between them.
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -157,8 +179,9 @@ impl U32Classic {
 
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u32>`.
     ///
-    /// `n` must equal the number of values that were originally encoded; a wrong
-    /// value will produce incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of values that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_classic(data, n, &mut out)?;
@@ -167,8 +190,9 @@ impl U32Classic {
 
     /// Decode exactly `n` values from `data`, appending them to `out`.
     ///
-    /// `n` must equal the number of values that were originally encoded; a wrong
-    /// value will produce incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of values that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode_into(
         &self,
         data: &[u8],
@@ -328,8 +352,9 @@ impl U32Variant0124 {
 
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u32>`.
     ///
-    /// `n` must equal the number of values that were originally encoded; a wrong
-    /// value will produce incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of values that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_0124(data, n, &mut out)?;
@@ -338,8 +363,9 @@ impl U32Variant0124 {
 
     /// Decode exactly `n` values from `data`, appending them to `out`.
     ///
-    /// `n` must equal the number of values that were originally encoded; a wrong
-    /// value will produce incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of values that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode_into(
         &self,
         data: &[u8],

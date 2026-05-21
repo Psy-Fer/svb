@@ -9,6 +9,28 @@
 //! - [`U64Coder1248`]: tag encodes 1/2/4/8 data bytes per value, covering
 //!   the full `u64` range at the cost of a 4-byte gap (values in
 //!   `0x10000..=0xFFFFFFFF` use 4 bytes rather than 3).
+//!
+//! # Format
+//!
+//! ```text
+//! [ ctrl_0 | ctrl_1 | … | ctrl_{ceil(n/4)-1} | data bytes … ]
+//! ```
+//!
+//! The control stream occupies `ceil(n / 4)` bytes and precedes the data stream.
+//! Within each control byte, two bits `[2k+1 : 2k]` encode the tag for the
+//! `k`-th value in that group of four (bits 1:0 = value 0, bits 3:2 = value 1,
+//! bits 5:4 = value 2, bits 7:6 = value 3).
+//!
+//! Tag encoding:
+//!
+//! | Tag | Coder1234 bytes | Coder1248 bytes |
+//! |-----|-----------------|-----------------|
+//! | 0   | 1               | 1               |
+//! | 1   | 2               | 2               |
+//! | 2   | 3               | 4               |
+//! | 3   | 4               | 8               |
+//!
+//! Data bytes follow in the same order as the values, with no padding between them.
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -142,6 +164,8 @@ fn dispatch_decode_1234(data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(),
 /// ```
 /// # use svb::u64::U64Coder1234;
 /// let values: Vec<u64> = vec![1, 256, 65536, u32::MAX as u64];
+/// // Guard against silent truncation before encoding.
+/// assert_eq!(U64Coder1234.check_range(&values), None);
 /// let encoded = U64Coder1234.encode(&values);
 /// let decoded = U64Coder1234.decode(&encoded, values.len()).unwrap();
 /// assert_eq!(decoded, values);
@@ -160,6 +184,12 @@ impl U64Coder1234 {
     }
 
     /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
+    ///
+    /// # Warning
+    ///
+    /// Values that exceed `u32::MAX` are silently truncated. Call
+    /// [`check_range`](U64Coder1234::check_range) first if the input may contain
+    /// values outside `0..=u32::MAX`.
     pub fn encode(&self, values: &[u64]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode_1234(values, &mut out);
@@ -167,14 +197,21 @@ impl U64Coder1234 {
     }
 
     /// Encode `values`, appending the encoded bytes to `out`.
+    ///
+    /// # Warning
+    ///
+    /// Values that exceed `u32::MAX` are silently truncated. Call
+    /// [`check_range`](U64Coder1234::check_range) first if the input may contain
+    /// values outside `0..=u32::MAX`.
     pub fn encode_into(&self, values: &[u64], out: &mut Vec<u8>) {
         dispatch_encode_1234(values, out);
     }
 
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u64>`.
     ///
-    /// `n` must equal the number of values that were originally encoded; a wrong
-    /// value will produce incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of values that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u64>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_1234(data, n, &mut out)?;
@@ -183,8 +220,9 @@ impl U64Coder1234 {
 
     /// Decode exactly `n` values from `data`, appending them to `out`.
     ///
-    /// `n` must equal the number of values that were originally encoded; a wrong
-    /// value will produce incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of values that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode_into(
         &self,
         data: &[u8],
@@ -344,8 +382,9 @@ impl U64Coder1248 {
 
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u64>`.
     ///
-    /// `n` must equal the number of values that were originally encoded; a wrong
-    /// value will produce incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of values that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u64>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_1248(data, n, &mut out)?;
@@ -354,8 +393,9 @@ impl U64Coder1248 {
 
     /// Decode exactly `n` values from `data`, appending them to `out`.
     ///
-    /// `n` must equal the number of values that were originally encoded; a wrong
-    /// value will produce incorrect output or a [`DecodeError`].
+    /// `n` must equal the number of values that were originally encoded (`n` is
+    /// not stored in the encoded bytes and cannot be inferred); a wrong value
+    /// produces incorrect output or a [`DecodeError`].
     pub fn decode_into(
         &self,
         data: &[u8],

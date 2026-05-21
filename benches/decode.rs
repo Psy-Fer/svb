@@ -172,6 +172,18 @@ fn bench_u32_classic_decode(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_u32_variant0124_encode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("u32_variant0124/encode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (values, _) = u32_0124_data(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &values, |b, v| {
+            b.iter(|| U32Variant0124.encode(v));
+        });
+    }
+    g.finish();
+}
+
 fn bench_u32_variant0124_decode(c: &mut Criterion) {
     let mut g = c.benchmark_group("u32_variant0124/decode");
     for &n in SIZES {
@@ -186,6 +198,18 @@ fn bench_u32_variant0124_decode(c: &mut Criterion) {
 
 // ── U64 ───────────────────────────────────────────────────────────────────────
 
+fn bench_u64_coder1234_encode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("u64_coder1234/encode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (values, _) = u64_1234_data(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &values, |b, v| {
+            b.iter(|| U64Coder1234.encode(v));
+        });
+    }
+    g.finish();
+}
+
 fn bench_u64_coder1234_decode(c: &mut Criterion) {
     let mut g = c.benchmark_group("u64_coder1234/decode");
     for &n in SIZES {
@@ -193,6 +217,18 @@ fn bench_u64_coder1234_decode(c: &mut Criterion) {
         let (_, enc) = u64_1234_data(n);
         g.bench_with_input(BenchmarkId::from_parameter(n), &(enc, n), |b, (enc, n)| {
             b.iter(|| U64Coder1234.decode(enc, *n).unwrap());
+        });
+    }
+    g.finish();
+}
+
+fn bench_u64_coder1248_encode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("u64_coder1248/encode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (values, _) = u64_1248_data(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &values, |b, v| {
+            b.iter(|| U64Coder1248.encode(v));
         });
     }
     g.finish();
@@ -447,9 +483,12 @@ criterion_group!(
     bench_u32_classic_encode,
     bench_u32_classic_decode,
     bench_u32_classic_decode_into,
+    bench_u32_variant0124_encode,
     bench_u32_variant0124_decode,
     bench_u32_variant0124_decode_into,
+    bench_u64_coder1234_encode,
     bench_u64_coder1234_decode,
+    bench_u64_coder1248_encode,
     bench_u64_coder1248_decode,
     bench_compare_u32_classic_encode,
     bench_compare_u32_classic_decode,

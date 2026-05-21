@@ -34,3 +34,45 @@ path = "fuzz_targets/roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "u32_classic_decode"
+path = "fuzz_targets/u32_classic_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "u32_variant0124_decode"
+path = "fuzz_targets/u32_variant0124_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "u64_coder1234_decode"
+path = "fuzz_targets/u64_coder1234_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "u64_coder1248_decode"
+path = "fuzz_targets/u64_coder1248_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "u32_roundtrip"
+path = "fuzz_targets/u32_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "u64_roundtrip"
+path = "fuzz_targets/u64_roundtrip.rs"
+test = false
+doc = false
+bench = false
