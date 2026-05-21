@@ -8,7 +8,6 @@ src = "src"
 [output.html]
 site-url = "/svb/"
 git-repository-url = "https://github.com/Psy-Fer/svb"
-git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/Psy-Fer/svb/edit/main/docs/src/{path}"
 no-section-label = true
 
