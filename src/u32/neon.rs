@@ -15,7 +15,9 @@ use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
-use super::shuffle::{DATA_LEN, DATA_LEN_0124, ENCODE_TABLE_0124, ENCODE_TABLE_CLASSIC, TABLE, TABLE_0124};
+use super::shuffle::{
+    DATA_LEN, DATA_LEN_0124, ENCODE_TABLE_0124, ENCODE_TABLE_CLASSIC, TABLE, TABLE_0124,
+};
 use crate::error::DecodeError;
 
 /// Encode `values` into U32Classic format using NEON `vqtbl1q_u8`.
@@ -319,7 +321,9 @@ pub(super) unsafe fn decode_into_classic(
             ctrl_pos += 1;
             decoded += 4;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 4 remainder (0–3 values).
@@ -430,7 +434,9 @@ pub(super) unsafe fn decode_into_0124(
             ctrl_pos += 1;
             decoded += 4;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 4 remainder (0–3 values).

@@ -38,26 +38,32 @@ use crate::error::DecodeError;
 
 mod scalar;
 
+#[cfg(target_arch = "x86_64")]
+mod avx2;
+#[cfg(target_arch = "aarch64")]
+mod neon;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod shuffle;
 #[cfg(target_arch = "x86_64")]
-mod avx2;
-#[cfg(target_arch = "x86_64")]
 mod sse2;
-#[cfg(target_arch = "aarch64")]
-mod neon;
 
 // ── U32Classic ────────────────────────────────────────────────────────────────
 
 impl_dispatch_encode!(
-    dispatch_encode_classic, u32,
-    avx2::encode_into_classic, sse2::encode_into_classic,
-    neon::encode_into_classic, scalar::encode_into_classic
+    dispatch_encode_classic,
+    u32,
+    avx2::encode_into_classic,
+    sse2::encode_into_classic,
+    neon::encode_into_classic,
+    scalar::encode_into_classic
 );
 impl_dispatch_decode!(
-    dispatch_decode_classic, u32,
-    avx2::decode_into_classic, sse2::decode_into_classic,
-    neon::decode_into_classic, scalar::decode_into_classic
+    dispatch_decode_classic,
+    u32,
+    avx2::decode_into_classic,
+    sse2::decode_into_classic,
+    neon::decode_into_classic,
+    scalar::decode_into_classic
 );
 
 /// StreamVByte codec for `u32` values using 2-bit tags encoding 1, 2, 3, or 4 data bytes per value.
@@ -181,14 +187,20 @@ impl crate::coder::Coder for U32Classic {
 // ── U32Variant0124 ────────────────────────────────────────────────────────────
 
 impl_dispatch_encode!(
-    dispatch_encode_0124, u32,
-    avx2::encode_into_0124, sse2::encode_into_0124,
-    neon::encode_into_0124, scalar::encode_into_0124
+    dispatch_encode_0124,
+    u32,
+    avx2::encode_into_0124,
+    sse2::encode_into_0124,
+    neon::encode_into_0124,
+    scalar::encode_into_0124
 );
 impl_dispatch_decode!(
-    dispatch_decode_0124, u32,
-    avx2::decode_into_0124, sse2::decode_into_0124,
-    neon::decode_into_0124, scalar::decode_into_0124
+    dispatch_decode_0124,
+    u32,
+    avx2::decode_into_0124,
+    sse2::decode_into_0124,
+    neon::decode_into_0124,
+    scalar::decode_into_0124
 );
 
 /// StreamVByte codec for `u32` values using 2-bit tags encoding 0, 1, 2, or 4 data bytes per value.

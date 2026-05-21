@@ -69,8 +69,7 @@ pub(super) unsafe fn encode_into(values: &[u16], out: &mut Vec<u8>) {
 
             // Shuffle input bytes into packed output order, then store 16 bytes.
             // SAFETY: ENCODE_TABLE[ctrl] is 16 bytes; ctrl < 256 (u8).
-            let mask =
-                _mm_loadu_si128(ENCODE_TABLE[ctrl as usize].as_ptr() as *const __m128i);
+            let mask = _mm_loadu_si128(ENCODE_TABLE[ctrl as usize].as_ptr() as *const __m128i);
             let packed = _mm_shuffle_epi8(v, mask);
             // SAFETY: data_start + data_pos + 16 <= data_start + 2*n + 16 <= out.capacity().
             _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed);
@@ -199,7 +198,9 @@ pub(super) unsafe fn decode_into(
             ctrl_pos += 1;
             decoded += 8;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 8 remainder (0–7 values).

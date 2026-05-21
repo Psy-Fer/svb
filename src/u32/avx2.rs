@@ -15,7 +15,9 @@ use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
-use super::shuffle::{DATA_LEN, DATA_LEN_0124, ENCODE_TABLE_0124, ENCODE_TABLE_CLASSIC, TABLE, TABLE_0124};
+use super::shuffle::{
+    DATA_LEN, DATA_LEN_0124, ENCODE_TABLE_0124, ENCODE_TABLE_CLASSIC, TABLE, TABLE_0124,
+};
 use crate::error::DecodeError;
 
 /// Encode `values` into U32Classic format using AVX2.
@@ -107,7 +109,10 @@ pub(super) unsafe fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
                 _mm_loadu_si128(ENCODE_TABLE_CLASSIC[c0 as usize].as_ptr() as *const __m128i);
             let packed_lo = _mm_shuffle_epi8(v_lo, enc_mask_lo);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_lo);
+            _mm_storeu_si128(
+                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                packed_lo,
+            );
             data_pos += DATA_LEN[c0 as usize] as usize;
 
             // Pack upper 4 values.
@@ -116,7 +121,10 @@ pub(super) unsafe fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
                 _mm_loadu_si128(ENCODE_TABLE_CLASSIC[c1b as usize].as_ptr() as *const __m128i);
             let packed_hi = _mm_shuffle_epi8(v_hi, enc_mask_hi);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_hi);
+            _mm_storeu_si128(
+                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                packed_hi,
+            );
             data_pos += DATA_LEN[c1b as usize] as usize;
         }
 
@@ -229,7 +237,10 @@ pub(super) unsafe fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
                 _mm_loadu_si128(ENCODE_TABLE_0124[c0 as usize].as_ptr() as *const __m128i);
             let packed_lo = _mm_shuffle_epi8(v_lo, enc_mask_lo);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_lo);
+            _mm_storeu_si128(
+                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                packed_lo,
+            );
             data_pos += DATA_LEN_0124[c0 as usize] as usize;
 
             let v_hi = _mm256_extracti128_si256(v, 1);
@@ -237,7 +248,10 @@ pub(super) unsafe fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
                 _mm_loadu_si128(ENCODE_TABLE_0124[c1b as usize].as_ptr() as *const __m128i);
             let packed_hi = _mm_shuffle_epi8(v_hi, enc_mask_hi);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_hi);
+            _mm_storeu_si128(
+                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                packed_hi,
+            );
             data_pos += DATA_LEN_0124[c1b as usize] as usize;
         }
 
@@ -377,7 +391,9 @@ pub(super) unsafe fn decode_into_classic(
             ctrl_pos += 1;
             decoded += 4;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 4 remainder (0–3 values that don't fill a complete group).
@@ -507,7 +523,9 @@ pub(super) unsafe fn decode_into_0124(
             ctrl_pos += 1;
             decoded += 4;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 4 remainder (0–3 values).

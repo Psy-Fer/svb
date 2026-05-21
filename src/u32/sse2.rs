@@ -11,7 +11,9 @@ use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
-use super::shuffle::{DATA_LEN, DATA_LEN_0124, ENCODE_TABLE_0124, ENCODE_TABLE_CLASSIC, TABLE, TABLE_0124};
+use super::shuffle::{
+    DATA_LEN, DATA_LEN_0124, ENCODE_TABLE_0124, ENCODE_TABLE_CLASSIC, TABLE, TABLE_0124,
+};
 use crate::error::DecodeError;
 
 /// Encode `values` into U32Classic format using SSSE3 `PSHUFB`.
@@ -87,10 +89,9 @@ pub(super) unsafe fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
         // Extract as u32: bits 0..7=tag0, 8..15=tag1, 16..23=tag2, 24..31=tag3.
         let tags = _mm_cvtsi128_si32(tag_bytes) as u32;
         // Bit-pack to ctrl byte: tag_i occupies bits 2*i .. 2*i+1.
-        let ctrl = ((tags & 0x3)
-            | ((tags >> 6) & 0x0C)
-            | ((tags >> 12) & 0x30)
-            | ((tags >> 18) & 0xC0)) as u8;
+        let ctrl =
+            ((tags & 0x3) | ((tags >> 6) & 0x0C) | ((tags >> 12) & 0x30) | ((tags >> 18) & 0xC0))
+                as u8;
 
         unsafe {
             // SAFETY: ctrl_start + block < ctrl_start + ctrl_len <= out.len().
@@ -195,10 +196,9 @@ pub(super) unsafe fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
             _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 8, 4, 0),
         );
         let tags = _mm_cvtsi128_si32(tag_bytes) as u32;
-        let ctrl = ((tags & 0x3)
-            | ((tags >> 6) & 0x0C)
-            | ((tags >> 12) & 0x30)
-            | ((tags >> 18) & 0xC0)) as u8;
+        let ctrl =
+            ((tags & 0x3) | ((tags >> 6) & 0x0C) | ((tags >> 12) & 0x30) | ((tags >> 18) & 0xC0))
+                as u8;
 
         unsafe {
             // SAFETY: ctrl_start + block < ctrl_start + ctrl_len <= out.len().
@@ -342,7 +342,9 @@ pub(super) unsafe fn decode_into_classic(
             ctrl_pos += 1;
             decoded += 4;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 4 remainder (0–3 values).
@@ -453,7 +455,9 @@ pub(super) unsafe fn decode_into_0124(
             ctrl_pos += 1;
             decoded += 4;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 4 remainder (0–3 values).

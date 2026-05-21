@@ -111,7 +111,10 @@ pub(super) unsafe fn encode_into_1234(values: &[u64], out: &mut Vec<u8>) {
                 _mm_loadu_si128(ENCODE_TABLE_1234[c0 as usize].as_ptr() as *const __m128i);
             let packed_lo = _mm_shuffle_epi8(p0, enc_mask_lo);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_lo);
+            _mm_storeu_si128(
+                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                packed_lo,
+            );
             data_pos += DATA_LEN_1234[c0 as usize] as usize;
 
             // Pack second 4 values (hi half of v32_256).
@@ -119,7 +122,10 @@ pub(super) unsafe fn encode_into_1234(values: &[u64], out: &mut Vec<u8>) {
                 _mm_loadu_si128(ENCODE_TABLE_1234[c1b as usize].as_ptr() as *const __m128i);
             let packed_hi = _mm_shuffle_epi8(p1, enc_mask_hi);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_hi);
+            _mm_storeu_si128(
+                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                packed_hi,
+            );
             data_pos += DATA_LEN_1234[c1b as usize] as usize;
         }
 
@@ -220,40 +226,48 @@ pub(super) unsafe fn encode_into_1248(values: &[u64], out: &mut Vec<u8>) {
 
             // Pack pairs for ctrl byte c0.
             let pair_lo0 = _mm_loadu_si128(values.as_ptr().add(i) as *const __m128i);
-            let enc_mask_lo0 = _mm_loadu_si128(
-                ENCODE_TABLE_1248_PAIR[lo_key0].as_ptr() as *const __m128i,
-            );
+            let enc_mask_lo0 =
+                _mm_loadu_si128(ENCODE_TABLE_1248_PAIR[lo_key0].as_ptr() as *const __m128i);
             let packed_lo0 = _mm_shuffle_epi8(pair_lo0, enc_mask_lo0);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_lo0);
+            _mm_storeu_si128(
+                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                packed_lo0,
+            );
             data_pos += DATA_LEN_1248_PAIR[lo_key0] as usize;
 
             let pair_hi0 = _mm_loadu_si128(values.as_ptr().add(i + 2) as *const __m128i);
-            let enc_mask_hi0 = _mm_loadu_si128(
-                ENCODE_TABLE_1248_PAIR[hi_key0].as_ptr() as *const __m128i,
-            );
+            let enc_mask_hi0 =
+                _mm_loadu_si128(ENCODE_TABLE_1248_PAIR[hi_key0].as_ptr() as *const __m128i);
             let packed_hi0 = _mm_shuffle_epi8(pair_hi0, enc_mask_hi0);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_hi0);
+            _mm_storeu_si128(
+                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                packed_hi0,
+            );
             data_pos += DATA_LEN_1248_PAIR[hi_key0] as usize;
 
             // Pack pairs for ctrl byte c1.
             let pair_lo1 = _mm_loadu_si128(values.as_ptr().add(i + 4) as *const __m128i);
-            let enc_mask_lo1 = _mm_loadu_si128(
-                ENCODE_TABLE_1248_PAIR[lo_key1].as_ptr() as *const __m128i,
-            );
+            let enc_mask_lo1 =
+                _mm_loadu_si128(ENCODE_TABLE_1248_PAIR[lo_key1].as_ptr() as *const __m128i);
             let packed_lo1 = _mm_shuffle_epi8(pair_lo1, enc_mask_lo1);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_lo1);
+            _mm_storeu_si128(
+                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                packed_lo1,
+            );
             data_pos += DATA_LEN_1248_PAIR[lo_key1] as usize;
 
             let pair_hi1 = _mm_loadu_si128(values.as_ptr().add(i + 6) as *const __m128i);
-            let enc_mask_hi1 = _mm_loadu_si128(
-                ENCODE_TABLE_1248_PAIR[hi_key1].as_ptr() as *const __m128i,
-            );
+            let enc_mask_hi1 =
+                _mm_loadu_si128(ENCODE_TABLE_1248_PAIR[hi_key1].as_ptr() as *const __m128i);
             let packed_hi1 = _mm_shuffle_epi8(pair_hi1, enc_mask_hi1);
             // SAFETY: data_start + data_pos + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed_hi1);
+            _mm_storeu_si128(
+                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                packed_hi1,
+            );
             data_pos += DATA_LEN_1248_PAIR[hi_key1] as usize;
         }
 
@@ -335,14 +349,16 @@ pub(super) unsafe fn decode_into_1234(
             let mask_c1 = _mm_loadu_si128(TABLE_1234[c1 as usize].as_ptr() as *const __m128i);
             // SAFETY: data_pos + c0_bytes + 16 <= data_bytes.len() checked above;
             // c0 load: data_pos + 16 ≤ data_pos + c0_bytes + 16 (c0_bytes ≥ 1).
-            let chunk_c0 =
-                _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
+            let chunk_c0 = _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
             let chunk_c1 =
                 _mm_loadu_si128(data_bytes.as_ptr().add(data_pos + c0_bytes) as *const __m128i);
             let u32s_c0 = _mm_shuffle_epi8(chunk_c0, mask_c0);
             let u32s_c1 = _mm_shuffle_epi8(chunk_c1, mask_c1);
             // _mm256_cvtepu32_epi64: 4 u32 → 4 u64 (zero-extend), requires AVX2.
-            (_mm256_cvtepu32_epi64(u32s_c0), _mm256_cvtepu32_epi64(u32s_c1))
+            (
+                _mm256_cvtepu32_epi64(u32s_c0),
+                _mm256_cvtepu32_epi64(u32s_c1),
+            )
         };
 
         unsafe {
@@ -395,7 +411,9 @@ pub(super) unsafe fn decode_into_1234(
             ctrl_pos += 1;
             decoded += 4;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 4 remainder (0–3 values).
@@ -473,28 +491,20 @@ pub(super) unsafe fn decode_into_1248(
         let (result0, result1) = unsafe {
             // SAFETY: guard ensures data_pos + lo_bytes0 + hi_bytes0 + lo_bytes1 + 16
             // <= data_bytes.len(); all four offsets + 16 are ≤ that bound.
-            let mask_lo0 =
-                _mm_loadu_si128(TABLE_1248_PAIR[lo_key0].as_ptr() as *const __m128i);
-            let chunk_lo0 =
-                _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
+            let mask_lo0 = _mm_loadu_si128(TABLE_1248_PAIR[lo_key0].as_ptr() as *const __m128i);
+            let chunk_lo0 = _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
             let lo0 = _mm_shuffle_epi8(chunk_lo0, mask_lo0);
 
-            let mask_hi0 =
-                _mm_loadu_si128(TABLE_1248_PAIR[hi_key0].as_ptr() as *const __m128i);
-            let chunk_hi0 =
-                _mm_loadu_si128(data_bytes.as_ptr().add(off_hi0) as *const __m128i);
+            let mask_hi0 = _mm_loadu_si128(TABLE_1248_PAIR[hi_key0].as_ptr() as *const __m128i);
+            let chunk_hi0 = _mm_loadu_si128(data_bytes.as_ptr().add(off_hi0) as *const __m128i);
             let hi0 = _mm_shuffle_epi8(chunk_hi0, mask_hi0);
 
-            let mask_lo1 =
-                _mm_loadu_si128(TABLE_1248_PAIR[lo_key1].as_ptr() as *const __m128i);
-            let chunk_lo1 =
-                _mm_loadu_si128(data_bytes.as_ptr().add(off_lo1) as *const __m128i);
+            let mask_lo1 = _mm_loadu_si128(TABLE_1248_PAIR[lo_key1].as_ptr() as *const __m128i);
+            let chunk_lo1 = _mm_loadu_si128(data_bytes.as_ptr().add(off_lo1) as *const __m128i);
             let lo1 = _mm_shuffle_epi8(chunk_lo1, mask_lo1);
 
-            let mask_hi1 =
-                _mm_loadu_si128(TABLE_1248_PAIR[hi_key1].as_ptr() as *const __m128i);
-            let chunk_hi1 =
-                _mm_loadu_si128(data_bytes.as_ptr().add(off_hi1) as *const __m128i);
+            let mask_hi1 = _mm_loadu_si128(TABLE_1248_PAIR[hi_key1].as_ptr() as *const __m128i);
+            let chunk_hi1 = _mm_loadu_si128(data_bytes.as_ptr().add(off_hi1) as *const __m128i);
             let hi1 = _mm_shuffle_epi8(chunk_hi1, mask_hi1);
 
             // set_m128i(hi, lo): lower 128 bits = lo, upper 128 bits = hi.
@@ -545,13 +555,10 @@ pub(super) unsafe fn decode_into_1248(
                 // SAFETY: padded is 96 bytes. By derivation above:
                 // padded_pos + lo_bytes ≤ 61; lo load [padded_pos, padded_pos+16) ⊆ [0,78) ⊆ [0,96);
                 // hi load [padded_pos+lo_bytes, padded_pos+lo_bytes+16) ⊆ [0,77) ⊆ [0,96).
-                let mask_lo =
-                    _mm_loadu_si128(TABLE_1248_PAIR[lo_key].as_ptr() as *const __m128i);
-                let chunk_lo =
-                    _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
+                let mask_lo = _mm_loadu_si128(TABLE_1248_PAIR[lo_key].as_ptr() as *const __m128i);
+                let chunk_lo = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
                 let lo = _mm_shuffle_epi8(chunk_lo, mask_lo);
-                let mask_hi =
-                    _mm_loadu_si128(TABLE_1248_PAIR[hi_key].as_ptr() as *const __m128i);
+                let mask_hi = _mm_loadu_si128(TABLE_1248_PAIR[hi_key].as_ptr() as *const __m128i);
                 let chunk_hi =
                     _mm_loadu_si128(padded.as_ptr().add(padded_pos + lo_bytes) as *const __m128i);
                 let hi = _mm_shuffle_epi8(chunk_hi, mask_hi);
@@ -569,7 +576,9 @@ pub(super) unsafe fn decode_into_1248(
             ctrl_pos += 1;
             decoded += 4;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 4 remainder (0–3 values).

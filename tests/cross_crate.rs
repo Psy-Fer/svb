@@ -165,10 +165,10 @@ mod u32_classic {
     fn mixed_widths() {
         let v: Vec<u32> = (0..8u32)
             .map(|i| match i % 4 {
-                0 => i % 256,          // 1-byte
-                1 => 0x100 + i,        // 2-byte
-                2 => 0x10000 + i,      // 3-byte
-                _ => 0x1000000 + i,    // 4-byte
+                0 => i % 256,       // 1-byte
+                1 => 0x100 + i,     // 2-byte
+                2 => 0x10000 + i,   // 3-byte
+                _ => 0x1000000 + i, // 4-byte
             })
             .collect();
         check(&v);
@@ -183,7 +183,17 @@ mod u32_classic {
     // Single element, padded to 4.
     #[test]
     fn single_element() {
-        for &v in &[0u32, 0x01, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFF_FFFF, 0x100_0000, u32::MAX] {
+        for &v in &[
+            0u32,
+            0x01,
+            0xFF,
+            0x100,
+            0xFFFF,
+            0x10000,
+            0xFF_FFFF,
+            0x100_0000,
+            u32::MAX,
+        ] {
             // pad to multiple of 4 with a neutral 1-byte value
             let vals = [v, 1, 1, 1];
             sv64_enc_svb_dec(&vals);
@@ -208,12 +218,21 @@ mod u32_classic {
     // Boundary values (all four tag thresholds).
     #[test]
     fn boundary_values() {
-        let pool: Vec<u32> = [0u32, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFF_FFFF, 0x100_0000, u32::MAX]
-            .iter()
-            .copied()
-            .cycle()
-            .take(32)
-            .collect();
+        let pool: Vec<u32> = [
+            0u32,
+            0xFF,
+            0x100,
+            0xFFFF,
+            0x10000,
+            0xFF_FFFF,
+            0x100_0000,
+            u32::MAX,
+        ]
+        .iter()
+        .copied()
+        .cycle()
+        .take(32)
+        .collect();
         check(&pool);
     }
 
@@ -272,10 +291,10 @@ mod u32_variant0124 {
     fn mixed_widths() {
         let v: Vec<u32> = (0..8u32)
             .map(|i| match i % 4 {
-                0 => 0,           // 0-byte
-                1 => (i % 255) + 1,  // 1-byte
-                2 => 0x100 + i,   // 2-byte
-                _ => 0x10000 + i, // 4-byte
+                0 => 0,             // 0-byte
+                1 => (i % 255) + 1, // 1-byte
+                2 => 0x100 + i,     // 2-byte
+                _ => 0x10000 + i,   // 4-byte
             })
             .collect();
         check(&v);
@@ -378,10 +397,10 @@ mod u64_coder1248 {
     fn mixed_widths() {
         let v: Vec<u64> = (0..8u64)
             .map(|i| match i % 4 {
-                0 => (i % 255) + 1,        // 1-byte
-                1 => 0x100 + i,            // 2-byte
-                2 => 0x10000 + i,          // 4-byte
-                _ => 0x1_0000_0000 + i,    // 8-byte
+                0 => (i % 255) + 1,     // 1-byte
+                1 => 0x100 + i,         // 2-byte
+                2 => 0x10000 + i,       // 4-byte
+                _ => 0x1_0000_0000 + i, // 8-byte
             })
             .collect();
         check(&v);
@@ -396,7 +415,16 @@ mod u64_coder1248 {
     // Single element, padded to 4.
     #[test]
     fn single_element() {
-        for &v in &[1u64, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFFFF_FFFF, 0x1_0000_0000, u64::MAX] {
+        for &v in &[
+            1u64,
+            0xFF,
+            0x100,
+            0xFFFF,
+            0x10000,
+            0xFFFF_FFFF,
+            0x1_0000_0000,
+            u64::MAX,
+        ] {
             let vals = [v, 1, 1, 1];
             sv64_enc_svb_dec(&vals);
             svb_enc_sv64_dec(&vals);
@@ -421,8 +449,14 @@ mod u64_coder1248 {
     #[test]
     fn boundary_values() {
         let pool: Vec<u64> = [
-            1u64, 0xFF, 0x100, 0xFFFF, 0x10000, 0xFFFF_FFFF,
-            0x1_0000_0000, u64::MAX,
+            1u64,
+            0xFF,
+            0x100,
+            0xFFFF,
+            0x10000,
+            0xFFFF_FFFF,
+            0x1_0000_0000,
+            u64::MAX,
         ]
         .iter()
         .copied()

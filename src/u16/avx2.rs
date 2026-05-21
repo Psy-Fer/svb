@@ -79,10 +79,8 @@ pub(super) unsafe fn encode_into(values: &[u16], out: &mut Vec<u8>) {
             *base_ptr.add(ctrl_start + block + 1) = c1;
 
             // Pack both groups with one VPSHUFB (two independent 128-bit lanes).
-            let enc_mask_lo =
-                _mm_loadu_si128(ENCODE_TABLE[c0 as usize].as_ptr() as *const __m128i);
-            let enc_mask_hi =
-                _mm_loadu_si128(ENCODE_TABLE[c1 as usize].as_ptr() as *const __m128i);
+            let enc_mask_lo = _mm_loadu_si128(ENCODE_TABLE[c0 as usize].as_ptr() as *const __m128i);
+            let enc_mask_hi = _mm_loadu_si128(ENCODE_TABLE[c1 as usize].as_ptr() as *const __m128i);
             let enc_mask = _mm256_set_m128i(enc_mask_hi, enc_mask_lo);
             let packed = _mm256_shuffle_epi8(v, enc_mask);
 
@@ -225,7 +223,9 @@ pub(super) unsafe fn decode_into(
             ctrl_pos += 1;
             decoded += 8;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 8 remainder (0–7 values).

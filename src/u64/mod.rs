@@ -41,26 +41,32 @@ use crate::error::DecodeError;
 
 mod scalar;
 
+#[cfg(target_arch = "x86_64")]
+mod avx2;
+#[cfg(target_arch = "aarch64")]
+mod neon;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod shuffle;
 #[cfg(target_arch = "x86_64")]
-mod avx2;
-#[cfg(target_arch = "x86_64")]
 mod sse2;
-#[cfg(target_arch = "aarch64")]
-mod neon;
 
 // ── U64Coder1234 ──────────────────────────────────────────────────────────────
 
 impl_dispatch_encode!(
-    dispatch_encode_1234, u64,
-    avx2::encode_into_1234, sse2::encode_into_1234,
-    neon::encode_into_1234, scalar::encode_into_1234
+    dispatch_encode_1234,
+    u64,
+    avx2::encode_into_1234,
+    sse2::encode_into_1234,
+    neon::encode_into_1234,
+    scalar::encode_into_1234
 );
 impl_dispatch_decode!(
-    dispatch_decode_1234, u64,
-    avx2::decode_into_1234, sse2::decode_into_1234,
-    neon::decode_into_1234, scalar::decode_into_1234
+    dispatch_decode_1234,
+    u64,
+    avx2::decode_into_1234,
+    sse2::decode_into_1234,
+    neon::decode_into_1234,
+    scalar::decode_into_1234
 );
 
 /// StreamVByte codec for `u64` values using 2-bit tags encoding 1, 2, 3, or 4 data bytes per value.
@@ -221,14 +227,20 @@ impl crate::coder::Coder for U64Coder1234 {
 // ── U64Coder1248 ──────────────────────────────────────────────────────────────
 
 impl_dispatch_encode!(
-    dispatch_encode_1248, u64,
-    avx2::encode_into_1248, sse2::encode_into_1248,
-    neon::encode_into_1248, scalar::encode_into_1248
+    dispatch_encode_1248,
+    u64,
+    avx2::encode_into_1248,
+    sse2::encode_into_1248,
+    neon::encode_into_1248,
+    scalar::encode_into_1248
 );
 impl_dispatch_decode!(
-    dispatch_decode_1248, u64,
-    avx2::decode_into_1248, sse2::decode_into_1248,
-    neon::decode_into_1248, scalar::decode_into_1248
+    dispatch_decode_1248,
+    u64,
+    avx2::decode_into_1248,
+    sse2::decode_into_1248,
+    neon::decode_into_1248,
+    scalar::decode_into_1248
 );
 
 /// StreamVByte codec for `u64` values using 2-bit tags encoding 1, 2, 4, or 8 data bytes per value.

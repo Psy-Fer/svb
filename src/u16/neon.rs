@@ -60,11 +60,11 @@ pub(super) unsafe fn encode_into(values: &[u16], out: &mut Vec<u8>) {
         };
 
         // Compute ctrl byte: bit k = 1 iff value k needs 2 bytes (high byte != 0).
-        let hi = vshrq_n_u16(v, 8);                          // high byte in low position
-        let nonzero = vcgtq_u16(hi, vdupq_n_u16(0));         // 0xFFFF or 0x0000 per lane
-        let flags8 = vmovn_u16(nonzero);                      // uint8x8_t: 0xFF or 0x00
-        let masked = vand_u8(flags8, weights);                 // 0 or the power-of-two weight
-        let ctrl = vaddv_u8(masked);                          // horizontal sum = ctrl byte
+        let hi = vshrq_n_u16(v, 8); // high byte in low position
+        let nonzero = vcgtq_u16(hi, vdupq_n_u16(0)); // 0xFFFF or 0x0000 per lane
+        let flags8 = vmovn_u16(nonzero); // uint8x8_t: 0xFF or 0x00
+        let masked = vand_u8(flags8, weights); // 0 or the power-of-two weight
+        let ctrl = vaddv_u8(masked); // horizontal sum = ctrl byte
 
         unsafe {
             // SAFETY: ctrl_start + block < ctrl_start + ctrl_len <= out.len().
@@ -195,7 +195,9 @@ pub(super) unsafe fn decode_into(
             ctrl_pos += 1;
             decoded += 8;
         }
-        unsafe { out.set_len(base + decoded); }
+        unsafe {
+            out.set_len(base + decoded);
+        }
     }
 
     // Scalar for n % 8 remainder (0–7 values).

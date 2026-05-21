@@ -79,11 +79,7 @@ macro_rules! impl_dispatch_encode {
             }
             #[cfg(all(
                 feature = "simd-auto",
-                not(any(
-                    feature = "simd-avx2",
-                    feature = "simd-ssse3",
-                    feature = "simd-neon"
-                ))
+                not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
             ))]
             {
                 #[cfg(all(feature = "std", target_arch = "x86_64"))]
@@ -137,11 +133,7 @@ macro_rules! impl_dispatch_decode {
             }
             #[cfg(all(
                 feature = "simd-auto",
-                not(any(
-                    feature = "simd-avx2",
-                    feature = "simd-ssse3",
-                    feature = "simd-neon"
-                ))
+                not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
             ))]
             {
                 #[cfg(all(feature = "std", target_arch = "x86_64"))]

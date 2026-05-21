@@ -40,14 +40,20 @@ mod sse2;
 // ── dispatch ──────────────────────────────────────────────────────────────────
 
 impl_dispatch_encode!(
-    dispatch_encode, u16,
-    avx2::encode_into, sse2::encode_into,
-    neon::encode_into, scalar::encode_into
+    dispatch_encode,
+    u16,
+    avx2::encode_into,
+    sse2::encode_into,
+    neon::encode_into,
+    scalar::encode_into
 );
 impl_dispatch_decode!(
-    dispatch_decode, u16,
-    avx2::decode_into, sse2::decode_into,
-    neon::decode_into, scalar::decode_into
+    dispatch_decode,
+    u16,
+    avx2::decode_into,
+    sse2::decode_into,
+    neon::decode_into,
+    scalar::decode_into
 );
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -245,14 +251,16 @@ mod cross_path {
             let expected = encode(values);
             if let Some(got) = ssse3_encode(values) {
                 assert_eq!(
-                    expected, got,
+                    expected,
+                    got,
                     "SSSE3 encode mismatch n={} values={values:?}",
                     values.len()
                 );
             }
             if let Some(got) = avx2_encode(values) {
                 assert_eq!(
-                    expected, got,
+                    expected,
+                    got,
                     "AVX2 encode mismatch n={} values={values:?}",
                     values.len()
                 );
@@ -622,7 +630,8 @@ mod cross_path {
             let expected = encode(values);
             let got = neon_encode(values);
             assert_eq!(
-                expected, got,
+                expected,
+                got,
                 "NEON encode mismatch n={} values={values:?}",
                 values.len()
             );
@@ -698,7 +707,11 @@ mod cross_path {
             for ctrl in 0u8..=255 {
                 let values: Vec<u16> = (0..8)
                     .map(|k| {
-                        if (ctrl >> k) & 1 == 1 { 300 + k as u16 } else { k as u16 }
+                        if (ctrl >> k) & 1 == 1 {
+                            300 + k as u16
+                        } else {
+                            k as u16
+                        }
                     })
                     .collect();
                 check_encode(&values);
