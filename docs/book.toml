@@ -1,0 +1,16 @@
+[book]
+title = "svb"
+authors = ["James Ferguson"]
+description = "Pure-Rust StreamVByte: integer compression for u16/u32/u64"
+language = "en"
+src = "src"
+
+[output.html]
+site-url = "/svb/"
+git-repository-url = "https://github.com/Psy-Fer/svb"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/Psy-Fer/svb/edit/main/docs/src/{path}"
+no-section-label = true
+
+[output.html.search]
+enable = true
