@@ -309,9 +309,8 @@ pub(super) unsafe fn decode_into_classic(
         let c1 = ctrl[ctrl_pos + 1];
         let c0_bytes = DATA_LEN[c0 as usize] as usize;
 
-        // Upper lane data starts c0_bytes after the lower lane. Worst case:
-        // c0 and c1 both all-4-byte → c0_bytes = 16, c1_bytes = 16 → need 32.
-        if data_pos + 32 > data_bytes.len() {
+        // The hi-lane load starts at data_pos + c0_bytes and reads 16 bytes.
+        if data_pos + c0_bytes + 16 > data_bytes.len() {
             break;
         }
 
@@ -320,8 +319,8 @@ pub(super) unsafe fn decode_into_classic(
             let mask_lo = _mm_loadu_si128(TABLE[c0 as usize].as_ptr() as *const __m128i);
             let mask_hi = _mm_loadu_si128(TABLE[c1 as usize].as_ptr() as *const __m128i);
 
-            // SAFETY: data_pos + 32 <= data_bytes.len() checked above;
-            // c0_bytes <= 16 so data_pos + c0_bytes + 16 <= data_pos + 32.
+            // SAFETY: data_pos + c0_bytes + 16 <= data_bytes.len() checked above;
+            // lo load: data_pos + 16 <= data_pos + c0_bytes + 16 (c0_bytes >= 1).
             let chunk_lo = _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
             let chunk_hi =
                 _mm_loadu_si128(data_bytes.as_ptr().add(data_pos + c0_bytes) as *const __m128i);
@@ -348,7 +347,40 @@ pub(super) unsafe fn decode_into_classic(
         out.set_len(base + decoded);
     }
 
-    // Scalar tail for any remaining values (< 8 remaining or < 32 data bytes).
+    // SSE2-style padded tail: guard fired but complete groups of 4 may remain.
+    // Copy the remaining data bytes (< c0_bytes + 16 ≤ 32) into a zero-padded
+    // 64-byte buffer so every 16-byte load is in-bounds.
+    if decoded + 4 <= n {
+        let mut padded = [0u8; 64];
+        let rem = data_bytes.len() - data_pos;
+        // rem < c0_bytes + 16 ≤ 32, so rem fits in padded with room to spare.
+        padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
+        let mut padded_pos = 0usize;
+
+        while decoded + 4 <= n {
+            let cb = ctrl[ctrl_pos];
+            // SAFETY: padded is 64 bytes; padded_pos ≤ rem − DATA_LEN_min (≥4 for Classic)
+            // ≤ 31 − 4 = 27; load [padded_pos, padded_pos+16) ⊆ [0, 43) ⊆ [0, 64).
+            let result = unsafe {
+                let mask = _mm_loadu_si128(TABLE[cb as usize].as_ptr() as *const __m128i);
+                let chunk = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
+                _mm_shuffle_epi8(chunk, mask)
+            };
+            unsafe {
+                // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
+                let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
+                _mm_storeu_si128(out_ptr, result);
+            }
+            let consumed = DATA_LEN[cb as usize] as usize;
+            padded_pos += consumed;
+            data_pos += consumed;
+            ctrl_pos += 1;
+            decoded += 4;
+        }
+        unsafe { out.set_len(base + decoded); }
+    }
+
+    // Scalar for n % 4 remainder (0–3 values that don't fill a complete group).
     if decoded < n {
         super::scalar::decode_classic_from_raw(
             &ctrl[ctrl_pos..],
@@ -401,8 +433,8 @@ pub(super) unsafe fn decode_into_0124(
         let c1 = ctrl[ctrl_pos + 1];
         let c0_bytes = DATA_LEN_0124[c0 as usize] as usize;
 
-        // Worst case: c0 and c1 both all-tag-3 → 16 + 16 = 32 bytes.
-        if data_pos + 32 > data_bytes.len() {
+        // The hi-lane load starts at data_pos + c0_bytes and reads 16 bytes.
+        if data_pos + c0_bytes + 16 > data_bytes.len() {
             break;
         }
 
@@ -411,8 +443,9 @@ pub(super) unsafe fn decode_into_0124(
             let mask_lo = _mm_loadu_si128(TABLE_0124[c0 as usize].as_ptr() as *const __m128i);
             let mask_hi = _mm_loadu_si128(TABLE_0124[c1 as usize].as_ptr() as *const __m128i);
 
-            // SAFETY: data_pos + 32 <= data_bytes.len() checked above;
-            // c0_bytes <= 16 so data_pos + c0_bytes + 16 <= data_pos + 32.
+            // SAFETY: guard ensures data_pos + c0_bytes + 16 <= data_bytes.len().
+            // lo load: data_pos + 16 ≤ data_pos + c0_bytes + 16 (c0_bytes ≥ 0).
+            // hi load: data_pos + c0_bytes + 16 ≤ data_bytes.len() directly.
             let chunk_lo = _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
             let chunk_hi =
                 _mm_loadu_si128(data_bytes.as_ptr().add(data_pos + c0_bytes) as *const __m128i);
@@ -438,6 +471,40 @@ pub(super) unsafe fn decode_into_0124(
         out.set_len(base + decoded);
     }
 
+    // SSE2-style padded tail: guard fired but complete groups of 4 may remain.
+    // Copy remaining data bytes (< c0_bytes + 16 ≤ 32) into a zero-padded
+    // 64-byte buffer. For 0124, DATA_LEN can be 0, so buffer must be 64 bytes
+    // (padded_pos ≤ rem ≤ 31; load [31,47) ⊆ [0,64)).
+    if decoded + 4 <= n {
+        let mut padded = [0u8; 64];
+        let rem = data_bytes.len() - data_pos;
+        padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
+        let mut padded_pos = 0usize;
+
+        while decoded + 4 <= n {
+            let cb = ctrl[ctrl_pos];
+            // SAFETY: padded is 64 bytes; padded_pos ≤ rem ≤ 31;
+            // load [padded_pos, padded_pos+16) ⊆ [0, 47) ⊆ [0, 64).
+            let result = unsafe {
+                let mask = _mm_loadu_si128(TABLE_0124[cb as usize].as_ptr() as *const __m128i);
+                let chunk = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
+                _mm_shuffle_epi8(chunk, mask)
+            };
+            unsafe {
+                // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
+                let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
+                _mm_storeu_si128(out_ptr, result);
+            }
+            let consumed = DATA_LEN_0124[cb as usize] as usize;
+            padded_pos += consumed;
+            data_pos += consumed;
+            ctrl_pos += 1;
+            decoded += 4;
+        }
+        unsafe { out.set_len(base + decoded); }
+    }
+
+    // Scalar for n % 4 remainder (0–3 values).
     if decoded < n {
         super::scalar::decode_0124_from_raw(
             &ctrl[ctrl_pos..],

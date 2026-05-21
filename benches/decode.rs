@@ -210,6 +210,43 @@ fn bench_u64_coder1248_decode(c: &mut Criterion) {
     g.finish();
 }
 
+// ── decode_into: pre-allocated output, no alloc overhead ─────────────────────
+//
+// Uses a single Vec that is cleared and reused across iterations.  This isolates
+// pure SIMD decode throughput from malloc/free noise.
+
+fn bench_u32_classic_decode_into(c: &mut Criterion) {
+    let mut g = c.benchmark_group("u32_classic/decode_into");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (_, enc) = u32_data(n);
+        let mut out = Vec::with_capacity(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &(enc, n), |b, (enc, n)| {
+            b.iter(|| {
+                out.clear();
+                U32Classic.decode_into(enc, *n, &mut out).unwrap();
+            });
+        });
+    }
+    g.finish();
+}
+
+fn bench_u32_variant0124_decode_into(c: &mut Criterion) {
+    let mut g = c.benchmark_group("u32_variant0124/decode_into");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (_, enc) = u32_0124_data(n);
+        let mut out = Vec::with_capacity(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &(enc, n), |b, (enc, n)| {
+            b.iter(|| {
+                out.clear();
+                U32Variant0124.decode_into(enc, *n, &mut out).unwrap();
+            });
+        });
+    }
+    g.finish();
+}
+
 // ── comparative: svb vs streamvbyte64 ─────────────────────────────────────────
 //
 // For each shared codec variant we benchmark encode and decode side-by-side
@@ -409,7 +446,9 @@ criterion_group!(
     bench_vbz_decode,
     bench_u32_classic_encode,
     bench_u32_classic_decode,
+    bench_u32_classic_decode_into,
     bench_u32_variant0124_decode,
+    bench_u32_variant0124_decode_into,
     bench_u64_coder1234_decode,
     bench_u64_coder1248_decode,
     bench_compare_u32_classic_encode,
