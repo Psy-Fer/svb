@@ -655,11 +655,18 @@ pub fn decode_with_initial_into<T: Delta>(initial: T, deltas: &[T], out: &mut Ve
 /// assert_eq!(out, [2, 3]); // 7-5=2, 10-7=3
 /// ```
 pub fn encode_with_initial_into<T: Delta>(initial: T, samples: &[T], out: &mut Vec<T>) {
-    let mut prev = initial;
-    for &s in samples {
-        out.push(s.__sub(prev));
-        prev = s;
+    if samples.is_empty() {
+        return;
     }
+    out.reserve(samples.len());
+    // Express as two adjacent slice views so LLVM can vectorize d[i] = s[i] - s[i-1].
+    out.push(samples[0].__sub(initial));
+    out.extend(
+        samples[1..]
+            .iter()
+            .zip(samples.iter())
+            .map(|(&curr, &prev)| curr.__sub(prev)),
+    );
 }
 
 // ── SSE2 implementations (x86_64) ─────────────────────────────────────────────

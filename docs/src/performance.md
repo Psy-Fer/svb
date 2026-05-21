@@ -4,6 +4,21 @@ Benchmarks were run with `simd-auto` on a modern x86-64 machine (AVX2 path selec
 
 ## Results vs streamvbyte64
 
+## VBZ pipeline breakdown
+
+At 8192 i16 elements, each stage measured in isolation:
+
+| Stage | encode | decode |
+|---|---|---|
+| delta | 11.02 GB/s | 3.50 GB/s |
+| zigzag | 18.75 GB/s | 14.83 GB/s |
+| SVB16 | 4.91 GB/s | 4.51 GB/s |
+| **VBZ (combined)** | **3.14 GB/s** | **1.88 GB/s** |
+
+Zigzag is essentially free (pure bitwise ops, LLVM auto-vectorizes). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to around 11 GB/s with no unsafe code. Delta decode uses an explicit SIMD prefix-sum (SSE2/NEON); the carry dependency limits it to around 3.5 GB/s.
+
+## Results vs streamvbyte64
+
 | Benchmark | svb | sv64 | ratio |
 |---|---|---|---|
 | U32Classic decode/128 | 2.29 GB/s | 0.92 GB/s | 2.48x |

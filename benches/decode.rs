@@ -5,6 +5,7 @@ use svb::{
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
+    delta, zigzag,
 };
 
 const SIZES: &[usize] = &[128, 1024, 8192];
@@ -88,6 +89,69 @@ fn u64_1248_data(n: usize) -> (Vec<u64>, Vec<u8>) {
         .collect();
     let enc = U64Coder1248.encode(&values);
     (values, enc)
+}
+
+// ── VBZ pipeline breakdown ────────────────────────────────────────────────────
+//
+// Each transform measured in isolation on VBZ-style i16 signal data so the
+// numbers add up to the full VBZ cost.
+
+fn vbz_i16_samples(n: usize) -> Vec<i16> {
+    (0..n)
+        .map(|i| {
+            let base = (i as i32 % 500 - 250) as i16;
+            let noise = (i as i16).wrapping_mul(37) % 7 - 3;
+            base.wrapping_add(noise)
+        })
+        .collect()
+}
+
+fn bench_delta_encode_i16(c: &mut Criterion) {
+    let mut g = c.benchmark_group("delta/encode_i16");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let samples = vbz_i16_samples(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &samples, |b, s| {
+            b.iter(|| delta::encode(s));
+        });
+    }
+    g.finish();
+}
+
+fn bench_delta_decode_i16(c: &mut Criterion) {
+    let mut g = c.benchmark_group("delta/decode_i16");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let deltas = delta::encode(&vbz_i16_samples(n));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &deltas, |b, d| {
+            b.iter(|| delta::decode(d));
+        });
+    }
+    g.finish();
+}
+
+fn bench_zigzag_encode_i16(c: &mut Criterion) {
+    let mut g = c.benchmark_group("zigzag/encode_i16");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let deltas = delta::encode(&vbz_i16_samples(n));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &deltas, |b, d| {
+            b.iter(|| zigzag::encode(d));
+        });
+    }
+    g.finish();
+}
+
+fn bench_zigzag_decode_u16(c: &mut Criterion) {
+    let mut g = c.benchmark_group("zigzag/decode_u16");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let codes: Vec<u16> = zigzag::encode(&delta::encode(&vbz_i16_samples(n)));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &codes, |b, c_| {
+            b.iter(|| zigzag::decode::<i16>(c_));
+        });
+    }
+    g.finish();
 }
 
 // ── SVB16 ─────────────────────────────────────────────────────────────────────
@@ -476,6 +540,10 @@ fn bench_compare_u64_coder1248_decode(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_delta_encode_i16,
+    bench_delta_decode_i16,
+    bench_zigzag_encode_i16,
+    bench_zigzag_decode_u16,
     bench_svb16_encode,
     bench_svb16_decode,
     bench_vbz_encode,
