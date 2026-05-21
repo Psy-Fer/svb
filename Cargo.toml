@@ -3,6 +3,15 @@ name = "svb"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+description = "Pure-Rust StreamVByte: integer compression for u16/u32/u64 with SIMD decode (AVX2, SSSE3, NEON)"
+license = "MIT"
+repository = "https://github.com/Psy-Fer/svb"
+homepage = "https://github.com/Psy-Fer/svb"
+documentation = "https://docs.rs/svb"
+keywords = ["compression", "streamvbyte", "simd", "integer", "vbz"]
+categories = ["compression", "encoding", "no-std"]
+readme = "README.md"
+exclude = ["tests/vectors/*.bin", "fuzz/"]
 
 [features]
 default = ["std"]
