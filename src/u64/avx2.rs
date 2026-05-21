@@ -518,9 +518,18 @@ pub(super) unsafe fn decode_into_1248(
         out.set_len(base + decoded);
     }
 
-    // SSE2-style padded tail: guard fired (rem < lo0+hi0+lo1+16 ≤ 64) but groups of 4 remain.
-    // Copy remaining data into a zero-padded 96-byte buffer.
-    // At hi load: padded_pos + lo_bytes ≤ rem − hi_bytes ≤ 61; [61,77) ⊆ [0,96). ✓
+    // SSE2-style padded tail: guard fires when rem < lo0+hi0+lo1+16 (each term ≤ 16 →
+    // rem ≤ 63). Complete groups of 4 may still remain. Copy remaining bytes into a
+    // 96-byte zero-padded stack buffer so SIMD loads are always in-bounds.
+    //
+    // Bound derivation for hi load at padded_pos + lo_bytes (1 ctrl byte / 4 values):
+    //   (1) Guard: rem < lo0+hi0+lo1+16 ≤ 16+16+16+16 = 64 → rem ≤ 63.
+    //   (2) At each padded iteration the group's data (lo_bytes + hi_bytes) starts at
+    //       padded_pos; all groups fit within rem:
+    //       padded_pos + lo_bytes + hi_bytes ≤ rem → padded_pos + lo_bytes ≤ rem − hi_bytes.
+    //   (3) hi_bytes = DATA_LEN_1248_PAIR[hi_key] ≥ 2.
+    //   (4) padded_pos + lo_bytes ≤ rem − hi_bytes ≤ 63 − 2 = 61.
+    //   (5) Hi load end: 61 + 16 = 77 ≤ 96. ✓  Lo load end: 61 + 16 = 77 ≤ 96. ✓
     if decoded + 4 <= n {
         let mut padded = [0u8; 96];
         let rem = data_bytes.len() - data_pos;
@@ -533,8 +542,8 @@ pub(super) unsafe fn decode_into_1248(
             let hi_key = (cb >> 4) as usize;
             let lo_bytes = DATA_LEN_1248_PAIR[lo_key] as usize;
             let (lo_pair, hi_pair) = unsafe {
-                // SAFETY: padded is 96 bytes; padded_pos + lo_bytes ≤ rem − hi_bytes ≤ 61;
-                // lo load [padded_pos, padded_pos+16) ⊆ [0,78) ⊆ [0,96);
+                // SAFETY: padded is 96 bytes. By derivation above:
+                // padded_pos + lo_bytes ≤ 61; lo load [padded_pos, padded_pos+16) ⊆ [0,78) ⊆ [0,96);
                 // hi load [padded_pos+lo_bytes, padded_pos+lo_bytes+16) ⊆ [0,77) ⊆ [0,96).
                 let mask_lo =
                     _mm_loadu_si128(TABLE_1248_PAIR[lo_key].as_ptr() as *const __m128i);

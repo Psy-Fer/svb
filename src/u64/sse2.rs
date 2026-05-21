@@ -463,9 +463,18 @@ pub(super) unsafe fn decode_into_1248(
         out.set_len(base + decoded);
     }
 
-    // Padded tail: guard fired (rem < lo_bytes + 16 ≤ 32) but groups of 4 may remain.
-    // Copy remaining data into a zero-padded 64-byte buffer.
-    // At hi load: padded_pos + lo_bytes ≤ rem − hi_bytes ≤ 29; [29,45) ⊆ [0,64). ✓
+    // Padded tail: guard fired when rem < lo_bytes + 16 (lo_bytes ≤ 16 → rem ≤ 31), but
+    // complete groups of 4 may still remain. Copy the remaining bytes into a 64-byte
+    // zero-padded stack buffer so SIMD loads are always in-bounds.
+    //
+    // Bound derivation for hi load at padded_pos + lo_bytes:
+    //   (1) Guard condition: rem < lo_bytes_guard + 16 ≤ 16 + 16 = 32 → rem ≤ 31.
+    //   (2) At each iteration the current group's data (lo_bytes + hi_bytes bytes) starts
+    //       at padded_pos; all consumed groups fit within rem:
+    //       padded_pos + lo_bytes + hi_bytes ≤ rem → padded_pos + lo_bytes ≤ rem − hi_bytes.
+    //   (3) hi_bytes = DATA_LEN_1248_PAIR[hi_key] ≥ 2 (min pair = 1+1 = 2).
+    //   (4) padded_pos + lo_bytes ≤ rem − hi_bytes ≤ 31 − 2 = 29.
+    //   (5) Hi load end: 29 + 16 = 45 ≤ 64. ✓  Lo load end: 29 + 16 = 45 ≤ 64. ✓
     if decoded + 4 <= n {
         let mut padded = [0u8; 64];
         let rem = data_bytes.len() - data_pos;
@@ -478,8 +487,8 @@ pub(super) unsafe fn decode_into_1248(
             let hi_key = (cb >> 4) as usize;
             let lo_bytes = DATA_LEN_1248_PAIR[lo_key] as usize;
             let (lo_pair, hi_pair) = unsafe {
-                // SAFETY: padded is 64 bytes; padded_pos + lo_bytes ≤ rem − hi_bytes ≤ 29;
-                // lo load [padded_pos, padded_pos+16) ⊆ [0,46) ⊆ [0,64);
+                // SAFETY: padded is 64 bytes. By derivation above:
+                // padded_pos + lo_bytes ≤ 29; lo load [padded_pos, padded_pos+16) ⊆ [0,46) ⊆ [0,64);
                 // hi load [padded_pos+lo_bytes, padded_pos+lo_bytes+16) ⊆ [0,45) ⊆ [0,64).
                 let mask_lo =
                     _mm_loadu_si128(TABLE_1248_PAIR[lo_key].as_ptr() as *const __m128i);

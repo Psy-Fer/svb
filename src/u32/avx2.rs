@@ -471,10 +471,16 @@ pub(super) unsafe fn decode_into_0124(
         out.set_len(base + decoded);
     }
 
-    // SSE2-style padded tail: guard fired but complete groups of 4 may remain.
-    // Copy remaining data bytes (< c0_bytes + 16 ≤ 32) into a zero-padded
-    // 64-byte buffer. For 0124, DATA_LEN can be 0, so buffer must be 64 bytes
-    // (padded_pos ≤ rem ≤ 31; load [31,47) ⊆ [0,64)).
+    // SSE2-style padded tail: guard fires when rem < c0_bytes + 16 (c0_bytes ≤ 16 →
+    // rem ≤ 31). Copy remaining bytes into a 64-byte zero-padded stack buffer.
+    //
+    // Load bound: padded_pos accumulates DATA_LEN_0124[cb] per iteration; since all
+    // consumed groups fit within rem, padded_pos ≤ rem ≤ 31; load end ≤ 47 ≤ 64. ✓
+    //
+    // No-infinite-loop note: DATA_LEN_0124[cb] = 0 when all four tags in cb are 0
+    // (a ctrl byte of 0x00 means all four values are zero and consume no data bytes).
+    // In that case padded_pos does not advance, but ctrl_pos += 1 and decoded += 4
+    // still increment, so the while condition is exhausted in finite iterations.
     if decoded + 4 <= n {
         let mut padded = [0u8; 64];
         let rem = data_bytes.len() - data_pos;
