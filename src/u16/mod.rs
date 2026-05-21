@@ -36,18 +36,18 @@ fn dispatch_encode(values: &[u16], out: &mut Vec<u8>) {
     }
 
     #[cfg(all(
-        feature = "simd-sse2",
+        feature = "simd-ssse3",
         not(feature = "simd-avx2"),
         target_arch = "x86_64"
     ))]
     {
-        // SAFETY: simd-sse2 feature declares SSSE3 is available at runtime.
+        // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime.
         return unsafe { sse2::encode_into(values, out) };
     }
 
     #[cfg(all(
         feature = "simd-neon",
-        not(any(feature = "simd-avx2", feature = "simd-sse2")),
+        not(any(feature = "simd-avx2", feature = "simd-ssse3")),
         target_arch = "aarch64"
     ))]
     {
@@ -57,7 +57,7 @@ fn dispatch_encode(values: &[u16], out: &mut Vec<u8>) {
 
     #[cfg(all(
         feature = "simd-auto",
-        not(any(feature = "simd-avx2", feature = "simd-sse2", feature = "simd-neon"))
+        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
     ))]
     {
         #[cfg(all(feature = "std", target_arch = "x86_64"))]
@@ -93,18 +93,18 @@ fn dispatch_decode(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<(), Deco
     }
 
     #[cfg(all(
-        feature = "simd-sse2",
+        feature = "simd-ssse3",
         not(feature = "simd-avx2"),
         target_arch = "x86_64"
     ))]
     {
-        // SAFETY: simd-sse2 feature declares that SSSE3 is available at runtime.
+        // SAFETY: simd-ssse3 feature declares that SSSE3 is available at runtime.
         return unsafe { sse2::decode_into(data, n, out) };
     }
 
     #[cfg(all(
         feature = "simd-neon",
-        not(any(feature = "simd-avx2", feature = "simd-sse2")),
+        not(any(feature = "simd-avx2", feature = "simd-ssse3")),
         target_arch = "aarch64"
     ))]
     {
@@ -115,7 +115,7 @@ fn dispatch_decode(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<(), Deco
     // Runtime auto-detection — requires std for is_x86_feature_detected! on x86.
     #[cfg(all(
         feature = "simd-auto",
-        not(any(feature = "simd-avx2", feature = "simd-sse2", feature = "simd-neon"))
+        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
     ))]
     {
         #[cfg(all(feature = "std", target_arch = "x86_64"))]

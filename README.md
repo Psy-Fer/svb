@@ -20,10 +20,10 @@ Pure-Rust [StreamVByte](https://lemire.me/blog/2017/09/27/stream-vbyte-breaking-
 | `alloc` | Enables all encode/decode APIs with no other dependencies |
 | `simd-auto` | Runtime CPU detection; selects the best available SIMD path |
 | `simd-avx2` | Compile-time AVX2 (implies AVX2 is available at runtime) |
-| `simd-sse2` | Compile-time SSSE3 |
+| `simd-ssse3` | Compile-time SSSE3 |
 | `simd-neon` | Compile-time NEON (AArch64 only; NEON is always available there) |
 
-For most users, `simd-auto` is the right choice. The compile-time flags (`simd-avx2`, `simd-sse2`, `simd-neon`) are for environments where the target is known at build time, such as cross-compilation or `RUSTFLAGS="-C target-cpu=native"`.
+For most users, `simd-auto` is the right choice. The compile-time flags (`simd-avx2`, `simd-ssse3`, `simd-neon`) are for environments where the target is known at build time, such as cross-compilation or `RUSTFLAGS="-C target-cpu=native"`.
 
 ```toml
 [dependencies]

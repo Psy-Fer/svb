@@ -55,7 +55,7 @@ impl Zigzag for i16 {
 }
 
 fn decode_into_i16(codes: &[u16], out: &mut Vec<i16>) {
-    #[cfg(all(any(feature = "simd-avx2", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-avx2", feature = "simd-ssse3"), target_arch = "x86_64"))]
     {
         // SAFETY: SSE2 is always available on x86_64.
         unsafe { decode_into_sse2(codes, out) };
@@ -67,7 +67,7 @@ fn decode_into_i16(codes: &[u16], out: &mut Vec<i16>) {
     }
     #[cfg(all(
         feature = "simd-auto",
-        not(any(feature = "simd-avx2", feature = "simd-sse2", feature = "simd-neon")),
+        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
         target_arch = "x86_64"
     ))]
     {
@@ -76,7 +76,7 @@ fn decode_into_i16(codes: &[u16], out: &mut Vec<i16>) {
     }
     #[cfg(all(
         feature = "simd-auto",
-        not(any(feature = "simd-avx2", feature = "simd-sse2", feature = "simd-neon")),
+        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
         target_arch = "aarch64"
     ))]
     {
@@ -85,9 +85,9 @@ fn decode_into_i16(codes: &[u16], out: &mut Vec<i16>) {
     }
     // Scalar fallback: only compiled when no SIMD path covers this target.
     #[cfg(not(any(
-        all(any(feature = "simd-avx2", feature = "simd-sse2"), target_arch = "x86_64"),
+        all(any(feature = "simd-avx2", feature = "simd-ssse3"), target_arch = "x86_64"),
         all(feature = "simd-neon", target_arch = "aarch64"),
-        all(feature = "simd-auto", not(any(feature = "simd-avx2", feature = "simd-sse2", feature = "simd-neon")), any(target_arch = "x86_64", target_arch = "aarch64"))
+        all(feature = "simd-auto", not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")), any(target_arch = "x86_64", target_arch = "aarch64"))
     )))]
     out.extend(codes.iter().copied().map(i16::decode_one));
 }
@@ -254,7 +254,7 @@ mod tests {
 
     // ── i16 cross-path tests (SSE2 vs scalar) ────────────────────────────────
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-ssse3"), target_arch = "x86_64"))]
     fn decode_both_i16(codes: &[u16]) -> (Vec<i16>, Vec<i16>) {
         let scalar_out: Vec<i16> = codes.iter().copied().map(i16::decode_one).collect();
         let mut simd_out = Vec::new();
@@ -263,7 +263,7 @@ mod tests {
         (scalar_out, simd_out)
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-ssse3"), target_arch = "x86_64"))]
     #[test]
     fn sse2_matches_scalar_known_values() {
         let codes: Vec<u16> = vec![0, 1, 2, 3, 65534, 65535, 0, 0];
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-ssse3"), target_arch = "x86_64"))]
     #[test]
     fn sse2_matches_scalar_with_tail() {
         let codes: Vec<u16> = (0..11u16).collect();
@@ -279,7 +279,7 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-ssse3"), target_arch = "x86_64"))]
     #[test]
     fn sse2_matches_scalar_exhaustive_first_256() {
         let codes: Vec<u16> = (0u16..256).collect();
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-ssse3"), target_arch = "x86_64"))]
     #[test]
     fn sse2_exhaustive_all_u16_values() {
         let codes: Vec<u16> = (u16::MIN..=u16::MAX).collect();
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-ssse3"), target_arch = "x86_64"))]
     #[test]
     fn sse2_all_tail_lengths() {
         let pool: Vec<u16> = (0u16..16).collect();
@@ -305,7 +305,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-ssse3"), target_arch = "x86_64"))]
     #[test]
     fn sse2_empty_and_small() {
         let (s, v) = decode_both_i16(&[]);
@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-ssse3"), target_arch = "x86_64"))]
     #[test]
     fn sse2_all_even_codes() {
         let codes: Vec<u16> = (0..64u16).map(|i| i * 2).collect();
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-ssse3"), target_arch = "x86_64"))]
     #[test]
     fn sse2_all_odd_codes() {
         let codes: Vec<u16> = (0..64u16).map(|i| i * 2 + 1).collect();
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(s, v);
     }
 
-    #[cfg(all(any(feature = "simd-auto", feature = "simd-sse2"), target_arch = "x86_64"))]
+    #[cfg(all(any(feature = "simd-auto", feature = "simd-ssse3"), target_arch = "x86_64"))]
     #[test]
     fn sse2_large_input() {
         let codes: Vec<u16> = (0u32..10_000).map(|i| (i % 65536) as u16).collect();

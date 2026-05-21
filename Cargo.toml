@@ -9,7 +9,7 @@ default = ["std"]
 std = ["alloc", "thiserror/std"]
 alloc = []
 simd-avx2 = []
-simd-sse2 = []
+simd-ssse3 = []
 simd-neon = []
 simd-auto = []
 

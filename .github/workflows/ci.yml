@@ -47,9 +47,9 @@ jobs:
         run: cargo test --features simd-auto
 
       # x86_64 only: forced compile-time SIMD paths
-      - name: Test — simd-sse2 (forced SSSE3)
+      - name: Test — simd-ssse3 (forced SSSE3)
         if: runner.arch == 'X64'
-        run: cargo test --features simd-sse2
+        run: cargo test --features simd-ssse3
 
       - name: Test — simd-avx2 (forced AVX2)
         if: runner.arch == 'X64'

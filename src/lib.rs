@@ -15,7 +15,7 @@
 //! # Feature flags
 //!
 //! Enable `simd-auto` for runtime CPU detection (recommended). Use `simd-avx2`,
-//! `simd-sse2`, or `simd-neon` for compile-time SIMD when the target is known.
+//! `simd-ssse3`, or `simd-neon` for compile-time SIMD when the target is known.
 //! Disable `std` and enable `alloc` for `no_std` use; all codec functionality
 //! requires at least the `alloc` feature.
 #![cfg_attr(not(feature = "std"), no_std)]
