@@ -453,6 +453,15 @@ pub fn encode_with_initial<T: Delta>(initial: T, samples: &[T]) -> Vec<T> {
 }
 
 /// Delta-encode `samples` using `T::default()` as the initial value, appending the result to `out`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let mut out = vec![99i16];
+/// delta::encode_into(&[10i16, 11, 13], &mut out);
+/// assert_eq!(out, [99, 10, 1, 2]);
+/// ```
 pub fn encode_into<T: Delta>(samples: &[T], out: &mut Vec<T>) {
     encode_with_initial_into(T::default(), samples, out);
 }
@@ -496,6 +505,15 @@ pub fn decode_with_initial<T: Delta>(initial: T, deltas: &[T]) -> Vec<T> {
 }
 
 /// Delta-decode `deltas` using `T::default()` as the initial accumulator, appending the result to `out`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let mut out = vec![99i16];
+/// delta::decode_into(&[10i16, 1, 2], &mut out);
+/// assert_eq!(out, [99, 10, 11, 13]);
+/// ```
 pub fn decode_into<T: Delta>(deltas: &[T], out: &mut Vec<T>) {
     T::__decode_into(T::default(), deltas, out);
 }
@@ -504,6 +522,15 @@ pub fn decode_into<T: Delta>(deltas: &[T], out: &mut Vec<T>) {
 ///
 /// Streaming counterpart to [`decode_with_initial`]; avoids allocating when
 /// appending into an existing buffer.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let mut out = Vec::new();
+/// delta::decode_with_initial_into(5i16, &[2i16, 3], &mut out);
+/// assert_eq!(out, [7, 10]); // 5+2=7, 7+3=10
+/// ```
 pub fn decode_with_initial_into<T: Delta>(initial: T, deltas: &[T], out: &mut Vec<T>) {
     T::__decode_into(initial, deltas, out);
 }
@@ -512,6 +539,15 @@ pub fn decode_with_initial_into<T: Delta>(initial: T, deltas: &[T], out: &mut Ve
 ///
 /// Streaming counterpart to [`encode_with_initial`]; avoids allocating when
 /// appending into an existing buffer.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let mut out = Vec::new();
+/// delta::encode_with_initial_into(5i16, &[7, 10], &mut out);
+/// assert_eq!(out, [2, 3]); // 7-5=2, 10-7=3
+/// ```
 pub fn encode_with_initial_into<T: Delta>(initial: T, samples: &[T], out: &mut Vec<T>) {
     let mut prev = initial;
     for &s in samples {

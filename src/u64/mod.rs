@@ -67,7 +67,7 @@ impl_dispatch_decode!(
 ///
 /// Same tag/width table as [`crate::u32::U32Classic`] but operates on `u64` slices.
 /// Values greater than `u32::MAX` are silently truncated to their low 32 bits on
-/// encode — this matches the behaviour of other StreamVByte libraries and is
+/// encode. This matches the behaviour of other StreamVByte libraries and is
 /// defined, not accidental. Call [`U64Coder1234::check_range`] before encoding if
 /// you need to detect out-of-range values. For data that may genuinely exceed
 /// `u32::MAX`, use [`U64Coder1248`] instead.
@@ -92,6 +92,14 @@ impl U64Coder1234 {
     /// Call this before [`encode`](U64Coder1234::encode) whenever the input may
     /// contain values larger than `u32::MAX`; encoding such values silently
     /// truncates them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u64::U64Coder1234;
+    /// assert_eq!(U64Coder1234.check_range(&[1u64, 255, u32::MAX as u64]), None);
+    /// assert_eq!(U64Coder1234.check_range(&[1u64, u32::MAX as u64 + 1]), Some(1));
+    /// ```
     pub fn check_range(&self, values: &[u64]) -> Option<usize> {
         values.iter().position(|&v| v > u64::from(u32::MAX))
     }
@@ -103,6 +111,16 @@ impl U64Coder1234 {
     /// Values that exceed `u32::MAX` are silently truncated. Call
     /// [`check_range`](U64Coder1234::check_range) first if the input may contain
     /// values outside `0..=u32::MAX`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u64::U64Coder1234;
+    /// let values = vec![1u64, 256, 65536, u32::MAX as u64];
+    /// assert_eq!(U64Coder1234.check_range(&values), None);
+    /// let bytes = U64Coder1234.encode(&values);
+    /// assert_eq!(U64Coder1234.decode(&bytes, values.len()).unwrap(), values);
+    /// ```
     pub fn encode(&self, values: &[u64]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode_1234(values, &mut out);
@@ -116,6 +134,15 @@ impl U64Coder1234 {
     /// Values that exceed `u32::MAX` are silently truncated. Call
     /// [`check_range`](U64Coder1234::check_range) first if the input may contain
     /// values outside `0..=u32::MAX`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u64::U64Coder1234;
+    /// let mut buf = Vec::new();
+    /// U64Coder1234.encode_into(&[1u64, 2], &mut buf);
+    /// U64Coder1234.encode_into(&[3u64, 4], &mut buf);
+    /// ```
     pub fn encode_into(&self, values: &[u64], out: &mut Vec<u8>) {
         dispatch_encode_1234(values, out);
     }
@@ -131,6 +158,14 @@ impl U64Coder1234 {
     /// The data must have been encoded by the same codec variant. Decoding bytes
     /// produced by a different variant (e.g., using [`U64Coder1234`] to decode data
     /// encoded by [`U64Coder1248`]) silently produces corrupt output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u64::U64Coder1234;
+    /// let bytes = U64Coder1234.encode(&[1u64, 256, 65536]);
+    /// assert_eq!(U64Coder1234.decode(&bytes, 3).unwrap(), [1u64, 256, 65536]);
+    /// ```
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u64>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_1234(data, n, &mut out)?;
@@ -147,6 +182,16 @@ impl U64Coder1234 {
     ///
     /// The data must have been encoded by the same codec variant. Decoding bytes
     /// produced by a different variant silently produces corrupt output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u64::U64Coder1234;
+    /// let bytes = U64Coder1234.encode(&[10u64, 20]);
+    /// let mut out = vec![0u64];
+    /// U64Coder1234.decode_into(&bytes, 2, &mut out).unwrap();
+    /// assert_eq!(out, [0u64, 10, 20]);
+    /// ```
     pub fn decode_into(
         &self,
         data: &[u8],
@@ -206,6 +251,14 @@ pub struct U64Coder1248;
 
 impl U64Coder1248 {
     /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u64::U64Coder1248;
+    /// let bytes = U64Coder1248.encode(&[1u64, 256, 1 << 32, u64::MAX]);
+    /// assert_eq!(U64Coder1248.decode(&bytes, 4).unwrap(), [1u64, 256, 1 << 32, u64::MAX]);
+    /// ```
     pub fn encode(&self, values: &[u64]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode_1248(values, &mut out);
@@ -213,6 +266,15 @@ impl U64Coder1248 {
     }
 
     /// Encode `values`, appending the encoded bytes to `out`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u64::U64Coder1248;
+    /// let mut buf = Vec::new();
+    /// U64Coder1248.encode_into(&[1u64, 2], &mut buf);
+    /// U64Coder1248.encode_into(&[u64::MAX], &mut buf);
+    /// ```
     pub fn encode_into(&self, values: &[u64], out: &mut Vec<u8>) {
         dispatch_encode_1248(values, out);
     }
@@ -228,6 +290,14 @@ impl U64Coder1248 {
     /// The data must have been encoded by the same codec variant. Decoding bytes
     /// produced by a different variant (e.g., using [`U64Coder1234`] to decode data
     /// encoded by [`U64Coder1248`]) silently produces corrupt output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u64::U64Coder1248;
+    /// let bytes = U64Coder1248.encode(&[1u64, 1 << 32, u64::MAX]);
+    /// assert_eq!(U64Coder1248.decode(&bytes, 3).unwrap(), [1u64, 1 << 32, u64::MAX]);
+    /// ```
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u64>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_1248(data, n, &mut out)?;
@@ -244,6 +314,16 @@ impl U64Coder1248 {
     ///
     /// The data must have been encoded by the same codec variant. Decoding bytes
     /// produced by a different variant silently produces corrupt output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u64::U64Coder1248;
+    /// let bytes = U64Coder1248.encode(&[10u64, 1 << 40]);
+    /// let mut out = vec![0u64];
+    /// U64Coder1248.decode_into(&bytes, 2, &mut out).unwrap();
+    /// assert_eq!(out, [0u64, 10, 1 << 40]);
+    /// ```
     pub fn decode_into(
         &self,
         data: &[u8],

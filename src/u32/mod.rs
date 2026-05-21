@@ -79,6 +79,14 @@ pub struct U32Classic;
 
 impl U32Classic {
     /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Classic;
+    /// let bytes = U32Classic.encode(&[0u32, 255, 256, 65536]);
+    /// assert_eq!(U32Classic.decode(&bytes, 4).unwrap(), [0u32, 255, 256, 65536]);
+    /// ```
     pub fn encode(&self, values: &[u32]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode_classic(values, &mut out);
@@ -86,6 +94,15 @@ impl U32Classic {
     }
 
     /// Encode `values`, appending the encoded bytes to `out`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Classic;
+    /// let mut buf = Vec::new();
+    /// U32Classic.encode_into(&[1u32, 2], &mut buf);
+    /// U32Classic.encode_into(&[3u32, 4], &mut buf);
+    /// ```
     pub fn encode_into(&self, values: &[u32], out: &mut Vec<u8>) {
         dispatch_encode_classic(values, out);
     }
@@ -101,6 +118,14 @@ impl U32Classic {
     /// The data must have been encoded by the same codec variant. Decoding bytes
     /// produced by a different variant (e.g., using [`U32Classic`] to decode data
     /// encoded by [`U32Variant0124`]) silently produces corrupt output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Classic;
+    /// let bytes = U32Classic.encode(&[1u32, 65536, u32::MAX]);
+    /// assert_eq!(U32Classic.decode(&bytes, 3).unwrap(), [1u32, 65536, u32::MAX]);
+    /// ```
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_classic(data, n, &mut out)?;
@@ -117,6 +142,16 @@ impl U32Classic {
     ///
     /// The data must have been encoded by the same codec variant. Decoding bytes
     /// produced by a different variant silently produces corrupt output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Classic;
+    /// let bytes = U32Classic.encode(&[10u32, 20]);
+    /// let mut out = vec![0u32];
+    /// U32Classic.decode_into(&bytes, 2, &mut out).unwrap();
+    /// assert_eq!(out, [0u32, 10, 20]);
+    /// ```
     pub fn decode_into(
         &self,
         data: &[u8],
@@ -176,6 +211,14 @@ pub struct U32Variant0124;
 
 impl U32Variant0124 {
     /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Variant0124;
+    /// let bytes = U32Variant0124.encode(&[0u32, 0, 1, 256]);
+    /// assert_eq!(U32Variant0124.decode(&bytes, 4).unwrap(), [0u32, 0, 1, 256]);
+    /// ```
     pub fn encode(&self, values: &[u32]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode_0124(values, &mut out);
@@ -183,6 +226,15 @@ impl U32Variant0124 {
     }
 
     /// Encode `values`, appending the encoded bytes to `out`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Variant0124;
+    /// let mut buf = Vec::new();
+    /// U32Variant0124.encode_into(&[0u32, 1], &mut buf);
+    /// U32Variant0124.encode_into(&[0u32, 2], &mut buf);
+    /// ```
     pub fn encode_into(&self, values: &[u32], out: &mut Vec<u8>) {
         dispatch_encode_0124(values, out);
     }
@@ -198,6 +250,14 @@ impl U32Variant0124 {
     /// The data must have been encoded by the same codec variant. Decoding bytes
     /// produced by a different variant (e.g., using [`U32Classic`] to decode data
     /// encoded by [`U32Variant0124`]) silently produces corrupt output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Variant0124;
+    /// let bytes = U32Variant0124.encode(&[0u32, 1, 65536]);
+    /// assert_eq!(U32Variant0124.decode(&bytes, 3).unwrap(), [0u32, 1, 65536]);
+    /// ```
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_0124(data, n, &mut out)?;
@@ -214,6 +274,16 @@ impl U32Variant0124 {
     ///
     /// The data must have been encoded by the same codec variant. Decoding bytes
     /// produced by a different variant silently produces corrupt output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Variant0124;
+    /// let bytes = U32Variant0124.encode(&[0u32, 1]);
+    /// let mut out = vec![99u32];
+    /// U32Variant0124.decode_into(&bytes, 2, &mut out).unwrap();
+    /// assert_eq!(out, [99u32, 0, 1]);
+    /// ```
     pub fn decode_into(
         &self,
         data: &[u8],

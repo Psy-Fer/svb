@@ -130,6 +130,15 @@ pub fn encode<T: Zigzag>(samples: &[T]) -> Vec<T::Unsigned> {
 }
 
 /// Zigzag-encode `samples`, appending the unsigned codes to `out`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::zigzag;
+/// let mut out = Vec::new();
+/// zigzag::encode_into(&[0i16, -1, 1], &mut out);
+/// assert_eq!(out, [0u16, 1, 2]);
+/// ```
 pub fn encode_into<T: Zigzag>(samples: &[T], out: &mut Vec<T::Unsigned>) {
     T::__encode_into(samples, out);
 }
@@ -150,6 +159,15 @@ pub fn decode<T: Zigzag>(codes: &[T::Unsigned]) -> Vec<T> {
 }
 
 /// Zigzag-decode `codes`, appending the recovered signed values to `out`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::zigzag;
+/// let mut out: Vec<i16> = Vec::new();
+/// zigzag::decode_into(&[0u16, 1, 2], &mut out);
+/// assert_eq!(out, [0i16, -1, 1]);
+/// ```
 pub fn decode_into<T: Zigzag>(codes: &[T::Unsigned], out: &mut Vec<T>) {
     T::__decode_into(codes, out);
 }

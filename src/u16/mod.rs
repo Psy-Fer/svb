@@ -54,8 +54,8 @@ impl_dispatch_decode!(
 
 /// StreamVByte codec for `u16` values (1-bit control stream, 1 or 2 bytes per value).
 ///
-/// Wire-compatible with ONT's VBZ format. Construct with `Svb16` — it is a
-/// zero-sized type with no configuration.
+/// Wire-compatible with ONT's VBZ format. `Svb16` is a zero-sized type with no
+/// configuration.
 ///
 /// # Examples
 ///
@@ -70,6 +70,14 @@ pub struct Svb16;
 
 impl Svb16 {
     /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u16::Svb16;
+    /// let bytes = Svb16.encode(&[0u16, 255, 256, 1000]);
+    /// assert_eq!(Svb16.decode(&bytes, 4).unwrap(), [0u16, 255, 256, 1000]);
+    /// ```
     pub fn encode(&self, values: &[u16]) -> Vec<u8> {
         let mut out = Vec::new();
         dispatch_encode(values, &mut out);
@@ -77,6 +85,15 @@ impl Svb16 {
     }
 
     /// Encode `values`, appending the encoded bytes to `out`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u16::Svb16;
+    /// let mut buf = Vec::new();
+    /// Svb16.encode_into(&[1u16, 2], &mut buf);
+    /// Svb16.encode_into(&[3u16, 4], &mut buf);
+    /// ```
     pub fn encode_into(&self, values: &[u16], out: &mut Vec<u8>) {
         dispatch_encode(values, out);
     }
@@ -86,6 +103,14 @@ impl Svb16 {
     /// `n` must equal the number of values that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
     /// produces incorrect output or a [`DecodeError`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u16::Svb16;
+    /// let bytes = Svb16.encode(&[10u16, 300]);
+    /// assert_eq!(Svb16.decode(&bytes, 2).unwrap(), [10u16, 300]);
+    /// ```
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u16>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode(data, n, &mut out)?;
@@ -97,6 +122,16 @@ impl Svb16 {
     /// `n` must equal the number of values that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
     /// produces incorrect output or a [`DecodeError`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u16::Svb16;
+    /// let bytes = Svb16.encode(&[10u16, 300]);
+    /// let mut out = vec![0u16];
+    /// Svb16.decode_into(&bytes, 2, &mut out).unwrap();
+    /// assert_eq!(out, [0u16, 10, 300]);
+    /// ```
     pub fn decode_into(
         &self,
         data: &[u8],

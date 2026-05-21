@@ -212,6 +212,15 @@ mod vbz {
     }
 
     /// Encode `i16` samples through delta, zigzag, then SVB16, appending the result to `out`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::{encode_vbz_into, decode_vbz};
+    /// let mut buf = Vec::new();
+    /// encode_vbz_into(&[1i16, 2, 3], &mut buf);
+    /// encode_vbz_into(&[4i16, 5, 6], &mut buf);
+    /// ```
     pub fn encode_vbz_into(samples: &[i16], out: &mut Vec<u8>) {
         let deltas = delta::encode(samples);
         let codes = zigzag::encode(&deltas);
@@ -223,6 +232,15 @@ mod vbz {
     /// `n` must equal the number of samples that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
     /// produces incorrect output or a [`DecodeError`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::{encode_vbz, decode_vbz};
+    /// let samples = [10i16, 11, 12, 13];
+    /// let encoded = encode_vbz(&samples);
+    /// assert_eq!(decode_vbz(&encoded, samples.len()).unwrap(), samples);
+    /// ```
     pub fn decode_vbz(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         decode_vbz_into(data, n, &mut out)?;
@@ -234,6 +252,16 @@ mod vbz {
     /// `n` must equal the number of samples that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
     /// produces incorrect output or a [`DecodeError`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::{encode_vbz, decode_vbz_into};
+    /// let encoded = encode_vbz(&[10i16, 20]);
+    /// let mut out = vec![0i16];
+    /// decode_vbz_into(&encoded, 2, &mut out).unwrap();
+    /// assert_eq!(out, [0i16, 10, 20]);
+    /// ```
     pub fn decode_vbz_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
         let codes = Svb16.decode(data, n)?;
         let deltas = zigzag::decode(&codes);

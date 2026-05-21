@@ -1,6 +1,20 @@
 use thiserror::Error;
 
 /// Errors that can occur when decoding a StreamVByte-encoded byte slice.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::{u32::U32Classic, DecodeError};
+/// // Decoding from an empty buffer when n > 0 → ControlStreamTooShort.
+/// match U32Classic.decode(&[], 4) {
+///     Err(DecodeError::ControlStreamTooShort { need, have }) => {
+///         assert_eq!(need, 1);
+///         assert_eq!(have, 0);
+///     }
+///     _ => panic!("expected ControlStreamTooShort"),
+/// }
+/// ```
 #[derive(Debug, Error)]
 pub enum DecodeError {
     /// The data stream ended before all `n` values could be decoded.

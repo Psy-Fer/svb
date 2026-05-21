@@ -71,7 +71,7 @@ let decoded = U32Classic.decode(&encoded, values.len()).unwrap();
 assert_eq!(decoded, values);
 ```
 
-### U32Variant0124 — sparse data
+### U32Variant0124: sparse data
 
 ```rust
 use svb::u32::U32Variant0124;
@@ -83,18 +83,30 @@ let decoded = U32Variant0124.decode(&encoded, values.len()).unwrap();
 assert_eq!(decoded, values);
 ```
 
-### U64 codecs
+### U64Coder1234: values up to u32::MAX
+
+`U64Coder1234` uses 1–4 byte widths (matching U32Classic). Values above `u32::MAX`
+are silently truncated; call `check_range` first if the input may contain large values.
 
 ```rust
-use svb::u64::{U64Coder1234, U64Coder1248};
+use svb::u64::U64Coder1234;
 
-let values: Vec<u64> = vec![1, 500, 1 << 32, u64::MAX / 2];
+let values: Vec<u64> = vec![1, 500, 70_000, u32::MAX as u64];
+assert_eq!(U64Coder1234.check_range(&values), None); // all fit in u32
+let encoded = U64Coder1234.encode(&values);
+assert_eq!(U64Coder1234.decode(&encoded, values.len()).unwrap(), values);
+```
 
-let enc_1234 = U64Coder1234.encode(&values);
-assert_eq!(U64Coder1234.decode(&enc_1234, values.len()).unwrap(), values);
+### U64Coder1248: full u64 range
 
-let enc_1248 = U64Coder1248.encode(&values);
-assert_eq!(U64Coder1248.decode(&enc_1248, values.len()).unwrap(), values);
+`U64Coder1248` uses 1/2/4/8 byte widths, covering the full `u64` range without truncation.
+
+```rust
+use svb::u64::U64Coder1248;
+
+let values: Vec<u64> = vec![1, 500, 1 << 32, u64::MAX];
+let encoded = U64Coder1248.encode(&values);
+assert_eq!(U64Coder1248.decode(&encoded, values.len()).unwrap(), values);
 ```
 
 ### Delta and zigzag as standalone transforms
@@ -179,4 +191,4 @@ Benchmarks cover all five codec variants × encode/decode × three slice sizes (
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Copyright 2026 James Ferguson.
+MIT. See [LICENSE](LICENSE). Copyright 2026 James Ferguson.

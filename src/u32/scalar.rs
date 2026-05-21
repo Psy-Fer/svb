@@ -44,7 +44,7 @@ pub(super) fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
 
 /// Decode `n` U32Classic values from pre-split `ctrl` and `data` byte slices.
 ///
-/// Unlike [`decode_into_classic`], this function does not split the buffer —
+/// Unlike [`decode_into_classic`], this function does not split the buffer;
 /// the caller is responsible for passing the ctrl and data streams separately.
 /// Used by SIMD decode paths to handle the scalar tail.
 pub(super) fn decode_classic_from_raw(
