@@ -11,7 +11,7 @@ alloc = []
 simd-avx2 = []
 simd-ssse3 = []
 simd-neon = []
-simd-auto = []
+simd-auto = [] # On x86-64 requires `std` for runtime CPU detection; without `std` falls back to scalar
 
 [dependencies]
 thiserror = { version = "2", default-features = false }

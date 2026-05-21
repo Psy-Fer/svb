@@ -7,10 +7,10 @@
 //
 // Entry `c` is the 16-byte PSHUFB mask that expands the compact data bytes for
 // ctrl byte `c` into 4 × u32 (little-endian) in a 128-bit register.
-// Tag widths: tag+1 (0→1, 1→2, 2→3, 3→4). Identical structure to U32Classic.
+// Tag widths: [1, 2, 3, 4]. Identical structure to U32Classic.
 // After PSHUFB, each u32 slot is zero-extended to u64 before output.
 
-const fn make_decode_1234() -> [[u8; 16]; 256] {
+const fn make_decode(widths: [usize; 4]) -> [[u8; 16]; 256] {
     let mut table = [[0u8; 16]; 256];
     let mut ctrl = 0usize;
     while ctrl < 256 {
@@ -18,7 +18,7 @@ const fn make_decode_1234() -> [[u8; 16]; 256] {
         let mut i = 0usize;
         while i < 4 {
             let tag = (ctrl >> (2 * i)) & 3;
-            let width = tag + 1;
+            let width = widths[tag];
             let base = 4 * i;
             let mut b = 0usize;
             while b < 4 {
@@ -33,16 +33,21 @@ const fn make_decode_1234() -> [[u8; 16]; 256] {
     table
 }
 
-pub(super) static TABLE_1234: [[u8; 16]; 256] = make_decode_1234();
+pub(super) static TABLE_1234: [[u8; 16]; 256] = make_decode([1, 2, 3, 4]);
 
-const fn make_data_len_1234() -> [u8; 256] {
+// ── U64Coder1234 data-length table ────────────────────────────────────────────
+//
+// Entry `c` = data bytes consumed for 4 values with control byte `c`.
+// data_len(c) = sum of widths[(c >> (2*i)) & 3] for i in 0..4.
+
+const fn make_data_len(widths: [usize; 4]) -> [u8; 256] {
     let mut table = [0u8; 256];
     let mut ctrl = 0usize;
     while ctrl < 256 {
         let mut sum = 0u8;
         let mut i = 0usize;
         while i < 4 {
-            sum += ((ctrl >> (2 * i)) & 3) as u8 + 1;
+            sum += widths[(ctrl >> (2 * i)) & 3] as u8;
             i += 1;
         }
         table[ctrl] = sum;
@@ -51,7 +56,7 @@ const fn make_data_len_1234() -> [u8; 256] {
     table
 }
 
-pub(super) static DATA_LEN_1234: [u8; 256] = make_data_len_1234();
+pub(super) static DATA_LEN_1234: [u8; 256] = make_data_len([1, 2, 3, 4]);
 
 // ── U64Coder1248 pair decode table ────────────────────────────────────────────
 //
@@ -113,7 +118,7 @@ pub(super) static DATA_LEN_1248_PAIR: [u8; 16] = make_data_len_1248_pair();
 // of the u64 values, already narrowed) into a compact variable-width output.
 // Identical structure to U32Classic encode table.
 
-const fn make_encode_1234() -> [[u8; 16]; 256] {
+const fn make_encode(widths: [usize; 4]) -> [[u8; 16]; 256] {
     let mut table = [[0u8; 16]; 256];
     let mut ctrl = 0usize;
     while ctrl < 256 {
@@ -121,7 +126,7 @@ const fn make_encode_1234() -> [[u8; 16]; 256] {
         let mut i = 0usize;
         while i < 4 {
             let tag = (ctrl >> (2 * i)) & 3;
-            let width = tag + 1;
+            let width = widths[tag];
             let mut b = 0usize;
             while b < width {
                 table[ctrl][dst] = (4 * i + b) as u8;
@@ -135,7 +140,7 @@ const fn make_encode_1234() -> [[u8; 16]; 256] {
     table
 }
 
-pub(super) static ENCODE_TABLE_1234: [[u8; 16]; 256] = make_encode_1234();
+pub(super) static ENCODE_TABLE_1234: [[u8; 16]; 256] = make_encode([1, 2, 3, 4]);
 
 // ── U64Coder1248 pair encode table ────────────────────────────────────────────
 //

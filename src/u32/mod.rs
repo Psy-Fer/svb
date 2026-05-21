@@ -95,6 +95,12 @@ impl U32Classic {
     /// `n` must equal the number of values that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
     /// produces incorrect output or a [`DecodeError`].
+    ///
+    /// # Warning
+    ///
+    /// The data must have been encoded by the same codec variant. Decoding bytes
+    /// produced by a different variant (e.g., using [`U32Classic`] to decode data
+    /// encoded by [`U32Variant0124`]) silently produces corrupt output.
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_classic(data, n, &mut out)?;
@@ -106,6 +112,11 @@ impl U32Classic {
     /// `n` must equal the number of values that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
     /// produces incorrect output or a [`DecodeError`].
+    ///
+    /// # Warning
+    ///
+    /// The data must have been encoded by the same codec variant. Decoding bytes
+    /// produced by a different variant silently produces corrupt output.
     pub fn decode_into(
         &self,
         data: &[u8],
@@ -181,6 +192,12 @@ impl U32Variant0124 {
     /// `n` must equal the number of values that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
     /// produces incorrect output or a [`DecodeError`].
+    ///
+    /// # Warning
+    ///
+    /// The data must have been encoded by the same codec variant. Decoding bytes
+    /// produced by a different variant (e.g., using [`U32Classic`] to decode data
+    /// encoded by [`U32Variant0124`]) silently produces corrupt output.
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
         let mut out = Vec::with_capacity(n);
         dispatch_decode_0124(data, n, &mut out)?;
@@ -192,6 +209,11 @@ impl U32Variant0124 {
     /// `n` must equal the number of values that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
     /// produces incorrect output or a [`DecodeError`].
+    ///
+    /// # Warning
+    ///
+    /// The data must have been encoded by the same codec variant. Decoding bytes
+    /// produced by a different variant silently produces corrupt output.
     pub fn decode_into(
         &self,
         data: &[u8],

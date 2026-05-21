@@ -18,6 +18,12 @@
 //! `simd-ssse3`, or `simd-neon` for compile-time SIMD when the target is known.
 //! Disable `std` and enable `alloc` for `no_std` use; all codec functionality
 //! requires at least the `alloc` feature.
+//!
+//! **`no_std` note:** `simd-auto` on x86-64 requires `std` for
+//! [`is_x86_feature_detected!`]. When `std` is disabled, `simd-auto` compiles
+//! but silently falls back to scalar regardless of the CPU's actual capabilities.
+//! Use `simd-avx2` or `simd-ssse3` with a compile-time target-feature flag
+//! (`RUSTFLAGS="-C target-feature=+avx2"`) for SIMD in `no_std` builds.
 #![cfg_attr(not(feature = "std"), no_std)]
 #![deny(clippy::all)]
 #![deny(unsafe_op_in_unsafe_fn)]

@@ -209,6 +209,20 @@ fn load_i16(bytes: &[u8]) -> Vec<i16> {
         .collect()
 }
 
+fn load_u32(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .chunks_exact(4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect()
+}
+
+fn load_u64(bytes: &[u8]) -> Vec<u64> {
+    bytes
+        .chunks_exact(8)
+        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+        .collect()
+}
+
 #[test]
 fn pod5_parity_read0() {
     let svb16 = include_bytes!("vectors/parity_00_02885.svb16");
@@ -228,4 +242,46 @@ fn pod5_parity_read2() {
     let svb16 = include_bytes!("vectors/parity_02_02949.svb16");
     let expected = load_i16(include_bytes!("vectors/parity_02_02949.i16"));
     assert_eq!(decode_vbz(svb16, 2949).unwrap(), expected);
+}
+
+// ── U32 / U64 regression vectors ─────────────────────────────────────────────
+//
+// Self-generated from the Rust implementation (validated against spec examples
+// and property-based roundtrip tests; see manifest.json for details).
+// These guard against future regressions — any change to encode/decode wire
+// format will cause these tests to fail.
+//
+// To regenerate: cargo run --bin gen_test_vectors
+
+#[test]
+fn u32_classic_regression_vector() {
+    let enc = include_bytes!("vectors/u32_classic_256.enc");
+    let expected = load_u32(include_bytes!("vectors/u32_classic_256.raw"));
+    assert_eq!(U32Classic.decode(enc, 256).unwrap(), expected);
+    // Verify encode produces the same bytes.
+    assert_eq!(U32Classic.encode(&expected), enc);
+}
+
+#[test]
+fn u32_variant0124_regression_vector() {
+    let enc = include_bytes!("vectors/u32_variant0124_256.enc");
+    let expected = load_u32(include_bytes!("vectors/u32_variant0124_256.raw"));
+    assert_eq!(U32Variant0124.decode(enc, 256).unwrap(), expected);
+    assert_eq!(U32Variant0124.encode(&expected), enc);
+}
+
+#[test]
+fn u64_coder1234_regression_vector() {
+    let enc = include_bytes!("vectors/u64_coder1234_256.enc");
+    let expected = load_u64(include_bytes!("vectors/u64_coder1234_256.raw"));
+    assert_eq!(U64Coder1234.decode(enc, 256).unwrap(), expected);
+    assert_eq!(U64Coder1234.encode(&expected), enc);
+}
+
+#[test]
+fn u64_coder1248_regression_vector() {
+    let enc = include_bytes!("vectors/u64_coder1248_256.enc");
+    let expected = load_u64(include_bytes!("vectors/u64_coder1248_256.raw"));
+    assert_eq!(U64Coder1248.decode(enc, 256).unwrap(), expected);
+    assert_eq!(U64Coder1248.encode(&expected), enc);
 }

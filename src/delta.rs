@@ -500,7 +500,19 @@ pub fn decode_into<T: Delta>(deltas: &[T], out: &mut Vec<T>) {
     T::__decode_into(T::default(), deltas, out);
 }
 
-fn encode_with_initial_into<T: Delta>(initial: T, samples: &[T], out: &mut Vec<T>) {
+/// Delta-decode `deltas` starting from `initial`, appending the result to `out`.
+///
+/// Streaming counterpart to [`decode_with_initial`]; avoids allocating when
+/// appending into an existing buffer.
+pub fn decode_with_initial_into<T: Delta>(initial: T, deltas: &[T], out: &mut Vec<T>) {
+    T::__decode_into(initial, deltas, out);
+}
+
+/// Delta-encode `samples` using `initial` as the preceding value, appending the result to `out`.
+///
+/// Streaming counterpart to [`encode_with_initial`]; avoids allocating when
+/// appending into an existing buffer.
+pub fn encode_with_initial_into<T: Delta>(initial: T, samples: &[T], out: &mut Vec<T>) {
     let mut prev = initial;
     for &s in samples {
         out.push(s.__sub(prev));
@@ -2070,5 +2082,40 @@ mod tests {
     fn i64_roundtrip() {
         let values: Vec<i64> = vec![i64::MIN, -1, 0, 1, i64::MAX];
         assert_eq!(decode(&encode(&values)), values);
+    }
+
+    // ── _into streaming variants ──────────────────────────────────────────────
+
+    #[test]
+    fn encode_with_initial_into_appends() {
+        let mut out: Vec<i16> = vec![99];
+        encode_with_initial_into(5i16, &[7, 10, 6], &mut out);
+        // deltas: 7-5=2, 10-7=3, 6-10=-4
+        assert_eq!(out, [99, 2, 3, -4]);
+    }
+
+    #[test]
+    fn decode_with_initial_into_appends() {
+        let mut out: Vec<i16> = vec![99];
+        decode_with_initial_into(5i16, &[2i16, 3, -4], &mut out);
+        // prefix sums from 5: 7, 10, 6
+        assert_eq!(out, [99, 7, 10, 6]);
+    }
+
+    #[test]
+    fn into_variants_match_allocating_variants() {
+        let samples: Vec<i32> = vec![100, 200, 150, 300];
+        let initial = 50i32;
+
+        let enc_alloc = encode_with_initial(initial, &samples);
+        let mut enc_into: Vec<i32> = Vec::new();
+        encode_with_initial_into(initial, &samples, &mut enc_into);
+        assert_eq!(enc_alloc, enc_into);
+
+        let dec_alloc = decode_with_initial(initial, &enc_alloc);
+        let mut dec_into: Vec<i32> = Vec::new();
+        decode_with_initial_into(initial, &enc_alloc, &mut dec_into);
+        assert_eq!(dec_alloc, dec_into);
+        assert_eq!(dec_alloc, samples);
     }
 }

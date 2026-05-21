@@ -3,24 +3,64 @@
     "n_samples": 2885,
     "svb16_len": 3291,
     "read_id": "93129da0-822f-4e68-82ea-87e6c30d8928",
-    "purpose": "parity"
+    "purpose": "parity",
+    "source": "ONT POD5 reference decoder"
   },
   "parity_01_02915": {
     "n_samples": 2915,
     "svb16_len": 3349,
     "read_id": "01a8ca3f-6188-46ae-9920-7a9710138659",
-    "purpose": "parity"
+    "purpose": "parity",
+    "source": "ONT POD5 reference decoder"
   },
   "parity_02_02949": {
     "n_samples": 2949,
     "svb16_len": 3359,
     "read_id": "d2e7e840-b460-4765-9c1a-b72c8b939f5c",
-    "purpose": "parity"
+    "purpose": "parity",
+    "source": "ONT POD5 reference decoder"
   },
   "bench_00_101988": {
     "n_samples": 101988,
     "svb16_len": 115682,
     "read_id": "11652979-0cca-4c81-a55f-cb135e81400e",
-    "purpose": "benchmark"
+    "purpose": "benchmark",
+    "source": "ONT POD5 reference decoder"
+  },
+  "u32_classic_256": {
+    "n": 256,
+    "codec": "U32Classic",
+    "raw_len": 1024,
+    "enc_len": 704,
+    "purpose": "regression",
+    "source": "self-generated (Rust implementation validated against spec examples)",
+    "note": "Replace with C reference vectors (streamvbyte) when available."
+  },
+  "u32_variant0124_256": {
+    "n": 256,
+    "codec": "U32Variant0124",
+    "raw_len": 1024,
+    "enc_len": 512,
+    "purpose": "regression",
+    "source": "self-generated (Rust implementation validated against spec examples)",
+    "note": "Replace with C reference vectors when available."
+  },
+  "u64_coder1234_256": {
+    "n": 256,
+    "codec": "U64Coder1234",
+    "raw_len": 2048,
+    "enc_len": 704,
+    "purpose": "regression",
+    "source": "self-generated (Rust implementation validated against spec examples)",
+    "note": "Replace with C reference vectors (streamvbyte64) when available."
+  },
+  "u64_coder1248_256": {
+    "n": 256,
+    "codec": "U64Coder1248",
+    "raw_len": 2048,
+    "enc_len": 1024,
+    "purpose": "regression",
+    "source": "self-generated (Rust implementation validated against spec examples)",
+    "note": "Replace with C reference vectors (streamvbyte64) when available."
   }
 }
