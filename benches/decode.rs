@@ -1,4 +1,5 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use streamvbyte64::Coder as _;
 use svb::{
     decode_vbz, encode_vbz,
     u16::Svb16,
@@ -209,6 +210,195 @@ fn bench_u64_coder1248_decode(c: &mut Criterion) {
     g.finish();
 }
 
+// ── comparative: svb vs streamvbyte64 ─────────────────────────────────────────
+//
+// For each shared codec variant we benchmark encode and decode side-by-side
+// using the same input data.  The benchmark IDs follow the pattern:
+//   "svb/U32Classic/encode/<n>"
+//   "streamvbyte64/U32Classic/encode/<n>"
+//
+// `streamvbyte64` requires len%4==0; all SIZES already satisfy this since
+// 128, 1024, and 8192 are all multiples of 4.
+//
+// `streamvbyte64` keeps tags and data in separate buffers.  We pre-allocate
+// both to max size and reuse them across iterations to avoid allocation noise.
+
+// ── prepare sv64-style pre-split buffers from an svb-encoded blob ──────────────
+
+/// Split an svb flat blob into owned (tags, data) for sv64 decode.
+fn split_svb(encoded: &[u8], n: usize) -> (Vec<u8>, Vec<u8>) {
+    let ctrl_len = n.div_ceil(4);
+    (encoded[..ctrl_len].to_vec(), encoded[ctrl_len..].to_vec())
+}
+
+// ── U32Classic ↔ Coder1234 ───────────────────────────────────────────────────
+
+fn bench_compare_u32_classic_encode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("compare/U32Classic/encode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (values, _) = u32_data(n);
+
+        g.bench_with_input(BenchmarkId::new("svb", n), &values, |b, v| {
+            b.iter(|| U32Classic.encode(v));
+        });
+
+        g.bench_with_input(BenchmarkId::new("streamvbyte64", n), &values, |b, v| {
+            let coder = streamvbyte64::Coder1234::new();
+            let (tl, dl) = streamvbyte64::Coder1234::max_compressed_bytes(v.len());
+            b.iter(|| {
+                let mut tags = vec![0u8; tl];
+                let mut data = vec![0u8; dl];
+                coder.encode(v, &mut tags, &mut data)
+            });
+        });
+    }
+    g.finish();
+}
+
+fn bench_compare_u32_classic_decode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("compare/U32Classic/decode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (_, svb_enc) = u32_data(n);
+        let (tags, data) = split_svb(&svb_enc, n);
+
+        g.bench_with_input(
+            BenchmarkId::new("svb", n),
+            &(svb_enc.clone(), n),
+            |b, (enc, n)| {
+                b.iter(|| U32Classic.decode(enc, *n).unwrap());
+            },
+        );
+
+        g.bench_with_input(
+            BenchmarkId::new("streamvbyte64", n),
+            &(tags.clone(), data.clone(), n),
+            |b, (tags, data, n)| {
+                let coder = streamvbyte64::Coder1234::new();
+                b.iter(|| {
+                    let mut out = vec![0u32; *n];
+                    coder.decode(tags, data, &mut out);
+                    out
+                });
+            },
+        );
+    }
+    g.finish();
+}
+
+// ── U32Variant0124 ↔ Coder0124 ───────────────────────────────────────────────
+
+fn bench_compare_u32_variant0124_encode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("compare/U32Variant0124/encode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (values, _) = u32_0124_data(n);
+
+        g.bench_with_input(BenchmarkId::new("svb", n), &values, |b, v| {
+            b.iter(|| U32Variant0124.encode(v));
+        });
+
+        g.bench_with_input(BenchmarkId::new("streamvbyte64", n), &values, |b, v| {
+            let coder = streamvbyte64::Coder0124::new();
+            let (tl, dl) = streamvbyte64::Coder0124::max_compressed_bytes(v.len());
+            b.iter(|| {
+                let mut tags = vec![0u8; tl];
+                let mut data = vec![0u8; dl];
+                coder.encode(v, &mut tags, &mut data)
+            });
+        });
+    }
+    g.finish();
+}
+
+fn bench_compare_u32_variant0124_decode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("compare/U32Variant0124/decode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (_, svb_enc) = u32_0124_data(n);
+        let (tags, data) = split_svb(&svb_enc, n);
+
+        g.bench_with_input(
+            BenchmarkId::new("svb", n),
+            &(svb_enc.clone(), n),
+            |b, (enc, n)| {
+                b.iter(|| U32Variant0124.decode(enc, *n).unwrap());
+            },
+        );
+
+        g.bench_with_input(
+            BenchmarkId::new("streamvbyte64", n),
+            &(tags.clone(), data.clone(), n),
+            |b, (tags, data, n)| {
+                let coder = streamvbyte64::Coder0124::new();
+                b.iter(|| {
+                    let mut out = vec![0u32; *n];
+                    coder.decode(tags, data, &mut out);
+                    out
+                });
+            },
+        );
+    }
+    g.finish();
+}
+
+// ── U64Coder1248 ↔ Coder1248 ─────────────────────────────────────────────────
+
+fn bench_compare_u64_coder1248_encode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("compare/U64Coder1248/encode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (values, _) = u64_1248_data(n);
+
+        g.bench_with_input(BenchmarkId::new("svb", n), &values, |b, v| {
+            b.iter(|| U64Coder1248.encode(v));
+        });
+
+        g.bench_with_input(BenchmarkId::new("streamvbyte64", n), &values, |b, v| {
+            let coder = streamvbyte64::Coder1248::new();
+            let (tl, dl) = streamvbyte64::Coder1248::max_compressed_bytes(v.len());
+            b.iter(|| {
+                let mut tags = vec![0u8; tl];
+                let mut data = vec![0u8; dl];
+                coder.encode(v, &mut tags, &mut data)
+            });
+        });
+    }
+    g.finish();
+}
+
+fn bench_compare_u64_coder1248_decode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("compare/U64Coder1248/decode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (_, svb_enc) = u64_1248_data(n);
+        let (tags, data) = split_svb(&svb_enc, n);
+
+        g.bench_with_input(
+            BenchmarkId::new("svb", n),
+            &(svb_enc.clone(), n),
+            |b, (enc, n)| {
+                b.iter(|| U64Coder1248.decode(enc, *n).unwrap());
+            },
+        );
+
+        g.bench_with_input(
+            BenchmarkId::new("streamvbyte64", n),
+            &(tags.clone(), data.clone(), n),
+            |b, (tags, data, n)| {
+                let coder = streamvbyte64::Coder1248::new();
+                b.iter(|| {
+                    let mut out = vec![0u64; *n];
+                    coder.decode(tags, data, &mut out);
+                    out
+                });
+            },
+        );
+    }
+    g.finish();
+}
+
 // ── registry ──────────────────────────────────────────────────────────────────
 
 criterion_group!(
@@ -222,5 +412,11 @@ criterion_group!(
     bench_u32_variant0124_decode,
     bench_u64_coder1234_decode,
     bench_u64_coder1248_decode,
+    bench_compare_u32_classic_encode,
+    bench_compare_u32_classic_decode,
+    bench_compare_u32_variant0124_encode,
+    bench_compare_u32_variant0124_decode,
+    bench_compare_u64_coder1248_encode,
+    bench_compare_u64_coder1248_decode,
 );
 criterion_main!(benches);

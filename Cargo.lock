@@ -718,11 +718,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
+name = "streamvbyte64"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9680297f5d33b5bf359514250eb88bf2e0f08d4863b296be71fb3f4d50c92c9"
+dependencies = [
+ "crunchy",
+ "num-traits",
+]
+
+[[package]]
 name = "svb"
 version = "0.1.0"
 dependencies = [
  "criterion",
  "proptest",
+ "streamvbyte64",
  "thiserror",
 ]
 
