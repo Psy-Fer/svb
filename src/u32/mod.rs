@@ -49,103 +49,16 @@ mod neon;
 
 // ── U32Classic ────────────────────────────────────────────────────────────────
 
-fn dispatch_encode_classic(values: &[u32], out: &mut Vec<u8>) {
-    #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
-    {
-        // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
-        return unsafe { avx2::encode_into_classic(values, out) };
-    }
-
-    #[cfg(all(
-        feature = "simd-ssse3",
-        not(feature = "simd-avx2"),
-        target_arch = "x86_64"
-    ))]
-    {
-        // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime.
-        return unsafe { sse2::encode_into_classic(values, out) };
-    }
-
-    #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
-    {
-        // SAFETY: NEON is mandatory on AArch64.
-        return unsafe { neon::encode_into_classic(values, out) };
-    }
-
-    #[cfg(all(
-        feature = "simd-auto",
-        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
-    ))]
-    {
-        #[cfg(all(feature = "std", target_arch = "x86_64"))]
-        {
-            if is_x86_feature_detected!("avx2") {
-                // SAFETY: AVX2 confirmed at runtime.
-                return unsafe { avx2::encode_into_classic(values, out) };
-            }
-            if is_x86_feature_detected!("ssse3") {
-                // SAFETY: SSSE3 confirmed at runtime.
-                return unsafe { sse2::encode_into_classic(values, out) };
-            }
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            // SAFETY: NEON is mandatory on AArch64.
-            return unsafe { neon::encode_into_classic(values, out) };
-        }
-    }
-
-    scalar::encode_into_classic(values, out)
-}
-
-fn dispatch_decode_classic(data: &[u8], n: usize, out: &mut Vec<u32>) -> Result<(), DecodeError> {
-    #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
-    {
-        // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
-        return unsafe { avx2::decode_into_classic(data, n, out) };
-    }
-
-    #[cfg(all(
-        feature = "simd-ssse3",
-        not(feature = "simd-avx2"),
-        target_arch = "x86_64"
-    ))]
-    {
-        // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime.
-        return unsafe { sse2::decode_into_classic(data, n, out) };
-    }
-
-    #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
-    {
-        // SAFETY: NEON is mandatory on AArch64.
-        return unsafe { neon::decode_into_classic(data, n, out) };
-    }
-
-    #[cfg(all(
-        feature = "simd-auto",
-        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
-    ))]
-    {
-        #[cfg(all(feature = "std", target_arch = "x86_64"))]
-        {
-            if is_x86_feature_detected!("avx2") {
-                // SAFETY: AVX2 confirmed at runtime.
-                return unsafe { avx2::decode_into_classic(data, n, out) };
-            }
-            if is_x86_feature_detected!("ssse3") {
-                // SAFETY: SSSE3 confirmed at runtime.
-                return unsafe { sse2::decode_into_classic(data, n, out) };
-            }
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            // SAFETY: NEON is mandatory on AArch64.
-            return unsafe { neon::decode_into_classic(data, n, out) };
-        }
-    }
-
-    scalar::decode_into_classic(data, n, out)
-}
+impl_dispatch_encode!(
+    dispatch_encode_classic, u32,
+    avx2::encode_into_classic, sse2::encode_into_classic,
+    neon::encode_into_classic, scalar::encode_into_classic
+);
+impl_dispatch_decode!(
+    dispatch_decode_classic, u32,
+    avx2::decode_into_classic, sse2::decode_into_classic,
+    neon::decode_into_classic, scalar::decode_into_classic
+);
 
 /// StreamVByte codec for `u32` values using 2-bit tags encoding 1, 2, 3, or 4 data bytes per value.
 ///
@@ -221,103 +134,16 @@ impl crate::coder::Coder for U32Classic {
 
 // ── U32Variant0124 ────────────────────────────────────────────────────────────
 
-fn dispatch_encode_0124(values: &[u32], out: &mut Vec<u8>) {
-    #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
-    {
-        // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
-        return unsafe { avx2::encode_into_0124(values, out) };
-    }
-
-    #[cfg(all(
-        feature = "simd-ssse3",
-        not(feature = "simd-avx2"),
-        target_arch = "x86_64"
-    ))]
-    {
-        // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime.
-        return unsafe { sse2::encode_into_0124(values, out) };
-    }
-
-    #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
-    {
-        // SAFETY: NEON is mandatory on AArch64.
-        return unsafe { neon::encode_into_0124(values, out) };
-    }
-
-    #[cfg(all(
-        feature = "simd-auto",
-        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
-    ))]
-    {
-        #[cfg(all(feature = "std", target_arch = "x86_64"))]
-        {
-            if is_x86_feature_detected!("avx2") {
-                // SAFETY: AVX2 confirmed at runtime.
-                return unsafe { avx2::encode_into_0124(values, out) };
-            }
-            if is_x86_feature_detected!("ssse3") {
-                // SAFETY: SSSE3 confirmed at runtime.
-                return unsafe { sse2::encode_into_0124(values, out) };
-            }
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            // SAFETY: NEON is mandatory on AArch64.
-            return unsafe { neon::encode_into_0124(values, out) };
-        }
-    }
-
-    scalar::encode_into_0124(values, out)
-}
-
-fn dispatch_decode_0124(data: &[u8], n: usize, out: &mut Vec<u32>) -> Result<(), DecodeError> {
-    #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
-    {
-        // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
-        return unsafe { avx2::decode_into_0124(data, n, out) };
-    }
-
-    #[cfg(all(
-        feature = "simd-ssse3",
-        not(feature = "simd-avx2"),
-        target_arch = "x86_64"
-    ))]
-    {
-        // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime.
-        return unsafe { sse2::decode_into_0124(data, n, out) };
-    }
-
-    #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
-    {
-        // SAFETY: NEON is mandatory on AArch64.
-        return unsafe { neon::decode_into_0124(data, n, out) };
-    }
-
-    #[cfg(all(
-        feature = "simd-auto",
-        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
-    ))]
-    {
-        #[cfg(all(feature = "std", target_arch = "x86_64"))]
-        {
-            if is_x86_feature_detected!("avx2") {
-                // SAFETY: AVX2 confirmed at runtime.
-                return unsafe { avx2::decode_into_0124(data, n, out) };
-            }
-            if is_x86_feature_detected!("ssse3") {
-                // SAFETY: SSSE3 confirmed at runtime.
-                return unsafe { sse2::decode_into_0124(data, n, out) };
-            }
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            // SAFETY: NEON is mandatory on AArch64.
-            return unsafe { neon::decode_into_0124(data, n, out) };
-        }
-    }
-
-    scalar::decode_into_0124(data, n, out)
-}
+impl_dispatch_encode!(
+    dispatch_encode_0124, u32,
+    avx2::encode_into_0124, sse2::encode_into_0124,
+    neon::encode_into_0124, scalar::encode_into_0124
+);
+impl_dispatch_decode!(
+    dispatch_decode_0124, u32,
+    avx2::decode_into_0124, sse2::decode_into_0124,
+    neon::decode_into_0124, scalar::decode_into_0124
+);
 
 /// StreamVByte codec for `u32` values using 2-bit tags encoding 0, 1, 2, or 4 data bytes per value.
 ///

@@ -36,6 +36,130 @@ pub mod delta;
 #[cfg(feature = "alloc")]
 pub mod zigzag;
 
+// ── SIMD dispatch macros ──────────────────────────────────────────────────────
+//
+// These macros generate the 5-way cfg dispatch used by every codec variant.
+// Each arm is individually gated so that exactly one branch is active at a time,
+// preventing unreachable_code warnings when multiple simd-* features overlap.
+//
+// Usage:
+//   impl_dispatch_encode!(fn_name, ElemType, avx2_fn, sse2_fn, neon_fn, scalar_fn);
+//   impl_dispatch_decode!(fn_name, ElemType, avx2_fn, sse2_fn, neon_fn, scalar_fn);
+//
+// Adding a new target architecture requires editing only the macro bodies here.
+
+#[cfg(feature = "alloc")]
+macro_rules! impl_dispatch_encode {
+    ($name:ident, $T:ty, $avx2_fn:path, $sse2_fn:path, $neon_fn:path, $scalar_fn:path) => {
+        fn $name(values: &[$T], out: &mut Vec<u8>) {
+            #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
+            {
+                // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
+                return unsafe { $avx2_fn(values, out) };
+            }
+            #[cfg(all(
+                feature = "simd-ssse3",
+                not(feature = "simd-avx2"),
+                target_arch = "x86_64"
+            ))]
+            {
+                // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime.
+                return unsafe { $sse2_fn(values, out) };
+            }
+            #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
+            {
+                // SAFETY: NEON is mandatory on AArch64.
+                return unsafe { $neon_fn(values, out) };
+            }
+            #[cfg(all(
+                feature = "simd-auto",
+                not(any(
+                    feature = "simd-avx2",
+                    feature = "simd-ssse3",
+                    feature = "simd-neon"
+                ))
+            ))]
+            {
+                #[cfg(all(feature = "std", target_arch = "x86_64"))]
+                {
+                    if is_x86_feature_detected!("avx2") {
+                        // SAFETY: AVX2 confirmed at runtime.
+                        return unsafe { $avx2_fn(values, out) };
+                    }
+                    if is_x86_feature_detected!("ssse3") {
+                        // SAFETY: SSSE3 confirmed at runtime.
+                        return unsafe { $sse2_fn(values, out) };
+                    }
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    // SAFETY: NEON is mandatory on AArch64.
+                    return unsafe { $neon_fn(values, out) };
+                }
+            }
+            $scalar_fn(values, out)
+        }
+    };
+}
+
+#[cfg(feature = "alloc")]
+macro_rules! impl_dispatch_decode {
+    ($name:ident, $T:ty, $avx2_fn:path, $sse2_fn:path, $neon_fn:path, $scalar_fn:path) => {
+        fn $name(
+            data: &[u8],
+            n: usize,
+            out: &mut Vec<$T>,
+        ) -> Result<(), crate::error::DecodeError> {
+            #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
+            {
+                // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
+                return unsafe { $avx2_fn(data, n, out) };
+            }
+            #[cfg(all(
+                feature = "simd-ssse3",
+                not(feature = "simd-avx2"),
+                target_arch = "x86_64"
+            ))]
+            {
+                // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime.
+                return unsafe { $sse2_fn(data, n, out) };
+            }
+            #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
+            {
+                // SAFETY: NEON is mandatory on AArch64.
+                return unsafe { $neon_fn(data, n, out) };
+            }
+            #[cfg(all(
+                feature = "simd-auto",
+                not(any(
+                    feature = "simd-avx2",
+                    feature = "simd-ssse3",
+                    feature = "simd-neon"
+                ))
+            ))]
+            {
+                #[cfg(all(feature = "std", target_arch = "x86_64"))]
+                {
+                    if is_x86_feature_detected!("avx2") {
+                        // SAFETY: AVX2 confirmed at runtime.
+                        return unsafe { $avx2_fn(data, n, out) };
+                    }
+                    if is_x86_feature_detected!("ssse3") {
+                        // SAFETY: SSSE3 confirmed at runtime.
+                        return unsafe { $sse2_fn(data, n, out) };
+                    }
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    // SAFETY: NEON is mandatory on AArch64.
+                    return unsafe { $neon_fn(data, n, out) };
+                }
+            }
+            $scalar_fn(data, n, out)
+        }
+    };
+}
+
 #[cfg(feature = "alloc")]
 pub mod u16;
 #[cfg(feature = "alloc")]
