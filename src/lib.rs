@@ -31,6 +31,11 @@
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 extern crate alloc;
 
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
+use alloc::vec::Vec;
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
+use alloc::vec;
+
 pub mod error;
 pub use error::DecodeError;
 

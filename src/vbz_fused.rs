@@ -852,6 +852,8 @@ unsafe fn decode_neon_2chain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "std"))]
+    use alloc::vec;
 
     fn encode_reference(values: &[i16]) -> Vec<u8> {
         let n = values.len();
