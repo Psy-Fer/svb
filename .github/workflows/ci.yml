@@ -11,10 +11,9 @@ env:
 jobs:
   # ── test matrix ──────────────────────────────────────────────────────────────
   #
-  # Five platforms, each with a distinct SIMD story:
+  # Four platforms covering distinct SIMD stories:
   #   ubuntu-latest      → x86_64 Linux   (SSE2 / SSSE3 / AVX2)
   #   ubuntu-24.04-arm   → AArch64 Linux  (NEON)
-  #   macos-13           → x86_64 macOS   (SSE2 / SSSE3 / AVX2)
   #   macos-latest       → AArch64 macOS  (NEON — Apple Silicon)
   #   windows-latest     → x86_64 Windows (SSE2 / SSSE3 / AVX2)
 
@@ -27,7 +26,6 @@ jobs:
         runner:
           - ubuntu-latest
           - ubuntu-24.04-arm
-          - macos-13
           - macos-latest
           - windows-latest
 
