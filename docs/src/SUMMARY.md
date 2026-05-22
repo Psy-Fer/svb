@@ -5,6 +5,7 @@
 ---
 
 - [Getting Started](getting-started.md)
+- [Encoding Guide](encoding.md)
 - [Codec Variants](codecs/index.md)
   - [SVB16](codecs/svb16.md)
   - [U32Classic](codecs/u32-classic.md)

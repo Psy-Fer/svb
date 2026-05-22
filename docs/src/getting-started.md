@@ -2,7 +2,7 @@
 
 ## Installation
 
-Add `svb` to your `Cargo.toml`. For most users `simd-auto` is the right choice — it detects the best available SIMD path at runtime:
+Add `svb` to your `Cargo.toml`. For most users `simd-auto` is the right choice: it detects the best available SIMD path at runtime:
 
 ```toml
 [dependencies]

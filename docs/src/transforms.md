@@ -9,7 +9,7 @@ Delta encoding replaces each value with the difference from the previous value. 
 ```rust
 use svb::{delta, u64::U64Coder1248};
 
-// Sorted u64 timestamps — differences are small positive numbers.
+// Sorted u64 timestamps; differences are small positive numbers.
 let timestamps: Vec<u64> = vec![1_000_000, 1_001_500, 1_003_000, 1_010_000];
 
 let deltas = delta::encode(&timestamps);

@@ -1,6 +1,6 @@
 # U32Variant0124
 
-`U32Variant0124` is an alternative `u32` codec where zero values consume no data bytes at all. The byte-width options are 0, 1, 2, or 4 — there is no 3-byte option.
+`U32Variant0124` is an alternative `u32` codec where zero values consume no data bytes at all. The byte-width options are 0, 1, 2, or 4. There is no 3-byte option.
 
 Wire-compatible with the Lemire "0124" variant and the `streamvbyte64::Coder0124`.
 
@@ -29,4 +29,4 @@ assert_eq!(decoded, values);
 
 ## When to use
 
-Use `U32Variant0124` when a significant fraction of values are exactly zero — for example, sparse histograms, run-length-style data, or delta-encoded sorted lists where many differences are zero. For general data with few zeros, [`U32Classic`](u32-classic.md) is typically better because it can use 3 bytes for values in the 65536–16777215 range.
+Use `U32Variant0124` when a significant fraction of values are exactly zero, such as sparse histograms, run-length-style data, or delta-encoded sorted lists where many differences are zero. For general data with few zeros, [`U32Classic`](u32-classic.md) is typically better because it can use 3 bytes for values in the 65536–16777215 range.

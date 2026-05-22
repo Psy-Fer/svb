@@ -12,10 +12,10 @@ At 8192 i16 elements, each stage measured in isolation:
 | zigzag | 18.75 GB/s | 14.83 GB/s |
 | SVB16 | 4.91 GB/s | 4.51 GB/s |
 | **VBZ (combined, 3-pass)** | **3.14 GB/s** | **1.88 GB/s** |
-| **VBZ fused decode** | — | **2.77 GB/s** |
-| **VBZ2 fused 2-chain decode** | — | **3.00 GB/s** |
+| **VBZ fused decode** | N/A | **2.77 GB/s** |
+| **VBZ2 fused 2-chain decode** | N/A | **3.00 GB/s** |
 
-Zigzag is essentially free (pure bitwise ops, LLVM auto-vectorizes). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to around 11 GB/s with no unsafe code. Delta decode uses an explicit SIMD prefix-sum (SSE2/NEON); the serial carry chain between 8-element blocks limits single-stream throughput to around 3.75 GB/s — essentially the theoretical ceiling for this algorithm.
+Zigzag is essentially free (pure bitwise ops, LLVM auto-vectorizes). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to around 11 GB/s with no unsafe code. Delta decode uses an explicit SIMD prefix-sum (SSE2/NEON); the serial carry chain between 8-element blocks limits single-stream throughput to around 3.75 GB/s, essentially the theoretical ceiling for this algorithm.
 
 ## Fused VBZ decode
 
@@ -41,7 +41,7 @@ enables a two-chain fused decode with no pre-scan required:
 [mid_carry: i16 LE][mid_data_offset: u32 LE][standard VBZ payload]
 ```
 
-`mid_carry` is `samples[n_half - 1]` — the decoded sample at the chunk midpoint,
+`mid_carry` is `samples[n_half - 1]`, the decoded sample at the chunk midpoint,
 i.e., the prefix sum of all deltas before the midpoint. `mid_data_offset` is the
 count of data bytes consumed by the first `n_half` elements (sum of `8 +
 popcnt(ctrl_byte)` over the first half of control bytes). Both are computed in
@@ -51,7 +51,7 @@ At decode time the payload is split into two independent half-streams. Two carry
 chains run interleaved in one SIMD loop: the CPU's out-of-order engine overlaps
 chain A's carry-extract latency with chain B's prefix-sum arithmetic. Port-5
 usage is unchanged from single-chain (10 ops per 16 elements), so there is no
-throughput regression at any size — the gain accumulates only where the carry
+throughput regression at any size; the gain accumulates only where the carry
 latency was the limiting factor.
 
 | | decode throughput |
@@ -66,7 +66,7 @@ the residual gain comes from partial carry-chain ILP at the tail.
 
 The real payoff is **multi-threaded decoding**: with `mid_data_offset` known
 up-front, both half-streams are independent and can run on separate cores. The
-format overhead is 6 bytes per chunk regardless of chunk size — negligible for
+format overhead is 6 bytes per chunk regardless of chunk size, negligible for
 any practical payload.
 
 ## Caller-side parallel decode
@@ -94,7 +94,7 @@ Benchmarked on the same i7-11800H, decoding 64 × 8192-element chunks in paralle
 | `decode_vbz_fused_from_into` (2 threads, batch of 64) | **3.96 Gelem/s** |
 
 **1.40× over single-chain on 2 cores.** The gap from the ideal 2× ceiling is mainly
-cache sharing — both threads decode the same 512 KB of data, competing for L2
+cache sharing, as both threads decode the same 512 KB of data, competing for L2
 bandwidth. With distinct chunks from independent nanopore reads (the realistic
 production case), the two streams have no overlapping cache lines and the speedup
 approaches 2×.
@@ -133,21 +133,21 @@ A POD5 reader decodes: disk → zstd decompress → VBZ decode → i16 samples.
 On this machine (Samsung PM9A1 NVMe, ~6.5 GB/s sequential read):
 
 - **Disk**: 6.5 GB/s × ~3× zstd ratio = ~19.5 GB/s of decoded signal capacity
-- **VBZ-K k=4**: 4.18 Gelem/s × 2 bytes = **8.36 GB/s** of decoded signal — the
+- **VBZ-K k=4**: 4.18 Gelem/s × 2 bytes = **8.36 GB/s** of decoded signal; the
   decoder at k=4 needs only 8.36/3 ≈ 2.8 GB/s of compressed disk reads, well
   within NVMe capacity
-- **zstd single-core**: ~1.5–2 GB/s compressed ≈ 2–3 Gelem/s — the real
+- **zstd single-core**: ~1.5–2 GB/s compressed ≈ 2–3 Gelem/s, the real
   bottleneck for a single-threaded reader
 
 **The disk is never the bottleneck on this hardware.** A single-threaded reader
 is zstd-limited (~2–3 Gelem/s). Parallelising VBZ decode with VBZ-K removes
 the VBZ ceiling and shifts the bottleneck back to zstd. To saturate the NVMe,
-you need multi-threaded zstd AND VBZ-K with k≥5 simultaneously — only then
+you need multi-threaded zstd AND VBZ-K with k≥5 simultaneously; only then
 does the ~6.5 GB/s compressed read bandwidth become the limit.
 
 ## Delta decode: the 2-chain approach
 
-Delta decode is a serial prefix sum — each output element depends on all previous elements. On x86_64 the SSE2 path processes 8 elements per iteration with a carry chain of ~8 cycles (extract + broadcast + add). We are already at the theoretical single-stream ceiling.
+Delta decode is a serial prefix sum: each output element depends on all previous elements. On x86_64 the SSE2 path processes 8 elements per iteration with a carry chain of ~8 cycles (extract + broadcast + add). We are already at the theoretical single-stream ceiling.
 
 `delta::decode_2chain` breaks this by decoding two independent sub-streams simultaneously. The CPU's out-of-order engine hides one chain's carry latency behind the other's prefix-sum arithmetic, delivering **1.65× throughput**:
 
@@ -164,7 +164,7 @@ With K sub-chunks, all stages of the VBZ pipeline (delta, zigzag, SVB16) can be 
 
 | Sub-chunks | decode throughput | vs. current |
 |---|---|---|
-| 1 (current VBZ) | 1.88 GB/s | — |
+| 1 (current VBZ) | 1.88 GB/s | N/A |
 | 2 (single-threaded 2-chain) | ~2.2 GB/s | 1.2× |
 | 2 cores | ~3.8 GB/s | 2× |
 | 4 cores | ~7.5 GB/s | 4× |
