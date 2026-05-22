@@ -1,7 +1,8 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use streamvbyte64::Coder as _;
 use svb::{
-    decode_vbz, decode_vbz_fused_into, encode_vbz,
+    decode_vbz, decode_vbz_fused_from_into, decode_vbz_fused_into, encode_vbz, encode_vbz2,
+    decode_vbz2_into, encode_vbzk, decode_vbzk_parallel_into,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
@@ -240,6 +241,24 @@ fn bench_vbz_fused(c: &mut Criterion) {
             b.iter(|| {
                 out.clear();
                 decode_vbz_fused_into(&encoded, n, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_vbz2_decode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vbz2_fused");
+    for &n in &[128usize, 1024, 8192] {
+        group.throughput(Throughput::Elements(n as u64));
+        let samples = vbz_i16_samples(n);
+        let encoded = encode_vbz2(&samples);
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            let mut out = Vec::with_capacity(n);
+            b.iter(|| {
+                out.clear();
+                decode_vbz2_into(&encoded, n, &mut out).unwrap();
                 black_box(&out);
             });
         });
@@ -573,6 +592,220 @@ fn bench_compare_u64_coder1248_decode(c: &mut Criterion) {
     g.finish();
 }
 
+// ── VBZ2 parallel decode ─────────────────────────────────────────────────────
+//
+// Decodes two independent half-streams simultaneously using std::thread::scope.
+// BATCH chunks are decoded per iteration so that thread-scope creation overhead
+// is amortised: at n=8192, each half decodes in ~2.5µs; BATCH=64 gives ~160µs
+// of useful work vs ~5µs of scope overhead (<3%).
+//
+// The two spawned threads each process BATCH half-A (or half-B) streams sequentially,
+// mirroring how a real POD5 reader would assign chunks to a fixed thread pool.
+// Throughput is reported as total elements (n × BATCH) per wall-clock second.
+
+fn bench_vbz2_parallel(c: &mut Criterion) {
+    use std::time::{Duration, Instant};
+
+    const N: usize = 8192;
+    const BATCH: usize = 64;
+
+    let samples = vbz_i16_samples(N);
+    let encoded = encode_vbz2(&samples);
+
+    let mid_carry = i16::from_le_bytes([encoded[0], encoded[1]]);
+    let mid_data_offset =
+        u32::from_le_bytes([encoded[2], encoded[3], encoded[4], encoded[5]]) as usize;
+    let svb = &encoded[6..];
+    let n_half = (N / 2) & !7;
+    let ctrl_len = N.div_ceil(8);
+    let ctrl_half = n_half / 8;
+    let n_b = N - n_half;
+
+    // Build the two sub-streams once; reuse them across all iterations.
+    let stream_a: Vec<u8> = {
+        let mut v = svb[..ctrl_half].to_vec();
+        v.extend_from_slice(&svb[ctrl_len..ctrl_len + mid_data_offset]);
+        v
+    };
+    let stream_b: Vec<u8> = {
+        let mut v = svb[ctrl_half..ctrl_len].to_vec();
+        v.extend_from_slice(&svb[ctrl_len + mid_data_offset..]);
+        v
+    };
+
+    let mut group = c.benchmark_group("vbz2_parallel");
+    group.throughput(Throughput::Elements((N * BATCH) as u64));
+
+    group.bench_function(N.to_string(), |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let t0 = Instant::now();
+                std::thread::scope(|scope| {
+                    scope.spawn(|| {
+                        let mut out = Vec::with_capacity(n_half);
+                        for _ in 0..BATCH {
+                            out.clear();
+                            decode_vbz_fused_from_into(&stream_a, n_half, 0, &mut out).unwrap();
+                            black_box(&out);
+                        }
+                    });
+                    scope.spawn(|| {
+                        let mut out = Vec::with_capacity(n_b);
+                        for _ in 0..BATCH {
+                            out.clear();
+                            decode_vbz_fused_from_into(&stream_b, n_b, mid_carry, &mut out)
+                                .unwrap();
+                            black_box(&out);
+                        }
+                    });
+                });
+                total += t0.elapsed();
+            }
+            total
+        })
+    });
+
+    group.finish();
+}
+
+// ── VBZ-K parallel decode ─────────────────────────────────────────────────────
+//
+// Decodes k independent sub-streams simultaneously using std::thread::scope.
+// BATCH chunks are decoded per iteration to amortise thread-scope overhead.
+// Throughput is reported as total elements (n × BATCH) per wall-clock second.
+
+fn bench_vbzk_parallel(c: &mut Criterion) {
+    use std::time::{Duration, Instant};
+
+    const N: usize = 8192;
+    const BATCH: usize = 64;
+
+    for &k in &[2usize, 4, 8] {
+        let samples = vbz_i16_samples(N);
+        let encoded = encode_vbzk(&samples, k);
+
+        // Parse the VBZ-K header to extract carries and data offsets.
+        let effective_k = encoded[0] as usize;
+        let header_len = 1 + (effective_k - 1) * 6;
+        let n_sub = (N / effective_k) & !7;
+        let ctrl_len = N.div_ceil(8);
+        let svb = &encoded[header_len..];
+        let ctrl = &svb[..ctrl_len];
+        let data_bytes = &svb[ctrl_len..];
+
+        let mut sub_carry = vec![0i16; effective_k];
+        let mut data_start = vec![0usize; effective_k + 1];
+        for i in 1..effective_k {
+            let off = 1 + (i - 1) * 6;
+            sub_carry[i] = i16::from_le_bytes([encoded[off], encoded[off + 1]]);
+            data_start[i] = u32::from_le_bytes([
+                encoded[off + 2],
+                encoded[off + 3],
+                encoded[off + 4],
+                encoded[off + 5],
+            ]) as usize;
+        }
+        data_start[effective_k] = data_bytes.len();
+
+        // Pre-assemble each sub-stream as a flat [ctrl | data] buffer.
+        // This lets us call decode_vbz_fused_from_into (public API) in the threads.
+        struct SubStream {
+            flat: Vec<u8>,
+            n: usize,
+            carry: i16,
+        }
+
+        let sub_streams: Vec<SubStream> = (0..effective_k)
+            .map(|i| {
+                let sub_n = if i < effective_k - 1 {
+                    n_sub
+                } else {
+                    N - (effective_k - 1) * n_sub
+                };
+                let ctrl_start = i * (n_sub / 8);
+                let ctrl_end = ctrl_start + sub_n.div_ceil(8);
+                let mut flat = ctrl[ctrl_start..ctrl_end].to_vec();
+                flat.extend_from_slice(&data_bytes[data_start[i]..data_start[i + 1]]);
+                SubStream {
+                    flat,
+                    n: sub_n,
+                    carry: sub_carry[i],
+                }
+            })
+            .collect();
+
+        let mut group = c.benchmark_group("vbzk_parallel");
+        group.throughput(Throughput::Elements((N * BATCH) as u64));
+        group.bench_function(format!("k={k}/{N}"), |b| {
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    let t0 = Instant::now();
+                    std::thread::scope(|scope| {
+                        for sub in &sub_streams {
+                            scope.spawn(|| {
+                                let mut out = Vec::with_capacity(sub.n);
+                                for _ in 0..BATCH {
+                                    out.clear();
+                                    decode_vbz_fused_from_into(
+                                        &sub.flat,
+                                        sub.n,
+                                        sub.carry,
+                                        &mut out,
+                                    )
+                                    .unwrap();
+                                    black_box(&out);
+                                }
+                            });
+                        }
+                    });
+                    total += t0.elapsed();
+                }
+                total
+            })
+        });
+        group.finish();
+    }
+}
+
+// ── VBZ-K API-level parallel decode ───────────────────────────────────────────
+//
+// Uses decode_vbzk_parallel_into to measure end-to-end throughput including
+// header parsing and sub-Vec assembly.
+
+fn bench_vbzk_parallel_api(c: &mut Criterion) {
+    use std::time::{Duration, Instant};
+
+    const N: usize = 8192;
+    const BATCH: usize = 64;
+
+    for &k in &[2usize, 4, 8] {
+        let samples = vbz_i16_samples(N);
+        let encoded = encode_vbzk(&samples, k);
+
+        let mut group = c.benchmark_group("vbzk_parallel_api");
+        group.throughput(Throughput::Elements((N * BATCH) as u64));
+        group.bench_function(format!("k={k}/{N}"), |b| {
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    let t0 = Instant::now();
+                    let mut out = Vec::with_capacity(N);
+                    for _ in 0..BATCH {
+                        out.clear();
+                        decode_vbzk_parallel_into(&encoded, N, &mut out).unwrap();
+                        black_box(&out);
+                    }
+                    total += t0.elapsed();
+                }
+                total
+            })
+        });
+        group.finish();
+    }
+}
+
 // ── registry ──────────────────────────────────────────────────────────────────
 
 criterion_group!(
@@ -587,6 +820,8 @@ criterion_group!(
     bench_vbz_encode,
     bench_vbz_decode,
     bench_vbz_fused,
+    bench_vbz2_decode,
+    bench_vbz2_parallel,
     bench_u32_classic_encode,
     bench_u32_classic_decode,
     bench_u32_classic_decode_into,
@@ -603,5 +838,7 @@ criterion_group!(
     bench_compare_u32_variant0124_decode,
     bench_compare_u64_coder1248_encode,
     bench_compare_u64_coder1248_decode,
+    bench_vbzk_parallel,
+    bench_vbzk_parallel_api,
 );
 criterion_main!(benches);
