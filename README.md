@@ -1,5 +1,11 @@
 # svb
 
+[![Crates.io](https://img.shields.io/crates/v/svb.svg)](https://crates.io/crates/svb)
+[![docs.rs](https://docs.rs/svb/badge.svg)](https://docs.rs/svb)
+[![CI](https://github.com/Psy-Fer/svb/actions/workflows/ci.yml/badge.svg)](https://github.com/Psy-Fer/svb/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![MSRV: 1.87](https://img.shields.io/badge/rustc-1.87+-blue.svg)](https://blog.rust-lang.org/2025/05/15/Rust-1.87.0/)
+
 Pure-Rust [StreamVByte](https://lemire.me/blog/2017/09/27/stream-vbyte-breaking-new-speed-records-for-integer-compression/) covering all major codec variants for `u16`, `u32`, and `u64` integers. Delta and zigzag encoding are composable layers on top. SIMD back-ends are available for x86-64 (SSSE3, AVX2) and AArch64 (NEON).
 
 **[Documentation](https://psy-fer.github.io/svb/) | [API reference](https://docs.rs/svb)**
