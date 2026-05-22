@@ -13,6 +13,10 @@ categories = ["compression", "encoding", "no-std"]
 readme = "README.md"
 exclude = ["tests/vectors/*.bin", "fuzz/", "svb_ref_doc.md", "TODO.md", "docs/"]
 
+[package.metadata.docs.rs]
+features = ["simd-auto"]
+all-features = false
+
 [features]
 default = ["std"]
 std = ["alloc", "thiserror/std"]
