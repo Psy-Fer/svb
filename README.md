@@ -62,11 +62,20 @@ VBZ is ~2.5x slower than SVB16 alone. Breaking down the pipeline (8192 i16 eleme
 
 | Stage | encode | decode |
 |---|---|---|
-| delta | 11.02 GB/s | 3.50 GB/s |
+| delta | 11.02 GB/s | 3.75 GB/s |
 | zigzag | 18.75 GB/s | 14.83 GB/s |
 | SVB16 | 4.91 GB/s | 4.51 GB/s |
 
-Zigzag is essentially free (pure bitwise ops, auto-vectorized). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to ~11 GB/s with no unsafe code. Delta decode uses a SIMD prefix-sum (SSE2/NEON); the carry dependency limits it to ~3.5 GB/s.
+Zigzag is essentially free (pure bitwise ops, auto-vectorized). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to ~11 GB/s with no unsafe code. Delta decode uses a SIMD prefix-sum (SSE2/NEON); the serial carry dependency between 8-element blocks limits single-stream throughput to ~3.75 GB/s.
+
+`delta::decode_2chain` decodes two independent sub-streams with interleaved SSE2 carry chains, hiding one chain's carry latency behind the other's arithmetic:
+
+| | encode | decode |
+|---|---|---|
+| `delta::decode_into` | 11.02 GB/s | 3.75 GB/s |
+| `delta::decode_2chain` | — | **6.25 GB/s** |
+
+**1.65x faster** than single-stream decode. Requires one extra `i16` stored per chunk (the running delta sum at the midpoint — see `delta::mid_carry`). This is the key building block for a parallel-decode VBZ format.
 
 Around **2x faster on average** than `streamvbyte64` across all variants and sizes (range: 1.4x–2.7x). Full numbers are in the [Performance](https://psy-fer.github.io/svb/performance.html) docs.
 

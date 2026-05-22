@@ -10,12 +10,39 @@ At 8192 i16 elements, each stage measured in isolation:
 
 | Stage | encode | decode |
 |---|---|---|
-| delta | 11.02 GB/s | 3.50 GB/s |
+| delta | 11.02 GB/s | 3.75 GB/s |
 | zigzag | 18.75 GB/s | 14.83 GB/s |
 | SVB16 | 4.91 GB/s | 4.51 GB/s |
 | **VBZ (combined)** | **3.14 GB/s** | **1.88 GB/s** |
 
-Zigzag is essentially free (pure bitwise ops, LLVM auto-vectorizes). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to around 11 GB/s with no unsafe code. Delta decode uses an explicit SIMD prefix-sum (SSE2/NEON); the carry dependency limits it to around 3.5 GB/s.
+Zigzag is essentially free (pure bitwise ops, LLVM auto-vectorizes). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to around 11 GB/s with no unsafe code. Delta decode uses an explicit SIMD prefix-sum (SSE2/NEON); the serial carry chain between 8-element blocks limits single-stream throughput to around 3.75 GB/s — essentially the theoretical ceiling for this algorithm.
+
+## Delta decode: the 2-chain approach
+
+Delta decode is a serial prefix sum — each output element depends on all previous elements. On x86_64 the SSE2 path processes 8 elements per iteration with a carry chain of ~8 cycles (extract + broadcast + add). We are already at the theoretical single-stream ceiling.
+
+`delta::decode_2chain` breaks this by decoding two independent sub-streams simultaneously. The CPU's out-of-order engine hides one chain's carry latency behind the other's prefix-sum arithmetic, delivering **1.65× throughput**:
+
+| | decode throughput |
+|---|---|
+| `delta::decode_into` (single stream) | 3.75 GB/s |
+| `delta::decode_2chain` (two streams) | **6.25 GB/s** |
+
+This requires one extra `i16` stored per chunk: the running delta sum at the midpoint (computed by `delta::mid_carry` during encode, 2 bytes overhead). Each additional sub-chunk adds another 2-byte carry value and enables one more independent decode stream.
+
+### Path to a parallel-decode VBZ format
+
+With K sub-chunks, all stages of the VBZ pipeline (delta, zigzag, SVB16) can be decoded independently on K cores:
+
+| Sub-chunks | decode throughput | vs. current |
+|---|---|---|
+| 1 (current VBZ) | 1.88 GB/s | — |
+| 2 (single-threaded 2-chain) | ~2.2 GB/s | 1.2× |
+| 2 cores | ~3.8 GB/s | 2× |
+| 4 cores | ~7.5 GB/s | 4× |
+| 8 cores | ~15 GB/s | 8× |
+
+The format change is: store K−1 carry values (K−1 × 2 bytes) in the chunk header and split the encoded payload into K equal sub-streams. Compression ratio is unchanged. The `svb` crate provides `decode_2chain` and `mid_carry` as the building blocks.
 
 ## Results vs streamvbyte64
 

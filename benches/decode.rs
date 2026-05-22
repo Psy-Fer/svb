@@ -1,4 +1,4 @@
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use streamvbyte64::Coder as _;
 use svb::{
     decode_vbz, encode_vbz,
@@ -128,6 +128,25 @@ fn bench_delta_decode_i16(c: &mut Criterion) {
         });
     }
     g.finish();
+}
+
+fn bench_delta_decode_i16_2chain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("delta/decode_i16_2chain");
+    for &n in &[128usize, 1024, 8192] {
+        group.throughput(Throughput::Elements(n as u64));
+        let samples = vbz_i16_samples(n);
+        let deltas = delta::encode(&samples);
+        let mc = delta::mid_carry(0i16, &deltas);
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            let mut out = Vec::with_capacity(n);
+            b.iter(|| {
+                out.clear();
+                delta::decode_2chain_into(0i16, &deltas, mc, &mut out);
+                black_box(&out);
+            });
+        });
+    }
+    group.finish();
 }
 
 fn bench_zigzag_encode_i16(c: &mut Criterion) {
@@ -542,6 +561,7 @@ criterion_group!(
     benches,
     bench_delta_encode_i16,
     bench_delta_decode_i16,
+    bench_delta_decode_i16_2chain,
     bench_zigzag_encode_i16,
     bench_zigzag_decode_u16,
     bench_svb16_encode,

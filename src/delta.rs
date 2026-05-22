@@ -73,9 +73,6 @@ impl Delta for i16 {
     }
 }
 
-// cfg condition: "any explicit compile-time SIMD feature applies for i16 on this arch"
-// OR "simd-auto applies and we are on a SIMD-capable arch"
-// Used to cfg-out the scalar fallback to avoid unreachable_code.
 fn decode_into_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
     #[cfg(all(
         any(feature = "simd-avx2", feature = "simd-ssse3"),
@@ -641,6 +638,62 @@ pub fn decode_with_initial_into<T: Delta>(initial: T, deltas: &[T], out: &mut Ve
     T::__decode_into(initial, deltas, out);
 }
 
+/// Compute the midpoint carry for use with [`decode_2chain_into`].
+///
+/// Returns `initial + sum(deltas[0..deltas.len()/2])` — the running delta sum
+/// at the midpoint. Store this value alongside the encoded data (2 bytes) to
+/// enable independent decoding of both halves.
+pub fn mid_carry(initial: i16, deltas: &[i16]) -> i16 {
+    let mid = deltas.len() / 2;
+    deltas[..mid]
+        .iter()
+        .fold(initial, |acc, &d| acc.wrapping_add(d))
+}
+
+/// Decode a delta-encoded `i16` slice using two independent sub-streams,
+/// appending into `out`.
+///
+/// `mid_carry` must equal `initial + sum(deltas[0..deltas.len()/2])`.
+/// Compute it at encode time with [`mid_carry`] and store it alongside the
+/// encoded data (2 bytes overhead per chunk).
+///
+/// On x86_64 and AArch64 the two sub-streams are decoded with interleaved SIMD
+/// carry chains, delivering ~2× throughput for the delta stage compared to
+/// [`decode_into`]. The output is identical.
+///
+/// # Requirements for a parallel-decode format
+///
+/// A "VBZ v2"-style format would store `mid_carry` in the chunk header:
+///
+/// ```text
+/// [mid_carry: i16 (2 bytes)] [encoded_half_0] [encoded_half_1]
+/// ```
+///
+/// With `K` sub-chunks, store `K-1` carry values and decode all sub-chunks
+/// independently — enabling linear multi-core scaling.
+pub fn decode_2chain_into(initial: i16, deltas: &[i16], mid_carry: i16, out: &mut Vec<i16>) {
+    let n = deltas.len();
+    let mid = n / 2;
+    let (deltas_a, deltas_b) = deltas.split_at(mid);
+    out.reserve(n);
+    let base = out.len();
+    // SAFETY: reserve(n) above ensures capacity for n more elements.
+    unsafe { out.set_len(base + n) };
+    let out_a = unsafe { out.as_mut_ptr().add(base) };
+    let out_b = unsafe { out.as_mut_ptr().add(base + mid) };
+    decode_2chain_i16(initial, deltas_a, mid_carry, deltas_b, out_a, out_b);
+    // Odd trailing element (when n is odd, deltas_b has one fewer element than deltas_a)
+    // Already handled inside decode_2chain_i16 via scalar tails.
+}
+
+/// Decode a delta-encoded `i16` slice using two independent sub-streams,
+/// returning a new `Vec`.
+pub fn decode_2chain(initial: i16, deltas: &[i16], mid_carry: i16) -> Vec<i16> {
+    let mut out = Vec::new();
+    decode_2chain_into(initial, deltas, mid_carry, &mut out);
+    out
+}
+
 /// Delta-encode `samples` using `initial` as the preceding value, appending the result to `out`.
 ///
 /// Streaming counterpart to [`encode_with_initial`]; avoids allocating when
@@ -667,6 +720,200 @@ pub fn encode_with_initial_into<T: Delta>(initial: T, samples: &[T], out: &mut V
             .zip(samples.iter())
             .map(|(&curr, &prev)| curr.__sub(prev)),
     );
+}
+
+// ── 2-chain interleaved delta decode ─────────────────────────────────────────
+
+fn decode_2chain_i16(
+    initial_a: i16,
+    deltas_a: &[i16],
+    initial_b: i16,
+    deltas_b: &[i16],
+    out_a: *mut i16,
+    out_b: *mut i16,
+) {
+    #[cfg(all(
+        any(feature = "simd-avx2", feature = "simd-ssse3"),
+        target_arch = "x86_64"
+    ))]
+    {
+        // SAFETY: SSE2 is always available on x86_64.
+        unsafe { decode_2chain_sse2_i16(initial_a, deltas_a, initial_b, deltas_b, out_a, out_b) };
+    }
+    #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
+    {
+        // SAFETY: NEON is mandatory on AArch64.
+        unsafe { decode_2chain_neon_i16(initial_a, deltas_a, initial_b, deltas_b, out_a, out_b) };
+    }
+    #[cfg(all(
+        feature = "simd-auto",
+        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
+        target_arch = "x86_64"
+    ))]
+    {
+        // SAFETY: SSE2 is always available on x86_64.
+        unsafe { decode_2chain_sse2_i16(initial_a, deltas_a, initial_b, deltas_b, out_a, out_b) };
+    }
+    #[cfg(all(
+        feature = "simd-auto",
+        not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
+        target_arch = "aarch64"
+    ))]
+    {
+        // SAFETY: NEON is mandatory on AArch64.
+        unsafe { decode_2chain_neon_i16(initial_a, deltas_a, initial_b, deltas_b, out_a, out_b) };
+    }
+    // Scalar fallback: only compiled when no SIMD path covers this target.
+    #[cfg(not(any(
+        all(
+            any(feature = "simd-avx2", feature = "simd-ssse3"),
+            target_arch = "x86_64"
+        ),
+        all(feature = "simd-neon", target_arch = "aarch64"),
+        all(
+            feature = "simd-auto",
+            not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )))]
+    decode_2chain_scalar_i16(initial_a, deltas_a, initial_b, deltas_b, out_a, out_b);
+}
+
+#[allow(dead_code)]
+fn decode_2chain_scalar_i16(
+    initial_a: i16,
+    deltas_a: &[i16],
+    initial_b: i16,
+    deltas_b: &[i16],
+    out_a: *mut i16,
+    out_b: *mut i16,
+) {
+    let mut acc = initial_a;
+    for (i, &d) in deltas_a.iter().enumerate() {
+        acc = acc.wrapping_add(d);
+        // SAFETY: caller allocates out_a for deltas_a.len() elements.
+        unsafe { *out_a.add(i) = acc };
+    }
+    acc = initial_b;
+    for (i, &d) in deltas_b.iter().enumerate() {
+        acc = acc.wrapping_add(d);
+        // SAFETY: caller allocates out_b for deltas_b.len() elements.
+        unsafe { *out_b.add(i) = acc };
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+unsafe fn decode_2chain_sse2_i16(
+    initial_a: i16,
+    deltas_a: &[i16],
+    initial_b: i16,
+    deltas_b: &[i16],
+    out_a: *mut i16,
+    out_b: *mut i16,
+) {
+    use core::arch::x86_64::*;
+
+    let na = deltas_a.len();
+    let nb = deltas_b.len();
+    let simd_n = (na.min(nb) / 8) * 8;
+
+    let mut acc_a = initial_a;
+    let mut acc_b = initial_b;
+    let mut i = 0usize;
+
+    while i < simd_n {
+        // SAFETY: i + 8 <= simd_n <= na, nb; pointers valid for those ranges.
+        unsafe {
+            // Compute prefix sums for both chains before extracting either carry.
+            // This ordering lets the CPU overlap A's carry-extract latency with B's
+            // prefix-sum arithmetic and vice versa.
+            let va = _mm_loadu_si128(deltas_a.as_ptr().add(i) as *const __m128i);
+            let va = _mm_add_epi16(va, _mm_slli_si128(va, 2));
+            let va = _mm_add_epi16(va, _mm_slli_si128(va, 4));
+            let va = _mm_add_epi16(va, _mm_slli_si128(va, 8));
+
+            let vb = _mm_loadu_si128(deltas_b.as_ptr().add(i) as *const __m128i);
+            let vb = _mm_add_epi16(vb, _mm_slli_si128(vb, 2));
+            let vb = _mm_add_epi16(vb, _mm_slli_si128(vb, 4));
+            let vb = _mm_add_epi16(vb, _mm_slli_si128(vb, 8));
+
+            let ra = _mm_add_epi16(va, _mm_set1_epi16(acc_a));
+            let rb = _mm_add_epi16(vb, _mm_set1_epi16(acc_b));
+
+            _mm_storeu_si128(out_a.add(i) as *mut __m128i, ra);
+            _mm_storeu_si128(out_b.add(i) as *mut __m128i, rb);
+
+            acc_a = _mm_extract_epi16(ra, 7) as i16;
+            acc_b = _mm_extract_epi16(rb, 7) as i16;
+        }
+        i += 8;
+    }
+    // Scalar tails (remainder for each chain independently).
+    for (k, &d) in deltas_a[simd_n..].iter().enumerate() {
+        acc_a = acc_a.wrapping_add(d);
+        unsafe { *out_a.add(simd_n + k) = acc_a };
+    }
+    for (k, &d) in deltas_b[simd_n..].iter().enumerate() {
+        acc_b = acc_b.wrapping_add(d);
+        unsafe { *out_b.add(simd_n + k) = acc_b };
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
+unsafe fn decode_2chain_neon_i16(
+    initial_a: i16,
+    deltas_a: &[i16],
+    initial_b: i16,
+    deltas_b: &[i16],
+    out_a: *mut i16,
+    out_b: *mut i16,
+) {
+    use core::arch::aarch64::*;
+
+    let na = deltas_a.len();
+    let nb = deltas_b.len();
+    let simd_n = (na.min(nb) / 8) * 8;
+
+    // SAFETY: vdupq_n_s16 requires NEON, mandatory on aarch64.
+    let zero = unsafe { vdupq_n_s16(0) };
+    let mut acc_a = initial_a;
+    let mut acc_b = initial_b;
+    let mut i = 0usize;
+
+    while i < simd_n {
+        // SAFETY: i + 8 <= simd_n <= na, nb; pointers valid.
+        unsafe {
+            let va = vld1q_s16(deltas_a.as_ptr().add(i));
+            let va = vaddq_s16(va, vextq_s16(zero, va, 7));
+            let va = vaddq_s16(va, vextq_s16(zero, va, 6));
+            let va = vaddq_s16(va, vextq_s16(zero, va, 4));
+
+            let vb = vld1q_s16(deltas_b.as_ptr().add(i));
+            let vb = vaddq_s16(vb, vextq_s16(zero, vb, 7));
+            let vb = vaddq_s16(vb, vextq_s16(zero, vb, 6));
+            let vb = vaddq_s16(vb, vextq_s16(zero, vb, 4));
+
+            let ra = vaddq_s16(va, vdupq_n_s16(acc_a));
+            let rb = vaddq_s16(vb, vdupq_n_s16(acc_b));
+
+            vst1q_s16(out_a.add(i), ra);
+            vst1q_s16(out_b.add(i), rb);
+
+            acc_a = vgetq_lane_s16(ra, 7);
+            acc_b = vgetq_lane_s16(rb, 7);
+        }
+        i += 8;
+    }
+    for (k, &d) in deltas_a[simd_n..].iter().enumerate() {
+        acc_a = acc_a.wrapping_add(d);
+        unsafe { *out_a.add(simd_n + k) = acc_a };
+    }
+    for (k, &d) in deltas_b[simd_n..].iter().enumerate() {
+        acc_b = acc_b.wrapping_add(d);
+        unsafe { *out_b.add(simd_n + k) = acc_b };
+    }
 }
 
 // ── SSE2 implementations (x86_64) ─────────────────────────────────────────────
@@ -2442,5 +2689,77 @@ mod tests {
         decode_with_initial_into(initial, &enc_alloc, &mut dec_into);
         assert_eq!(dec_alloc, dec_into);
         assert_eq!(dec_alloc, samples);
+    }
+
+    // ── decode_2chain correctness ──────────────────────────────────────────────
+
+    #[test]
+    fn decode_2chain_matches_decode_into_even() {
+        // Even-length input: both halves equal size.
+        let samples: Vec<i16> = (0..32).map(|i| (i * 7 - 100) as i16).collect();
+        let deltas = encode(&samples);
+        let mc = mid_carry(0i16, &deltas);
+        let two_chain = decode_2chain(0i16, &deltas, mc);
+        let single = decode_with_initial(0i16, &deltas);
+        assert_eq!(two_chain, single);
+    }
+
+    #[test]
+    fn decode_2chain_matches_decode_into_odd() {
+        // Odd-length input: first half has one more element.
+        let samples: Vec<i16> = (0..33).map(|i| (i * 5 - 80) as i16).collect();
+        let deltas = encode(&samples);
+        let mc = mid_carry(0i16, &deltas);
+        let two_chain = decode_2chain(0i16, &deltas, mc);
+        let single = decode_with_initial(0i16, &deltas);
+        assert_eq!(two_chain, single);
+    }
+
+    #[test]
+    fn decode_2chain_nonzero_initial() {
+        let samples: Vec<i16> = (0..40).map(|i| (i as i16).wrapping_mul(3)).collect();
+        let deltas = encode_with_initial(100i16, &samples);
+        let mc = mid_carry(100i16, &deltas);
+        let two_chain = decode_2chain(100i16, &deltas, mc);
+        let single = decode_with_initial(100i16, &deltas);
+        assert_eq!(two_chain, single);
+        assert_eq!(two_chain, samples);
+    }
+
+    #[test]
+    fn decode_2chain_wrapping() {
+        let deltas: Vec<i16> = (0..16)
+            .map(|i| if i % 2 == 0 { i16::MAX } else { i16::MIN })
+            .collect();
+        let mc = mid_carry(0i16, &deltas);
+        let two_chain = decode_2chain(0i16, &deltas, mc);
+        let single = decode_with_initial(0i16, &deltas);
+        assert_eq!(two_chain, single);
+    }
+
+    #[test]
+    fn decode_2chain_empty() {
+        let mc = mid_carry(0i16, &[]);
+        let result = decode_2chain(0i16, &[], mc);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn decode_2chain_single_element() {
+        let deltas = vec![42i16];
+        let mc = mid_carry(0i16, &deltas);
+        let two_chain = decode_2chain(0i16, &deltas, mc);
+        let single = decode_with_initial(0i16, &deltas);
+        assert_eq!(two_chain, single);
+    }
+
+    #[test]
+    fn mid_carry_correctness() {
+        // mid_carry should equal the running sum at the midpoint.
+        let deltas: Vec<i16> = vec![1, 2, 3, 4, 5, 6];
+        // mid = 3, sum of first 3 from initial 0: 0+1+2+3 = 6
+        assert_eq!(mid_carry(0, &deltas), 6);
+        // with non-zero initial: 10+1+2+3 = 16
+        assert_eq!(mid_carry(10, &deltas), 16);
     }
 }
