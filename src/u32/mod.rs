@@ -345,6 +345,9 @@ mod cross_path {
                 large_arms   = |$il:ident| { $($la:tt)+ },
                 single_vals  = [$($sv:expr),+] $(,)?
             ) => {
+                #[cfg(not(feature = "std"))]
+                use alloc::vec::Vec;
+                #[cfg(feature = "std")]
                 use std::vec::Vec;
                 fn encode(values: &[u32]) -> Vec<u8> {
                     let mut out = Vec::new();
@@ -523,6 +526,9 @@ mod cross_path {
                 large_arms  = |$il:ident| { $($la:tt)+ },
                 single_vals = [$($sv:expr),+] $(,)?
             ) => {
+                #[cfg(not(feature = "std"))]
+                use alloc::vec::Vec;
+                #[cfg(feature = "std")]
                 use std::vec::Vec;
                 fn scalar_enc_fn(v: &[u32]) -> Vec<u8> {
                     let mut out = Vec::new();
@@ -660,6 +666,9 @@ mod cross_path {
                 large_arms  = |$il:ident| { $($la:tt)+ },
                 single_vals = [$($sv:expr),+] $(,)?
             ) => {
+                #[cfg(not(feature = "std"))]
+                use alloc::vec::Vec;
+                #[cfg(feature = "std")]
                 use std::vec::Vec;
                 fn scalar_enc_fn(v: &[u32]) -> Vec<u8> {
                     let mut out = Vec::new();

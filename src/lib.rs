@@ -32,9 +32,9 @@
 extern crate alloc;
 
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
-use alloc::vec::Vec;
-#[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::vec;
+#[cfg(all(not(feature = "std"), feature = "alloc"))]
+use alloc::vec::Vec;
 
 pub mod error;
 pub use error::DecodeError;
@@ -501,6 +501,7 @@ mod vbz_tests {
 }
 
 #[cfg(all(test, feature = "alloc"))]
+#[allow(deprecated)]
 mod vbz2_tests {
     use super::*;
     #[cfg(not(feature = "std"))]

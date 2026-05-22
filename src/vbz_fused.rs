@@ -273,7 +273,10 @@ pub(crate) unsafe fn decode_ssse3(
 
 // ── NEON / AArch64 ───────────────────────────────────────────────────────────
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(
+    any(feature = "simd-neon", feature = "simd-auto"),
+    target_arch = "aarch64"
+))]
 #[target_feature(enable = "neon")]
 pub(crate) unsafe fn decode_neon(
     ctrl: &[u8],
@@ -294,8 +297,7 @@ pub(crate) unsafe fn decode_neon(
     let mut decoded = 0usize;
     let mut acc = initial;
 
-    // SAFETY: NEON is mandatory on AArch64.
-    let zero = unsafe { vdupq_n_s16(0) };
+    let zero = vdupq_n_s16(0);
 
     while decoded + 8 <= n {
         let cb = ctrl[ctrl_pos];
@@ -693,7 +695,10 @@ unsafe fn decode_ssse3_2chain(
 
 // ── NEON 2-chain decode ───────────────────────────────────────────────────────
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(
+    any(feature = "simd-neon", feature = "simd-auto"),
+    target_arch = "aarch64"
+))]
 #[target_feature(enable = "neon")]
 unsafe fn decode_neon_2chain(
     ctrl: &[u8],
@@ -720,8 +725,7 @@ unsafe fn decode_neon_2chain(
     let mut acc_a: i16 = 0;
     let mut acc_b: i16 = mid_carry;
 
-    // SAFETY: NEON is mandatory on AArch64.
-    let zero = unsafe { vdupq_n_s16(0) };
+    let zero = vdupq_n_s16(0);
 
     // Main 2-chain loop — both chains have ≥16 data bytes available.
     while ctrl_pos < ctrl_half

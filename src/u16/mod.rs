@@ -599,6 +599,8 @@ mod cross_path {
     mod arm {
         use super::super::{neon, scalar};
         use super::*;
+        #[cfg(not(feature = "std"))]
+        use alloc::vec;
 
         fn encode(values: &[u16]) -> Vec<u8> {
             let mut v = Vec::new();
