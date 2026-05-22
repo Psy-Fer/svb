@@ -13,9 +13,25 @@ At 8192 i16 elements, each stage measured in isolation:
 | delta | 11.02 GB/s | 3.75 GB/s |
 | zigzag | 18.75 GB/s | 14.83 GB/s |
 | SVB16 | 4.91 GB/s | 4.51 GB/s |
-| **VBZ (combined)** | **3.14 GB/s** | **1.88 GB/s** |
+| **VBZ (combined, 3-pass)** | **3.14 GB/s** | **1.88 GB/s** |
+| **VBZ fused decode** | — | **2.77 GB/s** |
 
 Zigzag is essentially free (pure bitwise ops, LLVM auto-vectorizes). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to around 11 GB/s with no unsafe code. Delta decode uses an explicit SIMD prefix-sum (SSE2/NEON); the serial carry chain between 8-element blocks limits single-stream throughput to around 3.75 GB/s — essentially the theoretical ceiling for this algorithm.
+
+## Fused VBZ decode
+
+`decode_vbz_fused` collapses all three decode stages into a single SIMD loop. The
+SVB16 shuffle and zigzag bitwise ops (~5–6 cycles per 8-element block) execute
+during the delta carry-chain stall (~8 cycles), hiding nearly all of their cost.
+
+| | decode throughput |
+|---|---|
+| `decode_vbz` (3 separate passes) | 1.88 GB/s |
+| `decode_vbz_fused` (single SIMD pass) | **2.77 GB/s** |
+
+**1.47× faster** than the pipeline. The fused path reaches 74% of the delta-alone
+ceiling (3.75 GB/s): SVB16 and zigzag are effectively free, and the delta carry
+chain is the only remaining bottleneck.
 
 ## Delta decode: the 2-chain approach
 

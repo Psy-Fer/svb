@@ -26,7 +26,7 @@ mod scalar;
 
 // Shuffle table is used by the SIMD back-ends on x86_64 and aarch64.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-mod shuffle;
+pub(crate) mod shuffle;
 
 // SIMD back-ends are compiled on their respective target architectures
 // regardless of feature flags; the feature flags only control dispatch.

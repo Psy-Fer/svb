@@ -40,7 +40,7 @@ const fn make_decode() -> [[u8; 16]; 256] {
     table
 }
 
-pub(super) static TABLE: [[u8; 16]; 256] = make_decode();
+pub(crate) static TABLE: [[u8; 16]; 256] = make_decode();
 
 // ── Encode table ─────────────────────────────────────────────────────────────
 //

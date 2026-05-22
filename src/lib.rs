@@ -177,6 +177,9 @@ pub mod u64;
 pub use vbz::{decode_vbz, decode_vbz_into, encode_vbz, encode_vbz_into};
 
 #[cfg(feature = "alloc")]
+mod vbz_fused;
+
+#[cfg(feature = "alloc")]
 mod vbz {
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
@@ -262,6 +265,29 @@ mod vbz {
     }
 }
 
+/// Decode a VBZ-encoded byte stream into `i16` samples using a fused single-pass decoder.
+///
+/// Identical output to [`decode_vbz`] but fuses SVB16, zigzag, and delta decode
+/// into one SIMD loop. SVB16 and zigzag work fills the delta carry-chain stall,
+/// so throughput approaches the delta-alone rate rather than the harmonic sum of
+/// all three stages.
+#[cfg(feature = "alloc")]
+pub fn decode_vbz_fused(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
+    let mut out = Vec::with_capacity(n);
+    decode_vbz_fused_into(data, n, &mut out)?;
+    Ok(out)
+}
+
+/// Decode a VBZ-encoded byte stream, appending to `out`. See [`decode_vbz_fused`].
+#[cfg(feature = "alloc")]
+pub fn decode_vbz_fused_into(
+    data: &[u8],
+    n: usize,
+    out: &mut Vec<i16>,
+) -> Result<(), DecodeError> {
+    vbz_fused::decode_into(data, n, out)
+}
+
 #[cfg(all(test, feature = "alloc"))]
 mod vbz_tests {
     use super::*;
@@ -319,5 +345,65 @@ mod vbz_tests {
         let mut out = vec![99i16];
         decode_vbz_into(&enc, 3, &mut out).unwrap();
         assert_eq!(out, [99, 10, 20, 30]);
+    }
+}
+
+#[cfg(all(test, feature = "alloc"))]
+mod vbz_fused_tests {
+    use super::*;
+    #[cfg(not(feature = "std"))]
+    use alloc::vec;
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+
+    #[test]
+    fn fused_matches_reference_empty() {
+        assert_eq!(
+            decode_vbz_fused(&encode_vbz(&[]), 0).unwrap(),
+            &[] as &[i16]
+        );
+    }
+
+    #[test]
+    fn fused_matches_reference_single() {
+        for v in [0i16, 1, -1, i16::MIN, i16::MAX] {
+            let enc = encode_vbz(&[v]);
+            assert_eq!(
+                decode_vbz_fused(&enc, 1).unwrap(),
+                decode_vbz(&enc, 1).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn fused_matches_reference_ramp() {
+        let samples: Vec<i16> = (0..128).collect();
+        let enc = encode_vbz(&samples);
+        assert_eq!(
+            decode_vbz_fused(&enc, 128).unwrap(),
+            decode_vbz(&enc, 128).unwrap(),
+        );
+    }
+
+    #[test]
+    fn fused_matches_reference_large() {
+        let samples: Vec<i16> = (0..1024)
+            .map(|i| ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
+            .collect();
+        let enc = encode_vbz(&samples);
+        assert_eq!(
+            decode_vbz_fused(&enc, 1024).unwrap(),
+            decode_vbz(&enc, 1024).unwrap(),
+        );
+    }
+
+    #[test]
+    fn fused_matches_reference_extremes() {
+        let samples = vec![i16::MIN, i16::MAX, i16::MIN, i16::MAX];
+        let enc = encode_vbz(&samples);
+        assert_eq!(
+            decode_vbz_fused(&enc, 4).unwrap(),
+            decode_vbz(&enc, 4).unwrap(),
+        );
     }
 }

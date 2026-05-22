@@ -1,7 +1,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use streamvbyte64::Coder as _;
 use svb::{
-    decode_vbz, encode_vbz,
+    decode_vbz, decode_vbz_fused_into, encode_vbz,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
@@ -227,6 +227,24 @@ fn bench_vbz_decode(c: &mut Criterion) {
         });
     }
     g.finish();
+}
+
+fn bench_vbz_fused(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vbz_fused");
+    for &n in &[128usize, 1024, 8192] {
+        group.throughput(Throughput::Elements(n as u64));
+        let samples = vbz_i16_samples(n);
+        let encoded = encode_vbz(&samples);
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            let mut out = Vec::with_capacity(n);
+            b.iter(|| {
+                out.clear();
+                decode_vbz_fused_into(&encoded, n, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+    }
+    group.finish();
 }
 
 // ── U32 ───────────────────────────────────────────────────────────────────────
@@ -568,6 +586,7 @@ criterion_group!(
     bench_svb16_decode,
     bench_vbz_encode,
     bench_vbz_decode,
+    bench_vbz_fused,
     bench_u32_classic_encode,
     bench_u32_classic_decode,
     bench_u32_classic_decode_into,

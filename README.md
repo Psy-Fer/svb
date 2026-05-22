@@ -52,7 +52,8 @@ Benchmarked with `simd-auto` on an Intel i7-11800H (AVX2), 8192-element slices:
 | Svb16 encode | 4.91 GB/s | — |
 | Svb16 decode | 4.51 GB/s | — |
 | VBZ encode (delta + zigzag + SVB16) | 3.14 GB/s | — |
-| VBZ decode | 1.88 GB/s | — |
+| VBZ decode (3-pass) | 1.88 GB/s | — |
+| VBZ decode fused (single SIMD pass) | — | **2.77 GB/s** |
 | U32Classic decode | 4.07 GB/s | 1.67 GB/s |
 | U32Classic encode | 2.08 GB/s | 1.09 GB/s |
 | U64Coder1248 decode | 1.90 GB/s | 1.32 GB/s |
@@ -76,6 +77,15 @@ Zigzag is essentially free (pure bitwise ops, auto-vectorized). Delta encode exp
 | `delta::decode_2chain` | — | **6.25 GB/s** |
 
 **1.65x faster** than single-stream decode. Requires one extra `i16` stored per chunk (the running delta sum at the midpoint — see `delta::mid_carry`). This is the key building block for a parallel-decode VBZ format.
+
+`decode_vbz_fused` collapses SVB16 + zigzag + delta into one SIMD pass. SVB16 and zigzag work (~5–6 cycles) executes during the delta carry-chain stall (~8 cycles), hiding almost all of their cost:
+
+| | decode throughput |
+|---|---|
+| `decode_vbz` (3 separate passes) | 1.88 GB/s |
+| `decode_vbz_fused` (single SIMD pass) | **2.77 GB/s** |
+
+**1.47× faster.** The fused path reaches 74% of the delta-alone ceiling; SVB16 and zigzag are essentially free.
 
 Around **2x faster on average** than `streamvbyte64` across all variants and sizes (range: 1.4x–2.7x). Full numbers are in the [Performance](https://psy-fer.github.io/svb/performance.html) docs.
 
