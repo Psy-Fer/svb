@@ -137,7 +137,10 @@ fn decode_scalar(
 
 // ── SSSE3 / x86_64 ───────────────────────────────────────────────────────────
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
+    target_arch = "x86_64"
+))]
 #[target_feature(enable = "ssse3")]
 pub(crate) unsafe fn decode_ssse3(
     ctrl: &[u8],
@@ -146,8 +149,8 @@ pub(crate) unsafe fn decode_ssse3(
     initial: i16,
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
-    use core::arch::x86_64::*;
     use crate::u16::shuffle::TABLE;
+    use core::arch::x86_64::*;
 
     let base = out.len();
     // SAFETY: caller already called out.reserve(n).
@@ -254,7 +257,8 @@ pub(crate) unsafe fn decode_ssse3(
                 if data_tail_pos + 2 > data_tail.len() {
                     return Err(DecodeError::DataTruncated { index: decoded + i });
                 }
-                let v = u16::from_le_bytes([data_tail[data_tail_pos], data_tail[data_tail_pos + 1]]);
+                let v =
+                    u16::from_le_bytes([data_tail[data_tail_pos], data_tail[data_tail_pos + 1]]);
                 data_tail_pos += 2;
                 v
             };
@@ -278,8 +282,8 @@ pub(crate) unsafe fn decode_neon(
     initial: i16,
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
-    use core::arch::aarch64::*;
     use crate::u16::shuffle::TABLE;
+    use core::arch::aarch64::*;
 
     let base = out.len();
     // SAFETY: caller already called out.reserve(n).
@@ -388,7 +392,8 @@ pub(crate) unsafe fn decode_neon(
                 if data_tail_pos + 2 > data_tail.len() {
                     return Err(DecodeError::DataTruncated { index: decoded + i });
                 }
-                let v = u16::from_le_bytes([data_tail[data_tail_pos], data_tail[data_tail_pos + 1]]);
+                let v =
+                    u16::from_le_bytes([data_tail[data_tail_pos], data_tail[data_tail_pos + 1]]);
                 data_tail_pos += 2;
                 v
             };
@@ -503,7 +508,13 @@ fn decode_scalar_2chain(
     let n_half = (n / 2) & !7;
     let ctrl_half = n_half / 8;
     // Chain A: elements [0, n_half).
-    decode_scalar(&ctrl[..ctrl_half], &data_bytes[..mid_data_offset], n_half, 0, out)?;
+    decode_scalar(
+        &ctrl[..ctrl_half],
+        &data_bytes[..mid_data_offset],
+        n_half,
+        0,
+        out,
+    )?;
     // Chain B: elements [n_half, n).
     decode_scalar(
         &ctrl[ctrl_half..],
@@ -516,7 +527,10 @@ fn decode_scalar_2chain(
 
 // ── SSSE3 2-chain decode ──────────────────────────────────────────────────────
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
+    target_arch = "x86_64"
+))]
 #[target_feature(enable = "ssse3")]
 unsafe fn decode_ssse3_2chain(
     ctrl: &[u8],
@@ -527,8 +541,8 @@ unsafe fn decode_ssse3_2chain(
     mid_data_offset: usize,
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
-    use core::arch::x86_64::*;
     use crate::u16::shuffle::TABLE;
+    use core::arch::x86_64::*;
 
     let ctrl_half = n_half / 8;
     let base = out.len();
@@ -561,7 +575,7 @@ unsafe fn decode_ssse3_2chain(
             let shuf_b = _mm_loadu_si128(TABLE[cb_b as usize].as_ptr() as *const __m128i);
             let u16s_b = _mm_shuffle_epi8(
                 _mm_loadu_si128(
-                    data_bytes.as_ptr().add(mid_data_offset + data_pos_b) as *const __m128i,
+                    data_bytes.as_ptr().add(mid_data_offset + data_pos_b) as *const __m128i
                 ),
                 shuf_b,
             );
@@ -690,8 +704,8 @@ unsafe fn decode_neon_2chain(
     mid_data_offset: usize,
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
-    use core::arch::aarch64::*;
     use crate::u16::shuffle::TABLE;
+    use core::arch::aarch64::*;
 
     let ctrl_half = n_half / 8;
     let base = out.len();
@@ -730,14 +744,12 @@ unsafe fn decode_neon_2chain(
             let u16s_a = vreinterpretq_u16_u8(u8s_a);
             let lsb_a = vandq_u16(u16s_a, vdupq_n_u16(1));
             let neg_a = vsubq_u16(vdupq_n_u16(0), lsb_a);
-            let delta_a =
-                vreinterpretq_s16_u16(veorq_u16(vshrq_n_u16(u16s_a, 1), neg_a));
+            let delta_a = vreinterpretq_s16_u16(veorq_u16(vshrq_n_u16(u16s_a, 1), neg_a));
 
             let u16s_b = vreinterpretq_u16_u8(u8s_b);
             let lsb_b = vandq_u16(u16s_b, vdupq_n_u16(1));
             let neg_b = vsubq_u16(vdupq_n_u16(0), lsb_b);
-            let delta_b =
-                vreinterpretq_s16_u16(veorq_u16(vshrq_n_u16(u16s_b, 1), neg_b));
+            let delta_b = vreinterpretq_s16_u16(veorq_u16(vshrq_n_u16(u16s_b, 1), neg_b));
 
             // Both prefix sums BEFORE either carry extract — critical for ILP.
             let da = vaddq_s16(delta_a, vextq_s16(zero, delta_a, 7));
@@ -849,8 +861,8 @@ mod tests {
         let mut prev: i16 = 0;
         for (i, &v) in values.iter().enumerate() {
             let delta = v.wrapping_sub(prev) as u16;
-            let zz = ((delta as i16).wrapping_shl(1) as u16)
-                ^ ((delta as i16).wrapping_shr(15) as u16);
+            let zz =
+                ((delta as i16).wrapping_shl(1) as u16) ^ ((delta as i16).wrapping_shr(15) as u16);
             prev = v;
             if zz <= 0xFF {
                 data.push(zz as u8);

@@ -280,11 +280,7 @@ pub fn decode_vbz_fused(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> 
 
 /// Decode a VBZ-encoded byte stream, appending to `out`. See [`decode_vbz_fused`].
 #[cfg(feature = "alloc")]
-pub fn decode_vbz_fused_into(
-    data: &[u8],
-    n: usize,
-    out: &mut Vec<i16>,
-) -> Result<(), DecodeError> {
+pub fn decode_vbz_fused_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
     vbz_fused::decode_into(data, n, out)
 }
 
@@ -402,7 +398,11 @@ pub fn encode_vbz2(samples: &[i16]) -> Vec<u8> {
 
 /// Decode VBZ2-encoded data (format produced by `encode_vbz2`).
 #[cfg(feature = "alloc")]
-#[deprecated(since = "0.1.0", note = "use decode_vbzk / decode_vbzk_parallel_into instead")]
+#[deprecated(
+    since = "0.1.0",
+    note = "use decode_vbzk / decode_vbzk_parallel_into instead"
+)]
+#[allow(deprecated)]
 pub fn decode_vbz2(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
@@ -416,7 +416,10 @@ pub fn decode_vbz2(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
 
 /// Decode VBZ2-encoded data into an existing Vec (avoids allocation if capacity is sufficient).
 #[cfg(feature = "alloc")]
-#[deprecated(since = "0.1.0", note = "use decode_vbzk_into / decode_vbzk_parallel_into instead")]
+#[deprecated(
+    since = "0.1.0",
+    note = "use decode_vbzk_into / decode_vbzk_parallel_into instead"
+)]
 pub fn decode_vbz2_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
     if n == 0 {
         return Ok(());
@@ -528,8 +531,7 @@ mod vbz2_tests {
     fn roundtrip_large() {
         let samples: Vec<i16> = (0..8192)
             .map(|i| {
-                ((i as i32 % 500 - 250) as i16)
-                    .wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
+                ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
             })
             .collect();
         let encoded = encode_vbz2(&samples);
@@ -540,7 +542,9 @@ mod vbz2_tests {
     #[test]
     fn matches_vbz_output() {
         // VBZ2 must produce the same decoded output as standard VBZ.
-        let samples: Vec<i16> = (0..1024).map(|i| (i as i16 * 13).wrapping_sub(500)).collect();
+        let samples: Vec<i16> = (0..1024)
+            .map(|i| (i as i16 * 13).wrapping_sub(500))
+            .collect();
         let decoded_vbz = decode_vbz(&encode_vbz(&samples), samples.len()).unwrap();
         let decoded_vbz2 = decode_vbz2(&encode_vbz2(&samples), samples.len()).unwrap();
         assert_eq!(decoded_vbz, decoded_vbz2);
@@ -556,8 +560,7 @@ mod vbz2_tests {
     #[test]
     fn roundtrip_small_n() {
         // n < 16 falls back to single-chain
-        let samples: Vec<i16> =
-            vec![10, 20, 15, 5, -10, -20, -5, 0, 10, 20, 15, 5, -10, -20, -5];
+        let samples: Vec<i16> = vec![10, 20, 15, 5, -10, -20, -5, 0, 10, 20, 15, 5, -10, -20, -5];
         let encoded = encode_vbz2(&samples);
         let decoded = decode_vbz2(&encoded, samples.len()).unwrap();
         assert_eq!(decoded, samples);
@@ -597,13 +600,11 @@ mod vbz2_tests {
         use std::vec::Vec;
         let samples: Vec<i16> = (0..n)
             .map(|i| {
-                ((i as i32 % 500 - 250) as i16)
-                    .wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
+                ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
             })
             .collect();
         let encoded = encode_vbz2(&samples);
-        let (mid_carry, stream_a, stream_b, n_a, n_b) =
-            split_vbz2_streams(&encoded, n);
+        let (mid_carry, stream_a, stream_b, n_a, n_b) = split_vbz2_streams(&encoded, n);
 
         // Sequential version of the caller-side split (baseline for comparison).
         let out_a = decode_vbz_fused_from(&stream_a, n_a, 0).unwrap();
@@ -618,8 +619,7 @@ mod vbz2_tests {
         {
             let (out_a, out_b) = std::thread::scope(|s| {
                 let ha = s.spawn(|| decode_vbz_fused_from(&stream_a, n_a, 0).unwrap());
-                let hb =
-                    s.spawn(|| decode_vbz_fused_from(&stream_b, n_b, mid_carry).unwrap());
+                let hb = s.spawn(|| decode_vbz_fused_from(&stream_b, n_b, mid_carry).unwrap());
                 (ha.join().unwrap(), hb.join().unwrap())
             });
             let mut combined = out_a;
@@ -722,18 +722,12 @@ pub fn decode_vbzk_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(),
         return Ok(());
     }
     if data.is_empty() {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: 1,
-            have: 0,
-        });
+        return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
     }
 
     let k = data[0] as usize;
     if k == 0 {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: 1,
-            have: 0,
-        });
+        return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
     }
 
     let header_len = 1 + (k - 1) * 6;
@@ -763,7 +757,8 @@ pub fn decode_vbzk_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(),
     for i in 1..k {
         let off = 1 + (i - 1) * 6;
         let carry = i16::from_le_bytes([data[off], data[off + 1]]);
-        let d_off = u32::from_le_bytes([data[off + 2], data[off + 3], data[off + 4], data[off + 5]]) as usize;
+        let d_off = u32::from_le_bytes([data[off + 2], data[off + 3], data[off + 4], data[off + 5]])
+            as usize;
         sub_carry[i] = carry;
         data_start[i] = d_off;
     }
@@ -786,7 +781,11 @@ pub fn decode_vbzk_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(),
     out.reserve(n);
 
     for i in 0..k {
-        let sub_n = if i < k - 1 { n_sub } else { n - (k - 1) * n_sub };
+        let sub_n = if i < k - 1 {
+            n_sub
+        } else {
+            n - (k - 1) * n_sub
+        };
         let ctrl_start = i * (n_sub / 8);
         let ctrl_end = ctrl_start + sub_n.div_ceil(8);
         let sub_ctrl = &ctrl[ctrl_start..ctrl_end];
@@ -829,18 +828,12 @@ pub fn decode_vbzk_parallel_into(
         return Ok(());
     }
     if data.is_empty() {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: 1,
-            have: 0,
-        });
+        return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
     }
 
     let k = data[0] as usize;
     if k == 0 {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: 1,
-            have: 0,
-        });
+        return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
     }
 
     let header_len = 1 + (k - 1) * 6;
@@ -857,7 +850,8 @@ pub fn decode_vbzk_parallel_into(
     for i in 1..k {
         let off = 1 + (i - 1) * 6;
         let carry = i16::from_le_bytes([data[off], data[off + 1]]);
-        let d_off = u32::from_le_bytes([data[off + 2], data[off + 3], data[off + 4], data[off + 5]]) as usize;
+        let d_off = u32::from_le_bytes([data[off + 2], data[off + 3], data[off + 4], data[off + 5]])
+            as usize;
         sub_carry[i] = carry;
         data_start[i] = d_off;
     }
@@ -886,7 +880,11 @@ pub fn decode_vbzk_parallel_into(
 
     let streams: Vec<SubStream<'_>> = (0..k)
         .map(|i| {
-            let sub_n = if i < k - 1 { n_sub } else { n - (k - 1) * n_sub };
+            let sub_n = if i < k - 1 {
+                n_sub
+            } else {
+                n - (k - 1) * n_sub
+            };
             let ctrl_start = i * (n_sub / 8);
             let ctrl_end = ctrl_start + sub_n.div_ceil(8);
             SubStream {
@@ -899,29 +897,25 @@ pub fn decode_vbzk_parallel_into(
         .collect();
 
     // Decode each sub-stream in a separate thread.
-    let results: Vec<Result<Vec<i16>, DecodeError>> =
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = streams
-                .iter()
-                .map(|s| {
-                    scope.spawn(move || {
-                        let mut sub_out = Vec::with_capacity(s.sub_n);
-                        vbz_fused::decode_parts_into(
-                            s.ctrl,
-                            s.data,
-                            s.sub_n,
-                            s.initial,
-                            &mut sub_out,
-                        )?;
-                        Ok(sub_out)
-                    })
+    let results: Vec<Result<Vec<i16>, DecodeError>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = streams
+            .iter()
+            .map(|s| {
+                scope.spawn(move || {
+                    let mut sub_out = Vec::with_capacity(s.sub_n);
+                    vbz_fused::decode_parts_into(s.ctrl, s.data, s.sub_n, s.initial, &mut sub_out)?;
+                    Ok(sub_out)
                 })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap_or(Err(DecodeError::DataTruncated { index: 0 })))
-                .collect()
-        });
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .unwrap_or(Err(DecodeError::DataTruncated { index: 0 }))
+            })
+            .collect()
+    });
 
     out.reserve(n);
     for result in results {
@@ -977,7 +971,10 @@ mod vbzk_tests {
         for k in [1usize, 2, 4, 8] {
             let encoded = encode_vbzk(&samples, k);
             let decoded = decode_vbzk_parallel(&encoded, samples.len()).unwrap();
-            assert_eq!(decoded, expected, "k={k} parallel does not match decode_vbz");
+            assert_eq!(
+                decoded, expected,
+                "k={k} parallel does not match decode_vbz"
+            );
         }
     }
 
@@ -1064,7 +1061,9 @@ mod vbz_fused_tests {
     #[test]
     fn fused_matches_reference_large() {
         let samples: Vec<i16> = (0..1024)
-            .map(|i| ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
+            .map(|i| {
+                ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
+            })
             .collect();
         let enc = encode_vbz(&samples);
         assert_eq!(
