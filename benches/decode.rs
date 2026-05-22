@@ -769,43 +769,6 @@ fn bench_vbzk_parallel(c: &mut Criterion) {
     }
 }
 
-// ── VBZ-K API-level parallel decode ───────────────────────────────────────────
-//
-// Uses decode_vbzk_parallel_into to measure end-to-end throughput including
-// header parsing and sub-Vec assembly.
-
-fn bench_vbzk_parallel_api(c: &mut Criterion) {
-    use std::time::{Duration, Instant};
-
-    const N: usize = 8192;
-    const BATCH: usize = 64;
-
-    for &k in &[2usize, 4, 8] {
-        let samples = vbz_i16_samples(N);
-        let encoded = encode_vbzk(&samples, k);
-
-        let mut group = c.benchmark_group("vbzk_parallel_api");
-        group.throughput(Throughput::Elements((N * BATCH) as u64));
-        group.bench_function(format!("k={k}/{N}"), |b| {
-            b.iter_custom(|iters| {
-                let mut total = Duration::ZERO;
-                for _ in 0..iters {
-                    let t0 = Instant::now();
-                    let mut out = Vec::with_capacity(N);
-                    for _ in 0..BATCH {
-                        out.clear();
-                        decode_vbzk_parallel_into(&encoded, N, &mut out).unwrap();
-                        black_box(&out);
-                    }
-                    total += t0.elapsed();
-                }
-                total
-            })
-        });
-        group.finish();
-    }
-}
-
 // ── registry ──────────────────────────────────────────────────────────────────
 
 criterion_group!(

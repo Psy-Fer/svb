@@ -362,7 +362,12 @@ pub fn decode_vbz_fused_from_into(
 ///
 /// The 6-byte header stores `mid_carry` (2 bytes) and `mid_data_offset` (4 bytes),
 /// allowing `decode_vbz2` to skip the pre-scan and decode both halves in parallel.
+///
+/// **Deprecated in favour of [`encode_vbzk`].** VBZ2 is a fixed-k=2 predecessor;
+/// VBZ-K generalises it to any number of sub-streams and uses a different header layout.
+/// The two formats are **not interchangeable** — do not mix encoders and decoders.
 #[cfg(feature = "alloc")]
+#[deprecated(since = "0.1.0", note = "use encode_vbzk(samples, 2) instead")]
 pub fn encode_vbz2(samples: &[i16]) -> Vec<u8> {
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
@@ -397,6 +402,7 @@ pub fn encode_vbz2(samples: &[i16]) -> Vec<u8> {
 
 /// Decode VBZ2-encoded data (format produced by `encode_vbz2`).
 #[cfg(feature = "alloc")]
+#[deprecated(since = "0.1.0", note = "use decode_vbzk / decode_vbzk_parallel_into instead")]
 pub fn decode_vbz2(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
@@ -410,6 +416,7 @@ pub fn decode_vbz2(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
 
 /// Decode VBZ2-encoded data into an existing Vec (avoids allocation if capacity is sufficient).
 #[cfg(feature = "alloc")]
+#[deprecated(since = "0.1.0", note = "use decode_vbzk_into / decode_vbzk_parallel_into instead")]
 pub fn decode_vbz2_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
     if n == 0 {
         return Ok(());
@@ -629,6 +636,10 @@ mod vbz2_tests {
 // n_sub = (n / k) & !7; last sub-chunk = n - (k-1)*n_sub
 
 /// Encode samples to VBZ-K format — `k` independent sub-streams decodable in parallel.
+///
+/// **Experimental.** This format is not yet stabilised and may change in a future release.
+/// It is provided for exploration and testing; do not use it for long-lived stored data
+/// without pinning the crate version.
 ///
 /// Header: `[k: u8][(carry_i: i16 LE, data_offset_i: u32 LE) for i in 1..k][VBZ payload]`
 ///

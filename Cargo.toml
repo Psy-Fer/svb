@@ -11,7 +11,7 @@ documentation = "https://docs.rs/svb"
 keywords = ["compression", "streamvbyte", "simd", "integer", "vbz"]
 categories = ["compression", "encoding", "no-std"]
 readme = "README.md"
-exclude = ["tests/vectors/*.bin", "fuzz/"]
+exclude = ["tests/vectors/*.bin", "fuzz/", "svb_ref_doc.md", "TODO.md", "docs/"]
 
 [features]
 default = ["std"]
