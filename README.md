@@ -138,7 +138,7 @@ and open an issue or drop the output in.
 
 ## MSRV
 
-1.85 (edition 2024).
+1.87 (edition 2024; SIMD intrinsics require target_feature_11, stabilised in 1.87).
 
 ## License
 
