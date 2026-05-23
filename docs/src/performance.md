@@ -172,7 +172,7 @@ With K sub-chunks, all stages of the VBZ pipeline (delta, zigzag, SVB16) can be 
 
 The format change is: store K−1 carry values (K−1 × 2 bytes) in the chunk header and split the encoded payload into K equal sub-streams. Compression ratio is unchanged. The `svb` crate provides `decode_2chain` and `mid_carry` as the building blocks.
 
-## Results vs streamvbyte64
+## Results vs streamvbyte64 v0.2.0
 
 | Benchmark | svb | sv64 | ratio |
 |---|---|---|---|
