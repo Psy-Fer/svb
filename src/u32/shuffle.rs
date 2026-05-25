@@ -47,7 +47,7 @@ const fn make_decode(widths: [usize; 4]) -> [[u8; 16]; 256] {
 }
 
 // Classic: tag → width [1, 2, 3, 4]
-pub(super) static TABLE: [[u8; 16]; 256] = make_decode([1, 2, 3, 4]);
+pub(crate) static TABLE: [[u8; 16]; 256] = make_decode([1, 2, 3, 4]);
 // Variant0124: tag → width [0, 1, 2, 4]
 pub(super) static TABLE_0124: [[u8; 16]; 256] = make_decode([0, 1, 2, 4]);
 
@@ -72,7 +72,7 @@ const fn make_data_len(widths: [usize; 4]) -> [u8; 256] {
     table
 }
 
-pub(super) static DATA_LEN: [u8; 256] = make_data_len([1, 2, 3, 4]);
+pub(crate) static DATA_LEN: [u8; 256] = make_data_len([1, 2, 3, 4]);
 pub(super) static DATA_LEN_0124: [u8; 256] = make_data_len([0, 1, 2, 4]);
 
 // ── Encode table ──────────────────────────────────────────────────────────────

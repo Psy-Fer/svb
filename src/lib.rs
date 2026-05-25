@@ -185,6 +185,9 @@ pub use vbz::{decode_vbz, decode_vbz_into, encode_vbz, encode_vbz_into};
 mod vbz_fused;
 
 #[cfg(feature = "alloc")]
+mod svbzd_fused;
+
+#[cfg(feature = "alloc")]
 mod vbz {
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
@@ -1086,5 +1089,260 @@ mod vbz_fused_tests {
             decode_vbz_fused(&enc, 4).unwrap(),
             decode_vbz(&enc, 4).unwrap(),
         );
+    }
+}
+
+// ── SVB-ZD convenience pipeline ───────────────────────────────────────────────
+//
+// SVB-ZD is the BLOW5/slow5lib signal compression method (hasindu2008):
+//   encode: i16 samples → widen to i32 → fused zigzag-delta (i32 domain) → U32Classic → Vec<u8>
+//   decode: Vec<u8> → U32Classic → inverse-zigzag-delta (i32) → truncate to i16
+//
+// Wire format: identical to slow5lib SVB-ZD (SLOW5_COMPRESS_SVB_ZD).
+// The 4-byte little-endian element-count prefix used by slow5lib is NOT included
+// here; it is the caller's responsibility (as in the slow5lib Rust wrapper).
+
+/// Encode `i16` samples through fused zigzag-delta (i32 domain) then U32Classic.
+///
+/// The fused zigzag-delta computes `zigzag32(sample[i] - prev)` for each element,
+/// widening to i32 before differencing. This matches the BLOW5 SVB-ZD wire format.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::{encode_svbzd, decode_svbzd};
+/// let samples = [10i16, 11, 12, 11, 9];
+/// let encoded = encode_svbzd(&samples);
+/// let decoded = decode_svbzd(&encoded, samples.len()).unwrap();
+/// assert_eq!(decoded, samples);
+/// ```
+#[cfg(feature = "alloc")]
+pub fn encode_svbzd(samples: &[i16]) -> Vec<u8> {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    let mut out = Vec::new();
+    encode_svbzd_into(samples, &mut out);
+    out
+}
+
+/// Encode `i16` samples to SVB-ZD, appending the result to `out`.
+#[cfg(feature = "alloc")]
+pub fn encode_svbzd_into(samples: &[i16], out: &mut Vec<u8>) {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    // Fused zigzag-delta in i32 domain → u32 codes, then U32Classic encode.
+    let mut codes: Vec<u32> = Vec::with_capacity(samples.len());
+    let mut prev: i32 = 0;
+    for &s in samples {
+        let v = s as i32;
+        let delta = v.wrapping_sub(prev);
+        codes.push(((delta << 1) ^ (delta >> 31)) as u32);
+        prev = v;
+    }
+    crate::u32::U32Classic.encode_into(&codes, out);
+}
+
+/// Decode exactly `n` `i16` samples from SVB-ZD bytes (3-pass: U32Classic → zigzag → delta).
+///
+/// `n` must equal the number of samples originally encoded; a wrong value
+/// produces incorrect output or a [`DecodeError`].
+///
+/// # Examples
+///
+/// ```
+/// # use svb::{encode_svbzd, decode_svbzd};
+/// let samples = [10i16, 11, 12, 11, 9];
+/// let encoded = encode_svbzd(&samples);
+/// assert_eq!(decode_svbzd(&encoded, samples.len()).unwrap(), samples);
+/// ```
+#[cfg(feature = "alloc")]
+pub fn decode_svbzd(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    let mut out = Vec::with_capacity(n);
+    decode_svbzd_into(data, n, &mut out)?;
+    Ok(out)
+}
+
+/// Decode exactly `n` `i16` samples from SVB-ZD bytes, appending to `out`.
+#[cfg(feature = "alloc")]
+pub fn decode_svbzd_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    let codes = crate::u32::U32Classic.decode(data, n)?;
+    let mut acc: i32 = 0;
+    for zz in codes {
+        let delta = ((zz >> 1) as i32) ^ -((zz & 1) as i32);
+        acc = acc.wrapping_add(delta);
+        out.push(acc as i16);
+    }
+    Ok(())
+}
+
+/// Decode SVB-ZD bytes into `i16` samples using a fused single-pass decoder.
+///
+/// Identical output to [`decode_svbzd`] but fuses U32Classic decode, inverse-zigzag,
+/// and delta prefix sum into one SIMD loop. U32Classic and zigzag work fills the
+/// delta carry-chain stall, so throughput approaches the delta-alone rate.
+#[cfg(feature = "alloc")]
+pub fn decode_svbzd_fused(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    let mut out = Vec::with_capacity(n);
+    decode_svbzd_fused_into(data, n, &mut out)?;
+    Ok(out)
+}
+
+/// Decode SVB-ZD bytes, appending to `out`. See [`decode_svbzd_fused`].
+#[cfg(feature = "alloc")]
+pub fn decode_svbzd_fused_into(
+    data: &[u8],
+    n: usize,
+    out: &mut Vec<i16>,
+) -> Result<(), DecodeError> {
+    svbzd_fused::decode_into(data, n, out)
+}
+
+/// Decode an SVB-ZD half-stream starting from an arbitrary `initial_carry` value.
+///
+/// `initial_carry` is the i32 accumulator at the end of the preceding sub-stream
+/// (0 for the first stream). This is the building block for caller-side parallel
+/// decode: split the SVB-ZD payload at a pre-computed midpoint and decode each
+/// half on a separate thread.
+#[cfg(feature = "alloc")]
+pub fn decode_svbzd_fused_from(
+    data: &[u8],
+    n: usize,
+    initial_carry: i32,
+) -> Result<Vec<i16>, DecodeError> {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    let mut out = Vec::with_capacity(n);
+    decode_svbzd_fused_from_into(data, n, initial_carry, &mut out)?;
+    Ok(out)
+}
+
+/// Decode an SVB-ZD half-stream starting from `initial_carry`, appending to `out`.
+///
+/// See [`decode_svbzd_fused_from`].
+#[cfg(feature = "alloc")]
+pub fn decode_svbzd_fused_from_into(
+    data: &[u8],
+    n: usize,
+    initial_carry: i32,
+    out: &mut Vec<i16>,
+) -> Result<(), DecodeError> {
+    svbzd_fused::decode_from_into(data, n, initial_carry, out)
+}
+
+#[cfg(all(test, feature = "alloc"))]
+mod svbzd_tests {
+    use super::*;
+    #[cfg(not(feature = "std"))]
+    use alloc::vec;
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+
+    #[test]
+    fn roundtrip_empty() {
+        assert_eq!(decode_svbzd(&encode_svbzd(&[]), 0).unwrap(), &[] as &[i16]);
+    }
+
+    #[test]
+    fn roundtrip_single() {
+        for v in [0i16, 1, -1, i16::MIN, i16::MAX] {
+            assert_eq!(decode_svbzd(&encode_svbzd(&[v]), 1).unwrap(), [v]);
+        }
+    }
+
+    #[test]
+    fn roundtrip_ramp() {
+        let samples: Vec<i16> = (0..128).collect();
+        assert_eq!(
+            decode_svbzd(&encode_svbzd(&samples), 128).unwrap(),
+            samples
+        );
+    }
+
+    #[test]
+    fn roundtrip_extremes() {
+        let samples = vec![i16::MIN, i16::MAX, i16::MIN, i16::MAX];
+        assert_eq!(
+            decode_svbzd(&encode_svbzd(&samples), 4).unwrap(),
+            samples
+        );
+    }
+
+    #[test]
+    fn fused_matches_3pass() {
+        let samples: Vec<i16> = (0..1024)
+            .map(|i| ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
+            .collect();
+        let enc = encode_svbzd(&samples);
+        assert_eq!(
+            decode_svbzd_fused(&enc, samples.len()).unwrap(),
+            decode_svbzd(&enc, samples.len()).unwrap(),
+        );
+    }
+
+    #[test]
+    fn fused_matches_3pass_extremes() {
+        let samples = vec![i16::MIN, i16::MAX, 0, -1, 1, i16::MIN, i16::MAX, 0];
+        let enc = encode_svbzd(&samples);
+        assert_eq!(
+            decode_svbzd_fused(&enc, samples.len()).unwrap(),
+            decode_svbzd(&enc, samples.len()).unwrap(),
+        );
+    }
+
+    #[test]
+    fn fused_from_parallel_split() {
+        // Verify that split-stream decode gives the same output as decode_svbzd.
+        let n = 128usize;
+        let samples: Vec<i16> = (0..n).map(|i| (i as i16 * 17).wrapping_sub(500)).collect();
+        let enc = encode_svbzd(&samples);
+
+        // Find mid-point at n/2 = 64 (multiple of 4).
+        let n_half = (n / 2) & !3;
+        let ctrl_len = n.div_ceil(4);
+        let ctrl_half = n_half / 4;
+        let ctrl = &enc[..ctrl_len];
+        let data_bytes = &enc[ctrl_len..];
+
+        let mid_data_off: usize = ctrl[..ctrl_half]
+            .iter()
+            .map(|&cb| crate::u32::shuffle::DATA_LEN[cb as usize] as usize)
+            .sum();
+        let mid_carry = samples[n_half - 1] as i32;
+
+        // Build flat [ctrl|data] sub-streams.
+        let mut stream_a = ctrl[..ctrl_half].to_vec();
+        stream_a.extend_from_slice(&data_bytes[..mid_data_off]);
+        let mut stream_b = ctrl[ctrl_half..ctrl_len].to_vec();
+        stream_b.extend_from_slice(&data_bytes[mid_data_off..]);
+
+        let out_a = decode_svbzd_fused_from(&stream_a, n_half, 0).unwrap();
+        let out_b = decode_svbzd_fused_from(&stream_b, n - n_half, mid_carry).unwrap();
+        let mut combined = out_a;
+        combined.extend_from_slice(&out_b);
+        assert_eq!(combined, samples);
     }
 }
