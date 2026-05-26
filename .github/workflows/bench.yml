@@ -37,15 +37,15 @@ jobs:
 
       - name: Bench — scalar (no SIMD)
         run: |
-          cargo bench -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-scalar.txt
+          cargo bench --bench decode -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-scalar.txt
 
       - name: Bench — SSSE3
         run: |
-          cargo bench --features simd-ssse3 -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-ssse3.txt
+          cargo bench --bench decode --features simd-ssse3 -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-ssse3.txt
 
       - name: Bench — AVX2
         run: |
-          cargo bench --features simd-avx2 -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-avx2.txt
+          cargo bench --bench decode --features simd-avx2 -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-avx2.txt
 
       - name: Generate step summary
         run: |
@@ -80,11 +80,11 @@ jobs:
 
       - name: Bench — scalar (no SIMD)
         run: |
-          cargo bench -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-scalar.txt
+          cargo bench --bench decode -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-scalar.txt
 
       - name: Bench — NEON
         run: |
-          cargo bench --features simd-neon -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-neon.txt
+          cargo bench --bench decode --features simd-neon -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-neon.txt
 
       - name: Generate step summary
         run: |
