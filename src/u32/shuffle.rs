@@ -107,5 +107,5 @@ const fn make_encode(widths: [usize; 4]) -> [[u8; 16]; 256] {
     table
 }
 
-pub(super) static ENCODE_TABLE_CLASSIC: [[u8; 16]; 256] = make_encode([1, 2, 3, 4]);
+pub(crate) static ENCODE_TABLE_CLASSIC: [[u8; 16]; 256] = make_encode([1, 2, 3, 4]);
 pub(super) static ENCODE_TABLE_0124: [[u8; 16]; 256] = make_encode([0, 1, 2, 4]);

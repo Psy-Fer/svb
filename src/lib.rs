@@ -1131,21 +1131,7 @@ pub fn encode_svbzd(samples: &[i16]) -> Vec<u8> {
 /// Encode `i16` samples to SVB-ZD, appending the result to `out`.
 #[cfg(feature = "alloc")]
 pub fn encode_svbzd_into(samples: &[i16], out: &mut Vec<u8>) {
-    #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
-    #[cfg(feature = "std")]
-    use std::vec::Vec;
-
-    // Fused zigzag-delta in i32 domain → u32 codes, then U32Classic encode.
-    let mut codes: Vec<u32> = Vec::with_capacity(samples.len());
-    let mut prev: i32 = 0;
-    for &s in samples {
-        let v = s as i32;
-        let delta = v.wrapping_sub(prev);
-        codes.push(((delta << 1) ^ (delta >> 31)) as u32);
-        prev = v;
-    }
-    crate::u32::U32Classic.encode_into(&codes, out);
+    svbzd_fused::encode_into(samples, out);
 }
 
 /// Decode exactly `n` `i16` samples from SVB-ZD bytes (3-pass: U32Classic → zigzag → delta).
@@ -1176,11 +1162,6 @@ pub fn decode_svbzd(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
 /// Decode exactly `n` `i16` samples from SVB-ZD bytes, appending to `out`.
 #[cfg(feature = "alloc")]
 pub fn decode_svbzd_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
-    #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
-    #[cfg(feature = "std")]
-    use std::vec::Vec;
-
     let codes = crate::u32::U32Classic.decode(data, n)?;
     let mut acc: i32 = 0;
     for zz in codes {
