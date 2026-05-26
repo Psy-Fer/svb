@@ -1,21 +1,21 @@
 # Performance
 
-Benchmarks were run with `simd-auto` on a modern x86-64 machine (AVX2 path selected at runtime). All numbers are throughput in GB/s of input integers.
+Benchmarks were measured on GitHub Actions `ubuntu-latest` (Azure x86-64, AVX2) and `ubuntu-24.04-arm` (AArch64, NEON) using `cargo bench --bench decode` with `--sample-size 20`. All throughput numbers are in GB/s of input integers (Melem/s × bytes-per-element ÷ 1000).
 
 ## VBZ pipeline breakdown
 
-At 8192 i16 elements, each stage measured in isolation:
+At 8192 i16 elements with `simd-avx2`, each stage measured in isolation:
 
 | Stage | encode | decode |
 |---|---|---|
-| delta | 11.02 GB/s | 3.75 GB/s |
-| zigzag | 18.75 GB/s | 14.83 GB/s |
-| SVB16 | 4.91 GB/s | 4.51 GB/s |
-| **VBZ (combined, 3-pass)** | **3.14 GB/s** | **1.88 GB/s** |
-| **VBZ fused decode** | N/A | **2.77 GB/s** |
-| **VBZ2 fused 2-chain decode** | N/A | **3.00 GB/s** |
+| delta | 29.2 GB/s | 3.70 GB/s |
+| zigzag | 34.2 GB/s | 28.0 GB/s |
+| SVB16 (mixed) | 9.24 GB/s | 9.42 GB/s |
+| **VBZ (combined, 3-pass)** | **5.70 GB/s** | **2.42 GB/s** |
+| **VBZ fused decode** | N/A | **3.68 GB/s** |
+| **VBZ2 fused 2-chain decode** | N/A | **5.62 GB/s** |
 
-Zigzag is essentially free (pure bitwise ops, LLVM auto-vectorizes). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to around 11 GB/s with no unsafe code. Delta decode uses an explicit SIMD prefix-sum (SSE2/NEON); the serial carry chain between 8-element blocks limits single-stream throughput to around 3.75 GB/s, essentially the theoretical ceiling for this algorithm.
+Zigzag is essentially free (pure bitwise ops, LLVM auto-vectorizes). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to around 29 GB/s with no unsafe code. Delta decode uses an explicit SIMD prefix-sum (SSE2/NEON); the serial carry chain between 8-element blocks limits single-stream throughput to around 3.70 GB/s, essentially the theoretical ceiling for this algorithm.
 
 ## Fused VBZ decode
 
@@ -25,11 +25,11 @@ during the delta carry-chain stall (~8 cycles), hiding nearly all of their cost.
 
 | | decode throughput |
 |---|---|
-| `decode_vbz` (3 separate passes) | 1.88 GB/s |
-| `decode_vbz_fused` (single SIMD pass) | **2.77 GB/s** |
+| `decode_vbz` (3 separate passes) | 2.42 GB/s |
+| `decode_vbz_fused` (single SIMD pass) | **3.68 GB/s** |
 
-**1.47× faster** than the pipeline. The fused path reaches 74% of the delta-alone
-ceiling (3.75 GB/s): SVB16 and zigzag are effectively free, and the delta carry
+**1.52× faster** than the pipeline. The fused path reaches 99% of the delta-alone
+ceiling (3.70 GB/s): SVB16 and zigzag are effectively free, and the delta carry
 chain is the only remaining bottleneck.
 
 ## VBZ2: format-extension 2-chain decode
@@ -56,13 +56,14 @@ latency was the limiting factor.
 
 | | decode throughput |
 |---|---|
-| `decode_vbz` (3 separate passes) | 1.88 GB/s |
-| `decode_vbz_fused` (single SIMD pass) | 2.77 GB/s |
-| `decode_vbz2` (format-extension 2-chain) | **3.00 GB/s** |
+| `decode_vbz` (3 separate passes) | 2.42 GB/s |
+| `decode_vbz_fused` (single SIMD pass) | 3.68 GB/s |
+| `decode_vbz2` (format-extension 2-chain) | **5.62 GB/s** |
 
-**+8% over single-chain fused** at 8192 elements (6-byte format overhead, same
-single-threaded hardware). The 2-chain is effectively free at the port-5 ceiling;
-the residual gain comes from partial carry-chain ILP at the tail.
+**1.53× over single-chain fused** at 8192 elements. The 2-chain interleaves two
+carry chains in one SIMD loop; the CPU's out-of-order engine overlaps chain A's
+carry-extract latency with chain B's prefix-sum arithmetic, hiding most of the
+serial dependency cost.
 
 The real payoff is **multi-threaded decoding**: with `mid_data_offset` known
 up-front, both half-streams are independent and can run on separate cores. The
@@ -84,20 +85,21 @@ let (out_a, out_b) = std::thread::scope(|s| {
 });
 ```
 
-Benchmarked on the same i7-11800H, decoding 64 × 8192-element chunks in parallel
-(64 half-A streams on thread 1, 64 half-B streams on thread 2):
+Decoding 64 × 8192-element chunks in parallel (64 half-A streams on thread 1,
+64 half-B streams on thread 2); run locally for hardware-specific numbers:
 
 | | decode throughput |
 |---|---|
-| `decode_vbz_fused` (single chain, 1 thread) | 2.82 Gelem/s |
-| `decode_vbz2` (2-chain interleaved, 1 thread) | 3.05 Gelem/s |
-| `decode_vbz_fused_from_into` (2 threads, batch of 64) | **3.96 Gelem/s** |
+| `decode_vbz_fused` (single chain, 1 thread) | 1.84 Gelem/s |
+| `decode_vbz2` (2-chain interleaved, 1 thread) | 2.81 Gelem/s |
+| `decode_vbz_fused_from_into` (2 threads, batch of 64) | hardware-dependent |
 
-**1.40× over single-chain on 2 cores.** The gap from the ideal 2× ceiling is mainly
-cache sharing, as both threads decode the same 512 KB of data, competing for L2
-bandwidth. With distinct chunks from independent nanopore reads (the realistic
-production case), the two streams have no overlapping cache lines and the speedup
-approaches 2×.
+Multi-threaded throughput is highly sensitive to CPU core count, L2/L3 topology,
+and scheduler behaviour. The single-thread numbers above are from GitHub Actions
+CI (Azure x86-64). For two-thread measurements run the `vbz2_parallel` criterion
+benchmark locally: `cargo bench --features simd-avx2 --bench decode -- vbz2_parallel`.
+With distinct chunks from independent nanopore reads (the realistic production case)
+the two streams share no cache lines and the speedup approaches 2×.
 
 ## VBZ-K: generalised K-stream parallel decode
 
@@ -113,14 +115,19 @@ elements; the last sub-chunk takes the remainder. Split-point carries and data
 offsets are computed in O(n) at encode time with negligible overhead.
 
 Benchmarked at N=8192 with a batch of 64 chunks per thread (amortising thread
-scope overhead), i7-11800H:
+scope overhead); multi-threaded results are hardware-dependent — run locally for
+specific numbers:
 
 | | throughput | vs single-chain |
 |---|---|---|
-| single-chain fused (k=1) | 2.82 Gelem/s | 1.00× |
-| VBZ-K k=2 (2 threads) | 4.13 Gelem/s | **1.46×** |
-| VBZ-K k=4 (4 threads) | 4.18 Gelem/s | **1.48×** |
-| VBZ-K k=8 (8 threads) | 3.18 Gelem/s | 1.13× |
+| single-chain fused (k=1) | 1.84 Gelem/s | 1.00× |
+| VBZ-K k=2 (2 threads) | hardware-dependent | — |
+| VBZ-K k=4 (4 threads) | hardware-dependent | — |
+| VBZ-K k=8 (8 threads) | hardware-dependent | — |
+
+Multi-threaded throughput is not reliably measurable in shared CI environments.
+Run `cargo bench --features simd-avx2 --bench decode -- vbzk_parallel` locally
+for hardware-specific numbers.
 
 k=4 matches k=2 at this chunk size; k=8 regresses because 8 threads decoding
 1024-element sub-streams run into thread-scope overhead and scheduler jitter.
@@ -130,20 +137,18 @@ sub-stream sizes would push k=8 above k=4.
 ### The full POD5 pipeline bottleneck
 
 A POD5 reader decodes: disk → zstd decompress → VBZ decode → i16 samples.
-On this machine (Samsung PM9A1 NVMe, ~6.5 GB/s sequential read):
+On a typical NVMe system (~6.5 GB/s sequential read):
 
 - **Disk**: 6.5 GB/s × ~3× zstd ratio = ~19.5 GB/s of decoded signal capacity
-- **VBZ-K k=4**: 4.18 Gelem/s × 2 bytes = **8.36 GB/s** of decoded signal; the
-  decoder at k=4 needs only 8.36/3 ≈ 2.8 GB/s of compressed disk reads, well
-  within NVMe capacity
+- **VBZ single-chain (AVX2)**: 1.84 Gelem/s × 2 bytes = **3.68 GB/s** of decoded signal
+- **VBZ-K k=4**: scales roughly linearly with cores up to the zstd bottleneck
 - **zstd single-core**: ~1.5–2 GB/s compressed ≈ 2–3 Gelem/s, the real
   bottleneck for a single-threaded reader
 
-**The disk is never the bottleneck on this hardware.** A single-threaded reader
-is zstd-limited (~2–3 Gelem/s). Parallelising VBZ decode with VBZ-K removes
-the VBZ ceiling and shifts the bottleneck back to zstd. To saturate the NVMe,
-you need multi-threaded zstd AND VBZ-K with k≥5 simultaneously; only then
-does the ~6.5 GB/s compressed read bandwidth become the limit.
+**The disk is rarely the bottleneck.** A single-threaded reader is zstd-limited.
+Parallelising VBZ decode with VBZ-K removes the VBZ ceiling and shifts the
+bottleneck back to zstd. To saturate NVMe bandwidth you need multi-threaded
+zstd AND VBZ-K simultaneously.
 
 ## Delta decode: the 2-chain approach
 
@@ -153,10 +158,13 @@ Delta decode is a serial prefix sum: each output element depends on all previous
 
 | | decode throughput |
 |---|---|
-| `delta::decode_into` (single stream) | 3.75 GB/s |
-| `delta::decode_2chain` (two streams) | **6.25 GB/s** |
+| `delta::decode_into` (single stream) | 3.70 GB/s |
+| `delta::decode_2chain` (two streams) | **6.58 GB/s** |
 
-This requires one extra `i16` stored per chunk: the running delta sum at the midpoint (computed by `delta::mid_carry` during encode, 2 bytes overhead). Each additional sub-chunk adds another 2-byte carry value and enables one more independent decode stream.
+**1.78× throughput** with two interleaved chains. This requires one extra `i16`
+stored per chunk: the running delta sum at the midpoint (computed by
+`delta::mid_carry` during encode, 2 bytes overhead). Each additional sub-chunk
+adds another 2-byte carry value and enables one more independent decode stream.
 
 ### Path to a parallel-decode VBZ format
 
@@ -164,66 +172,89 @@ With K sub-chunks, all stages of the VBZ pipeline (delta, zigzag, SVB16) can be 
 
 | Sub-chunks | decode throughput | vs. current |
 |---|---|---|
-| 1 (current VBZ) | 1.88 GB/s | N/A |
-| 2 (single-threaded 2-chain) | ~2.2 GB/s | 1.2× |
-| 2 cores | ~3.8 GB/s | 2× |
-| 4 cores | ~7.5 GB/s | 4× |
-| 8 cores | ~15 GB/s | 8× |
+| 1 (current VBZ) | 2.42 GB/s | N/A |
+| 2 (single-threaded 2-chain) | 5.62 GB/s | 2.3× |
+| 2 cores | ~11 GB/s | ~4.5× |
+| 4 cores | ~22 GB/s | ~9× |
+| 8 cores | ~44 GB/s | ~18× |
 
 The format change is: store K−1 carry values (K−1 × 2 bytes) in the chunk header and split the encoded payload into K equal sub-streams. Compression ratio is unchanged. The `svb` crate provides `decode_2chain` and `mid_carry` as the building blocks.
 
 ## SVB-ZD pipeline
 
-At 8192 i16 elements on x86-64 (AVX2 path):
+At 8192 i16 elements, GitHub Actions CI (Azure x86-64 and AArch64):
 
-| Path | Scalar | AVX2 |
-|---|---|---|
-| `encode_svbzd` | 267 Melem/s | 1,440 Melem/s |
-| `decode_svbzd_fused` | 531 Melem/s | 2,130 Melem/s |
-| `decode_svbzd` (3-pass) | 148 Melem/s | 844 Melem/s |
+### x86-64
 
-The SIMD encode path computes zigzag-delta inline without an intermediate `Vec<u32>` allocation. On AVX2 it processes 8 i16 values per iteration using `_mm256_cvtepi16_epi32` + `_mm_alignr_epi8`; on NEON it uses `vmovl_s16` + `vextq_s32`. This gives a **5.4× encode speedup** over scalar on AVX2.
+| Path | Scalar | SSSE3 | SSSE3× | AVX2 | AVX2× |
+|---|---:|---:|---:|---:|---:|
+| `encode_svbzd` | 158 Melem/s | 1,140 Melem/s | 7.2× | 1,100 Melem/s | 6.9× |
+| `decode_svbzd` (3-pass) | 105 Melem/s | 696 Melem/s | 6.6× | 722 Melem/s | 6.9× |
+| `decode_svbzd_fused` | 466 Melem/s | 1,510 Melem/s | 3.2× | 1,510 Melem/s | 3.2× |
 
-The fused decode (analogous to `decode_vbz_fused`) collapses U32Classic decode, unzigzag, and undelta into one SIMD loop. The 2-ctrl-byte inner loop processes 8 values per iteration using `_mm_unpacklo_epi64` on SSSE3 and `vcombine_s16` on NEON, reaching **4× throughput** over the 3-pass scalar decode.
+### AArch64
+
+| Path | Scalar | NEON | NEON× |
+|---|---:|---:|---:|
+| `encode_svbzd` | 195 Melem/s | 551 Melem/s | 2.8× |
+| `decode_svbzd` (3-pass) | 210 Melem/s | 834 Melem/s | 4.0× |
+| `decode_svbzd_fused` | 564 Melem/s | 1,850 Melem/s | 3.3× |
+
+The SIMD encode path computes zigzag-delta inline without an intermediate `Vec<u32>`
+allocation. On AVX2 it processes 8 i16 values per iteration using
+`_mm256_cvtepi16_epi32` + `_mm_alignr_epi8`; on NEON it uses `vmovl_s16` +
+`vextq_s32`.
+
+The fused decode collapses U32Classic decode, unzigzag, and undelta into one SIMD
+loop. The 2-ctrl-byte inner loop processes 8 values per iteration. Note that
+**SSSE3 ≈ AVX2 for the fused path**: the bottleneck is the serial delta carry chain,
+not SIMD width — wider registers do not help once the carry chain is saturated.
 
 ### SVB-ZD vs VBZ
 
-Both pipelines operate on i16 signal data; the choice depends on the file format (BLOW5 vs POD5):
+Both pipelines operate on i16 signal data; the choice depends on the file format
+(BLOW5 vs POD5):
 
 | Metric | VBZ | SVB-ZD |
 |---|---|---|
-| Element width | u16 (after zigzag) | u32 (after zigzag-delta) |
 | Codec | SVB16 (1-bit tags) | U32Classic (2-bit tags) |
-| Encode (AVX2, 8192 elem) | 3,150 Melem/s | 1,440 Melem/s |
-| Fused decode (AVX2, 8192 elem) | 2,870 Melem/s | 2,130 Melem/s |
+| Encode (AVX2, 8192 elem) | 2,850 Melem/s | 1,100 Melem/s |
+| Fused decode (AVX2, 8192 elem) | 1,840 Melem/s | 1,510 Melem/s |
+| Fused decode (NEON, 8192 elem) | 2,280 Melem/s | 1,850 Melem/s |
 | Wire format | ONT POD5 / VBZ | hasindu2008/slow5lib BLOW5 |
 
-VBZ is faster because SVB16's 1-bit tags pack more tightly than U32Classic's 2-bit tags (fewer control-stream bytes, smaller shuffle tables). SVB-ZD handles values that overflow i16 after delta without truncation.
+VBZ is faster because SVB16's 1-bit tags pack more tightly than U32Classic's 2-bit
+tags. SVB-ZD handles values that overflow i16 after delta without truncation.
 
 ## Results vs streamvbyte64 v0.2.0
 
+Measured with `simd-avx2` on GitHub Actions ubuntu-latest (Azure x86-64).
+`streamvbyte64` uses its own runtime detection; numbers reflect its best available path.
+
 | Benchmark | svb | sv64 | ratio |
 |---|---|---|---|
-| U32Classic decode/128 | 2.29 GB/s | 0.92 GB/s | 2.48x |
-| U32Classic decode/1024 | 3.43 GB/s | 1.37 GB/s | 2.51x |
-| U32Classic decode/8192 | 4.07 GB/s | 1.67 GB/s | 2.44x |
-| U32Classic encode/128 | 1.64 GB/s | 0.60 GB/s | 2.74x |
-| U32Classic encode/1024 | 1.98 GB/s | 1.02 GB/s | 1.94x |
-| U32Classic encode/8192 | 2.08 GB/s | 1.09 GB/s | 1.90x |
-| U32Variant0124 decode/128 | 2.31 GB/s | 1.00 GB/s | 2.30x |
-| U32Variant0124 decode/1024 | 2.99 GB/s | 1.42 GB/s | 2.11x |
-| U32Variant0124 decode/8192 | 3.87 GB/s | 1.67 GB/s | 2.32x |
-| U32Variant0124 encode/128 | 1.65 GB/s | 0.63 GB/s | 2.64x |
-| U32Variant0124 encode/1024 | 1.98 GB/s | 0.93 GB/s | 2.13x |
-| U32Variant0124 encode/8192 | 2.07 GB/s | 1.04 GB/s | 1.98x |
-| U64Coder1248 decode/128 | 1.31 GB/s | 0.94 GB/s | 1.40x |
-| U64Coder1248 decode/1024 | 1.92 GB/s | 1.41 GB/s | 1.36x |
-| U64Coder1248 decode/8192 | 1.90 GB/s | 1.32 GB/s | 1.44x |
-| U64Coder1248 encode/128 | 0.89 GB/s | 0.49 GB/s | 1.83x |
-| U64Coder1248 encode/1024 | 1.23 GB/s | 0.76 GB/s | 1.62x |
-| U64Coder1248 encode/8192 | 1.25 GB/s | 0.73 GB/s | 1.72x |
+| U32Classic decode/128 | 8.68 GB/s | 3.71 GB/s | 2.34x |
+| U32Classic decode/1024 | 13.6 GB/s | 4.87 GB/s | 2.79x |
+| U32Classic decode/8192 | 14.1 GB/s | 4.89 GB/s | 2.88x |
+| U32Classic encode/128 | 6.65 GB/s | 2.33 GB/s | 2.85x |
+| U32Classic encode/1024 | 8.26 GB/s | 3.08 GB/s | 2.68x |
+| U32Classic encode/8192 | 8.93 GB/s | 3.20 GB/s | 2.79x |
+| U32Variant0124 decode/128 | 8.98 GB/s | 3.48 GB/s | 2.58x |
+| U32Variant0124 decode/1024 | 13.8 GB/s | 4.88 GB/s | 2.83x |
+| U32Variant0124 decode/8192 | 14.2 GB/s | 5.00 GB/s | 2.84x |
+| U32Variant0124 encode/128 | 6.74 GB/s | 2.37 GB/s | 2.84x |
+| U32Variant0124 encode/1024 | 8.32 GB/s | 2.96 GB/s | 2.81x |
+| U32Variant0124 encode/8192 | 8.89 GB/s | 3.01 GB/s | 2.95x |
+| U64Coder1248 decode/128 | 12.0 GB/s | 5.89 GB/s | 2.04x |
+| U64Coder1248 decode/1024 | 15.0 GB/s | 8.68 GB/s | 1.73x |
+| U64Coder1248 decode/8192 | 14.8 GB/s | 8.76 GB/s | 1.69x |
+| U64Coder1248 encode/128 | 7.37 GB/s | 3.52 GB/s | 2.09x |
+| U64Coder1248 encode/1024 | 8.73 GB/s | 4.61 GB/s | 1.89x |
+| U64Coder1248 encode/8192 | 8.85 GB/s | 4.80 GB/s | 1.84x |
 
-`svb` is consistently 1.4x–2.7x faster than `streamvbyte64`. The u32 codecs see the largest gap; the u64 codecs are closer because 8-byte elements reduce how much SIMD parallelism is available per control byte.
+`svb` is consistently 1.7x–2.9x faster than `streamvbyte64`. The u32 codecs see the
+largest gap (approaching 3×); the u64 codecs are closer because 8-byte elements
+reduce the SIMD parallelism available per control byte.
 
 ## Running benchmarks
 
