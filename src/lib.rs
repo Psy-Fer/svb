@@ -1257,25 +1257,21 @@ mod svbzd_tests {
     #[test]
     fn roundtrip_ramp() {
         let samples: Vec<i16> = (0..128).collect();
-        assert_eq!(
-            decode_svbzd(&encode_svbzd(&samples), 128).unwrap(),
-            samples
-        );
+        assert_eq!(decode_svbzd(&encode_svbzd(&samples), 128).unwrap(), samples);
     }
 
     #[test]
     fn roundtrip_extremes() {
         let samples = vec![i16::MIN, i16::MAX, i16::MIN, i16::MAX];
-        assert_eq!(
-            decode_svbzd(&encode_svbzd(&samples), 4).unwrap(),
-            samples
-        );
+        assert_eq!(decode_svbzd(&encode_svbzd(&samples), 4).unwrap(), samples);
     }
 
     #[test]
     fn fused_matches_3pass() {
         let samples: Vec<i16> = (0..1024)
-            .map(|i| ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
+            .map(|i| {
+                ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
+            })
             .collect();
         let enc = encode_svbzd(&samples);
         assert_eq!(

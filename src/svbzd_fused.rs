@@ -86,7 +86,10 @@ fn encode_scalar(samples: &[i16], out: &mut Vec<u8>) {
 // Zigzag = (delta<<1) ^ (delta>>31) using 256-bit shifts — no bias trick needed.
 // StreamVByte packing via ENCODE_TABLE_CLASSIC (same as avx2::encode_into_classic).
 #[allow(dead_code)]
-#[cfg(all(any(feature = "simd-avx2", feature = "simd-auto"), target_arch = "x86_64"))]
+#[cfg(all(
+    any(feature = "simd-avx2", feature = "simd-auto"),
+    target_arch = "x86_64"
+))]
 #[target_feature(enable = "avx2")]
 unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
     use crate::u32::shuffle::{DATA_LEN, ENCODE_TABLE_CLASSIC};
@@ -110,16 +113,14 @@ unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
     let t2 = _mm256_set1_epi32(i32::MIN + 0xFFFF);
     let t3 = _mm256_set1_epi32(i32::MIN + 0xFF_FFFF);
     let zero256 = _mm256_setzero_si256();
-    let gather_lo =
-        _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 8, 4, 0);
+    let gather_lo = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 8, 4, 0);
 
     let mut i = 0usize;
     let mut block = 0usize;
 
     while i + 8 <= simd_n {
         // SAFETY: i + 8 <= n; 16-byte load of 8 i16s is within the slice.
-        let raw_i16 =
-            unsafe { _mm_loadu_si128(samples.as_ptr().add(i) as *const __m128i) };
+        let raw_i16 = unsafe { _mm_loadu_si128(samples.as_ptr().add(i) as *const __m128i) };
         let curr = _mm256_cvtepi16_epi32(raw_i16); // 8 × i32
 
         // Build prev_shifted = [prev,s0,s1,s2 | s3,s4,s5,s6] using per-half alignr.
@@ -127,14 +128,10 @@ unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
         let hi = _mm256_extracti128_si256(curr, 1); // [s4,s5,s6,s7]
         let prev_lo = _mm_alignr_epi8(lo, _mm_set1_epi32(prev), 12); // [prev,s0,s1,s2]
         let prev_hi = _mm_alignr_epi8(hi, lo, 12); // [s3,s4,s5,s6]
-        let prev_shifted =
-            _mm256_inserti128_si256(_mm256_castsi128_si256(prev_lo), prev_hi, 1);
+        let prev_shifted = _mm256_inserti128_si256(_mm256_castsi128_si256(prev_lo), prev_hi, 1);
 
         let delta = _mm256_sub_epi32(curr, prev_shifted);
-        let zigzag = _mm256_xor_si256(
-            _mm256_slli_epi32(delta, 1),
-            _mm256_srai_epi32(delta, 31),
-        );
+        let zigzag = _mm256_xor_si256(_mm256_slli_epi32(delta, 1), _mm256_srai_epi32(delta, 31));
 
         // Carry: last element of hi (= s7).
         prev = _mm_cvtsi128_si32(_mm_srli_si128(hi, 12));
@@ -145,7 +142,10 @@ unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
         let c2m = _mm256_cmpgt_epi32(bv, t2);
         let c3m = _mm256_cmpgt_epi32(bv, t3);
         let tag_vec = _mm256_add_epi32(
-            _mm256_add_epi32(_mm256_sub_epi32(zero256, c1m), _mm256_sub_epi32(zero256, c2m)),
+            _mm256_add_epi32(
+                _mm256_sub_epi32(zero256, c1m),
+                _mm256_sub_epi32(zero256, c2m),
+            ),
             _mm256_sub_epi32(zero256, c3m),
         );
 
@@ -168,9 +168,8 @@ unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
             *base_ptr.add(ctrl_start + block + 1) = c1b;
 
             let v_lo = _mm256_castsi256_si128(zigzag);
-            let enc_lo = _mm_loadu_si128(
-                ENCODE_TABLE_CLASSIC[c0 as usize].as_ptr() as *const __m128i,
-            );
+            let enc_lo =
+                _mm_loadu_si128(ENCODE_TABLE_CLASSIC[c0 as usize].as_ptr() as *const __m128i);
             // SAFETY: data_start + data_pos + 16 <= capacity.
             _mm_storeu_si128(
                 base_ptr.add(data_start + data_pos) as *mut __m128i,
@@ -179,9 +178,8 @@ unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
             data_pos += DATA_LEN[c0 as usize] as usize;
 
             let v_hi = _mm256_extracti128_si256(zigzag, 1);
-            let enc_hi = _mm_loadu_si128(
-                ENCODE_TABLE_CLASSIC[c1b as usize].as_ptr() as *const __m128i,
-            );
+            let enc_hi =
+                _mm_loadu_si128(ENCODE_TABLE_CLASSIC[c1b as usize].as_ptr() as *const __m128i);
             _mm_storeu_si128(
                 base_ptr.add(data_start + data_pos) as *mut __m128i,
                 _mm_shuffle_epi8(v_hi, enc_hi),
@@ -254,8 +252,7 @@ unsafe fn encode_ssse3(samples: &[i16], out: &mut Vec<u8>) {
     let t2 = _mm_set1_epi32(i32::MIN + 0xFFFF);
     let t3 = _mm_set1_epi32(i32::MIN + 0xFF_FFFF);
     let zero = _mm_setzero_si128();
-    let gather_lo =
-        _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 8, 4, 0);
+    let gather_lo = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 8, 4, 0);
 
     let mut i = 0usize;
     let mut block = 0usize;
@@ -263,9 +260,7 @@ unsafe fn encode_ssse3(samples: &[i16], out: &mut Vec<u8>) {
     while i + 4 <= simd_n {
         // Load 4 i16s (8 bytes) via unaligned u64 read; upper 8 bytes zeroed.
         // SAFETY: i + 4 <= n → at least 8 more bytes available in the slice.
-        let lo = unsafe {
-            (samples.as_ptr().add(i) as *const u64).read_unaligned()
-        };
+        let lo = unsafe { (samples.as_ptr().add(i) as *const u64).read_unaligned() };
         let raw = _mm_set_epi64x(0, lo as i64);
 
         // Sign-extend 4 × i16 → 4 × i32 without SSE4.1.
@@ -275,10 +270,7 @@ unsafe fn encode_ssse3(samples: &[i16], out: &mut Vec<u8>) {
         // [prev, s0, s1, s2] = alignr(curr, set1(prev), 12).
         let prev_shifted = _mm_alignr_epi8(curr, _mm_set1_epi32(prev), 12);
         let delta = _mm_sub_epi32(curr, prev_shifted);
-        let zigzag = _mm_xor_si128(
-            _mm_slli_epi32(delta, 1),
-            _mm_srai_epi32(delta, 31),
-        );
+        let zigzag = _mm_xor_si128(_mm_slli_epi32(delta, 1), _mm_srai_epi32(delta, 31));
 
         prev = _mm_cvtsi128_si32(_mm_srli_si128(curr, 12));
 
@@ -291,17 +283,15 @@ unsafe fn encode_ssse3(samples: &[i16], out: &mut Vec<u8>) {
             _mm_sub_epi32(zero, c3m),
         );
         let tags = _mm_cvtsi128_si32(_mm_shuffle_epi8(tag_vec, gather_lo)) as u32;
-        let ctrl = ((tags & 0x3)
-            | ((tags >> 6) & 0x0C)
-            | ((tags >> 12) & 0x30)
-            | ((tags >> 18) & 0xC0)) as u8;
+        let ctrl =
+            ((tags & 0x3) | ((tags >> 6) & 0x0C) | ((tags >> 12) & 0x30) | ((tags >> 18) & 0xC0))
+                as u8;
 
         unsafe {
             // SAFETY: block < ctrl_len.
             *base_ptr.add(ctrl_start + block) = ctrl;
-            let enc = _mm_loadu_si128(
-                ENCODE_TABLE_CLASSIC[ctrl as usize].as_ptr() as *const __m128i,
-            );
+            let enc =
+                _mm_loadu_si128(ENCODE_TABLE_CLASSIC[ctrl as usize].as_ptr() as *const __m128i);
             // SAFETY: data_start + data_pos + 16 <= capacity.
             _mm_storeu_si128(
                 base_ptr.add(data_start + data_pos) as *mut __m128i,
@@ -345,7 +335,10 @@ unsafe fn encode_ssse3(samples: &[i16], out: &mut Vec<u8>) {
 // vcgtq_u32 for unsigned tag comparison (no bias trick needed).
 // vqtbl1q_u8 for data packing (same as neon::encode_into_classic).
 #[allow(dead_code)]
-#[cfg(all(any(feature = "simd-neon", feature = "simd-auto"), target_arch = "aarch64"))]
+#[cfg(all(
+    any(feature = "simd-neon", feature = "simd-auto"),
+    target_arch = "aarch64"
+))]
 #[target_feature(enable = "neon")]
 unsafe fn encode_neon(samples: &[i16], out: &mut Vec<u8>) {
     use crate::u32::shuffle::{DATA_LEN, ENCODE_TABLE_CLASSIC};
@@ -566,8 +559,9 @@ fn decode_scalar(
     any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
     target_arch = "x86_64"
 ))]
-static TRUNC_I32_I16: [u8; 16] =
-    [0, 1, 4, 5, 8, 9, 12, 13, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80];
+static TRUNC_I32_I16: [u8; 16] = [
+    0, 1, 4, 5, 8, 9, 12, 13, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+];
 
 #[cfg(all(
     any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
@@ -589,8 +583,7 @@ pub(crate) unsafe fn decode_ssse3(
     let out_ptr = unsafe { out.as_mut_ptr().add(base) };
 
     // SAFETY: TRUNC_I32_I16 is 16 bytes; SSSE3 loadu has no alignment requirement.
-    let trunc_mask =
-        unsafe { _mm_loadu_si128(TRUNC_I32_I16.as_ptr() as *const __m128i) };
+    let trunc_mask = unsafe { _mm_loadu_si128(TRUNC_I32_I16.as_ptr() as *const __m128i) };
 
     let mut ctrl_pos = 0usize;
     let mut data_pos = 0usize;
@@ -610,8 +603,7 @@ pub(crate) unsafe fn decode_ssse3(
             // SAFETY: data_pos + 32 <= data_bytes.len(); bytes_a <= 16, so
             // the group-B load [data_pos+bytes_a, data_pos+bytes_a+16) ⊆ [data_pos, data_pos+32).
             let shuf_a = _mm_loadu_si128(TABLE[cb0].as_ptr() as *const __m128i);
-            let chunk_a =
-                _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
+            let chunk_a = _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
             let u32s_a = _mm_shuffle_epi8(chunk_a, shuf_a);
             let lsb_a = _mm_and_si128(u32s_a, _mm_set1_epi32(1));
             let neg_a = _mm_sub_epi32(_mm_setzero_si128(), lsb_a);
@@ -622,9 +614,8 @@ pub(crate) unsafe fn decode_ssse3(
             let acc_a = _mm_cvtsi128_si32(_mm_srli_si128(result_a, 12));
 
             let shuf_b = _mm_loadu_si128(TABLE[cb1].as_ptr() as *const __m128i);
-            let chunk_b = _mm_loadu_si128(
-                data_bytes.as_ptr().add(data_pos + bytes_a) as *const __m128i,
-            );
+            let chunk_b =
+                _mm_loadu_si128(data_bytes.as_ptr().add(data_pos + bytes_a) as *const __m128i);
             let u32s_b = _mm_shuffle_epi8(chunk_b, shuf_b);
             let lsb_b = _mm_and_si128(u32s_b, _mm_set1_epi32(1));
             let neg_b = _mm_sub_epi32(_mm_setzero_si128(), lsb_b);
@@ -658,8 +649,7 @@ pub(crate) unsafe fn decode_ssse3(
         unsafe {
             // SAFETY: data_pos + 16 <= data_bytes.len(); TABLE[cb] is 16 bytes.
             let shuf = _mm_loadu_si128(TABLE[cb].as_ptr() as *const __m128i);
-            let chunk =
-                _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
+            let chunk = _mm_loadu_si128(data_bytes.as_ptr().add(data_pos) as *const __m128i);
             let u32s = _mm_shuffle_epi8(chunk, shuf);
             let lsb = _mm_and_si128(u32s, _mm_set1_epi32(1));
             let neg = _mm_sub_epi32(_mm_setzero_si128(), lsb);
@@ -804,8 +794,7 @@ pub(crate) unsafe fn decode_neon(
             let u32s_a = vreinterpretq_u32_u8(vqtbl1q_u8(chunk_a, shuf_a));
             let lsb_a = vandq_u32(u32s_a, vdupq_n_u32(1));
             let neg_a = vsubq_u32(vdupq_n_u32(0), lsb_a);
-            let delta_a =
-                vreinterpretq_s32_u32(veorq_u32(vshrq_n_u32(u32s_a, 1), neg_a));
+            let delta_a = vreinterpretq_s32_u32(veorq_u32(vshrq_n_u32(u32s_a, 1), neg_a));
             let delta_a = vaddq_s32(delta_a, vextq_s32(zero_s32, delta_a, 3));
             let delta_a = vaddq_s32(delta_a, vextq_s32(zero_s32, delta_a, 2));
             let result_a = vaddq_s32(delta_a, vdupq_n_s32(acc));
@@ -816,8 +805,7 @@ pub(crate) unsafe fn decode_neon(
             let u32s_b = vreinterpretq_u32_u8(vqtbl1q_u8(chunk_b, shuf_b));
             let lsb_b = vandq_u32(u32s_b, vdupq_n_u32(1));
             let neg_b = vsubq_u32(vdupq_n_u32(0), lsb_b);
-            let delta_b =
-                vreinterpretq_s32_u32(veorq_u32(vshrq_n_u32(u32s_b, 1), neg_b));
+            let delta_b = vreinterpretq_s32_u32(veorq_u32(vshrq_n_u32(u32s_b, 1), neg_b));
             let delta_b = vaddq_s32(delta_b, vextq_s32(zero_s32, delta_b, 3));
             let delta_b = vaddq_s32(delta_b, vextq_s32(zero_s32, delta_b, 2));
             let result_b = vaddq_s32(delta_b, vdupq_n_s32(acc_a));
@@ -849,8 +837,7 @@ pub(crate) unsafe fn decode_neon(
             let u32s = vreinterpretq_u32_u8(vqtbl1q_u8(chunk, shuf));
             let lsb = vandq_u32(u32s, vdupq_n_u32(1));
             let neg = vsubq_u32(vdupq_n_u32(0), lsb);
-            let delta =
-                vreinterpretq_s32_u32(veorq_u32(vshrq_n_u32(u32s, 1), neg));
+            let delta = vreinterpretq_s32_u32(veorq_u32(vshrq_n_u32(u32s, 1), neg));
             let delta = vaddq_s32(delta, vextq_s32(zero_s32, delta, 3));
             let delta = vaddq_s32(delta, vextq_s32(zero_s32, delta, 2));
             let result = vaddq_s32(delta, vdupq_n_s32(acc));
@@ -1009,8 +996,9 @@ mod tests {
 
     #[test]
     fn encode_matches_reference_large() {
-        let samples: Vec<i16> =
-            (0..256).map(|i| (i as i16 * 13).wrapping_sub(400)).collect();
+        let samples: Vec<i16> = (0..256)
+            .map(|i| (i as i16 * 13).wrapping_sub(400))
+            .collect();
         assert_eq!(encode_into_vec(&samples), encode_reference(&samples));
     }
 
@@ -1071,7 +1059,9 @@ mod tests {
 
     #[test]
     fn roundtrip_large() {
-        let samples: Vec<i16> = (0..256).map(|i| (i as i16 * 13).wrapping_sub(400)).collect();
+        let samples: Vec<i16> = (0..256)
+            .map(|i| (i as i16 * 13).wrapping_sub(400))
+            .collect();
         let enc = encode_reference(&samples);
         let mut dec = Vec::new();
         decode_into(&enc, samples.len(), &mut dec).unwrap();

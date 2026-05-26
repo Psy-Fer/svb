@@ -1,9 +1,9 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use streamvbyte64::Coder as _;
 use svb::{
-    decode_svbzd, decode_svbzd_fused_into,
-    decode_vbz, decode_vbz_fused_from_into, decode_vbz_fused_into, decode_vbz2_into,
-    decode_vbzk_parallel_into, delta, encode_svbzd, encode_vbz, encode_vbz2, encode_vbzk,
+    decode_svbzd, decode_svbzd_fused_into, decode_vbz, decode_vbz_fused_from_into,
+    decode_vbz_fused_into, decode_vbz2_into, decode_vbzk_parallel_into, delta, encode_svbzd,
+    encode_vbz, encode_vbz2, encode_vbzk,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
