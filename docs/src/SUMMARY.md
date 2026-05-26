@@ -14,6 +14,7 @@
   - [U64Coder1248](codecs/u64-coder1248.md)
 - [Delta and Zigzag](transforms.md)
 - [VBZ Pipeline](vbz.md)
+- [SVB-ZD Pipeline](svbzd.md)
 - [SIMD Backends](simd.md)
 - [no_std Support](no-std.md)
 

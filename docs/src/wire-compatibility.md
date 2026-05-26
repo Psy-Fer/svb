@@ -11,6 +11,7 @@
 | `U64Coder1234` | `streamvbyte64::Coder1234` (u32 values only) |
 | `U64Coder1248` | `streamvbyte64::Coder1248` |
 | `Svb16` | ONT `vbz_hdf_plugin` SVB16 layer |
+| SVB-ZD pipeline (`encode_svbzd` / `decode_svbzd_fused`) | hasindu2008/slow5lib `SLOW5_COMPRESS_SVB_ZD` (BLOW5 files) |
 
 ## Buffer layout difference
 

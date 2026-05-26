@@ -30,6 +30,13 @@ svb = { version = "0.1", features = ["simd-avx2"] }
 
 or with `RUSTFLAGS="-C target-cpu=native"` where the build host and run host are the same.
 
+## Pipeline coverage
+
+SIMD paths are provided for individual codec variants and for both high-level pipelines:
+
+- **VBZ pipeline** (`encode_vbz` / `decode_vbz_fused`): fused SVB16 + zigzag + delta in a single SIMD loop on x86-64 (SSSE3/AVX2) and AArch64 (NEON).
+- **SVB-ZD pipeline** (`encode_svbzd` / `decode_svbzd_fused`): fused U32Classic + unzigzag + undelta. Encode computes zigzag-delta inline via SIMD (eliminates the intermediate `Vec<u32>` allocation), decode collapses all three stages into one SIMD loop.
+
 ## Decode throughput
 
 With `simd-auto` on a modern x86-64 machine, decode throughput for all codec variants is in the range of **1.3–4 GB/s** depending on variant and input size. See [Performance](performance.md) for detailed numbers.

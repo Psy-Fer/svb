@@ -172,6 +172,34 @@ With K sub-chunks, all stages of the VBZ pipeline (delta, zigzag, SVB16) can be 
 
 The format change is: store K−1 carry values (K−1 × 2 bytes) in the chunk header and split the encoded payload into K equal sub-streams. Compression ratio is unchanged. The `svb` crate provides `decode_2chain` and `mid_carry` as the building blocks.
 
+## SVB-ZD pipeline
+
+At 8192 i16 elements on x86-64 (AVX2 path):
+
+| Path | Scalar | AVX2 |
+|---|---|---|
+| `encode_svbzd` | 267 Melem/s | 1,440 Melem/s |
+| `decode_svbzd_fused` | 531 Melem/s | 2,130 Melem/s |
+| `decode_svbzd` (3-pass) | 148 Melem/s | 844 Melem/s |
+
+The SIMD encode path computes zigzag-delta inline without an intermediate `Vec<u32>` allocation. On AVX2 it processes 8 i16 values per iteration using `_mm256_cvtepi16_epi32` + `_mm_alignr_epi8`; on NEON it uses `vmovl_s16` + `vextq_s32`. This gives a **5.4× encode speedup** over scalar on AVX2.
+
+The fused decode (analogous to `decode_vbz_fused`) collapses U32Classic decode, unzigzag, and undelta into one SIMD loop. The 2-ctrl-byte inner loop processes 8 values per iteration using `_mm_unpacklo_epi64` on SSSE3 and `vcombine_s16` on NEON, reaching **4× throughput** over the 3-pass scalar decode.
+
+### SVB-ZD vs VBZ
+
+Both pipelines operate on i16 signal data; the choice depends on the file format (BLOW5 vs POD5):
+
+| Metric | VBZ | SVB-ZD |
+|---|---|---|
+| Element width | u16 (after zigzag) | u32 (after zigzag-delta) |
+| Codec | SVB16 (1-bit tags) | U32Classic (2-bit tags) |
+| Encode (AVX2, 8192 elem) | 3,150 Melem/s | 1,440 Melem/s |
+| Fused decode (AVX2, 8192 elem) | 2,870 Melem/s | 2,130 Melem/s |
+| Wire format | ONT POD5 / VBZ | hasindu2008/slow5lib BLOW5 |
+
+VBZ is faster because SVB16's 1-bit tags pack more tightly than U32Classic's 2-bit tags (fewer control-stream bytes, smaller shuffle tables). SVB-ZD handles values that overflow i16 after delta without truncation.
+
 ## Results vs streamvbyte64 v0.2.0
 
 | Benchmark | svb | sv64 | ratio |
