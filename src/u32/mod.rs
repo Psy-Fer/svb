@@ -43,7 +43,7 @@ mod avx2;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-mod shuffle;
+pub(crate) mod shuffle;
 #[cfg(target_arch = "x86_64")]
 mod sse2;
 

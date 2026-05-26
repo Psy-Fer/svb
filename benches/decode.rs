@@ -1,8 +1,9 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use streamvbyte64::Coder as _;
 use svb::{
-    decode_vbz, decode_vbz_fused_from_into, decode_vbz_fused_into, decode_vbz2_into,
-    decode_vbzk_parallel_into, delta, encode_vbz, encode_vbz2, encode_vbzk,
+    decode_svbzd, decode_svbzd_fused_into, decode_vbz, decode_vbz_fused_from_into,
+    decode_vbz_fused_into, decode_vbz2_into, decode_vbzk_parallel_into, delta, encode_svbzd,
+    encode_vbz, encode_vbz2, encode_vbzk,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
@@ -766,6 +767,54 @@ fn bench_vbzk_parallel(c: &mut Criterion) {
     }
 }
 
+// ── SVB-ZD pipeline ───────────────────────────────────────────────────────────
+//
+// Same nanopore-style i16 signal as the VBZ benchmarks for direct comparison.
+// SVB-ZD uses U32Classic (2-bit tags, 1/2/3/4 bytes) instead of SVB16 (1-bit,
+// 1/2 bytes), so the encoded size per element is larger and decode throughput
+// differs from VBZ.
+
+fn bench_svbzd_encode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("svbzd/encode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let samples = vbz_i16_samples(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &samples, |b, s| {
+            b.iter(|| encode_svbzd(s));
+        });
+    }
+    g.finish();
+}
+
+fn bench_svbzd_decode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("svbzd/decode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let enc = encode_svbzd(&vbz_i16_samples(n));
+        g.bench_with_input(BenchmarkId::from_parameter(n), &(enc, n), |b, (enc, n)| {
+            b.iter(|| decode_svbzd(enc, *n).unwrap());
+        });
+    }
+    g.finish();
+}
+
+fn bench_svbzd_fused(c: &mut Criterion) {
+    let mut g = c.benchmark_group("svbzd_fused");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let enc = encode_svbzd(&vbz_i16_samples(n));
+        let mut out = Vec::with_capacity(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &(enc, n), |b, (enc, n)| {
+            b.iter(|| {
+                out.clear();
+                decode_svbzd_fused_into(enc, *n, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+}
+
 // ── registry ──────────────────────────────────────────────────────────────────
 
 criterion_group!(
@@ -799,6 +848,8 @@ criterion_group!(
     bench_compare_u64_coder1248_encode,
     bench_compare_u64_coder1248_decode,
     bench_vbzk_parallel,
-    bench_vbzk_parallel_api,
+    bench_svbzd_encode,
+    bench_svbzd_decode,
+    bench_svbzd_fused,
 );
 criterion_main!(benches);

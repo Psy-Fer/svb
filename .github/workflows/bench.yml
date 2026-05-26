@@ -1,0 +1,103 @@
+name: Benchmarks
+
+# Manual trigger only — run via Actions → Benchmarks → Run workflow.
+# Benchmark jobs run in parallel; each writes its own GitHub Step Summary.
+on:
+  workflow_dispatch:
+
+# Cancel any in-progress run for the same ref so we don't queue up stale results.
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Reduced sample count / timing keeps each feature-flag run to ~5 min.
+  # Increase locally for publication-quality numbers.
+  CRITERION_ARGS: --output-format bencher --sample-size 20 --warm-up-time 1 --measurement-time 3
+
+jobs:
+  # ── x86-64: scalar → SSSE3 → AVX2 ────────────────────────────────────────────
+  bench-x86_64:
+    name: bench / x86-64
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-x86_64
+
+      # Each cargo bench invocation compiles a separate bench binary (different
+      # feature set) and immediately runs it.  rust-cache keeps incremental
+      # artifacts so subsequent runs with overlapping features are faster.
+
+      - name: Bench — scalar (no SIMD)
+        run: |
+          cargo bench -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-scalar.txt
+
+      - name: Bench — SSSE3
+        run: |
+          cargo bench --features simd-ssse3 -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-ssse3.txt
+
+      - name: Bench — AVX2
+        run: |
+          cargo bench --features simd-avx2 -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-avx2.txt
+
+      - name: Generate step summary
+        run: |
+          python3 scripts/bench_summary.py \
+            --arch x86-64 \
+            scalar:results-scalar.txt \
+            ssse3:results-ssse3.txt \
+            avx2:results-avx2.txt \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload raw results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results-x86_64
+          path: results-*.txt
+          retention-days: 30
+
+  # ── AArch64: scalar → NEON ────────────────────────────────────────────────────
+  bench-aarch64:
+    name: bench / aarch64
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-aarch64
+
+      - name: Bench — scalar (no SIMD)
+        run: |
+          cargo bench -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-scalar.txt
+
+      - name: Bench — NEON
+        run: |
+          cargo bench --features simd-neon -- ${{ env.CRITERION_ARGS }} 2>&1 | tee results-neon.txt
+
+      - name: Generate step summary
+        run: |
+          python3 scripts/bench_summary.py \
+            --arch aarch64 \
+            scalar:results-scalar.txt \
+            neon:results-neon.txt \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload raw results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results-aarch64
+          path: results-*.txt
+          retention-days: 30

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- SVB-ZD pipeline: `encode_svbzd` / `encode_svbzd_into` i16 signal → widen to i32 → fused zigzag-delta → U32Classic; wire-compatible with hasindu2008/slow5lib `SLOW5_COMPRESS_SVB_ZD`(BLOW5 files)
+- `decode_svbzd` / `decode_svbzd_into` 3-pass SVB-ZD decode
+- `decode_svbzd_fused` / `decode_svbzd_fused_into` single SIMD pass fusing U32Classic decode + unzigzag + undelta
+- `decode_svbzd_fused_from` / `decode_svbzd_fused_from_into` fused decode with caller-supplied initial carry; building block for parallel decode from any split point
+- SIMD fused encode for SVB-ZD on AVX2 (8 i16/iter), SSSE3 (4 i16/iter), and NEON (4 i16/iter), computes zigzag-delta inline, eliminating the intermediate `Vec<u32>` allocation; up to 5.4× faster than scalar encode on AVX2
+- 2-ctrl-byte inner decode loop for SVB-ZD (SSSE3 and NEON paths), processes 8 i16 values per iteration; up to 4× faster than 3-pass scalar decode
+- Benchmark workflow (`.github/workflows/bench.yml`) manual `workflow_dispatch` trigger; compares scalar / SSSE3 / AVX2 on x86-64 and scalar / NEON on AArch64; results posted as GitHub Step Summary with Melem/s and speedup ratios
+- `scripts/bench_summary.py` criterion bencher-output parser used by the benchmark workflow
+- `docs/src/svbzd.md` SVB-ZD pipeline documentation page covering API, wire format, and parallel decode with `fused_from` - SVB-ZD entries added to wire-compatibility table, SIMD backends page, and performance page
+
+### Changed
+
+- MSRV bumped from 1.85 to 1.87, required by RFC 2800 (`target_feature_11`): SIMD intrinsics are now safe to call inside `#[target_feature]` functions without explicit `unsafe {}` blocks
+
 ## [0.1.0] - 2026-05-22
 
 ### Added
