@@ -168,22 +168,6 @@ impl U32Classic {
     }
 }
 
-impl crate::coder::Coder for U32Classic {
-    type Elem = u32;
-
-    fn encode_into(&self, values: &[u32], out: &mut Vec<u8>) {
-        dispatch_encode_classic(values, out);
-    }
-
-    fn decode_into(&self, data: &[u8], n: usize, out: &mut Vec<u32>) -> Result<(), DecodeError> {
-        dispatch_decode_classic(data, n, out)
-    }
-
-    fn encoded_data_len(&self, ctrl: &[u8], n: usize) -> usize {
-        scalar::encoded_data_len_classic(ctrl, n)
-    }
-}
-
 // ── U32Variant0124 ────────────────────────────────────────────────────────────
 
 impl_dispatch_encode!(
@@ -303,22 +287,6 @@ impl U32Variant0124 {
         out: &mut Vec<u32>,
     ) -> Result<(), DecodeError> {
         dispatch_decode_0124(data, n, out)
-    }
-}
-
-impl crate::coder::Coder for U32Variant0124 {
-    type Elem = u32;
-
-    fn encode_into(&self, values: &[u32], out: &mut Vec<u8>) {
-        dispatch_encode_0124(values, out);
-    }
-
-    fn decode_into(&self, data: &[u8], n: usize, out: &mut Vec<u32>) -> Result<(), DecodeError> {
-        dispatch_decode_0124(data, n, out)
-    }
-
-    fn encoded_data_len(&self, ctrl: &[u8], n: usize) -> usize {
-        scalar::encoded_data_len_0124(ctrl, n)
     }
 }
 

@@ -40,9 +40,6 @@ pub mod error;
 pub use error::DecodeError;
 
 #[cfg(feature = "alloc")]
-pub(crate) mod coder;
-
-#[cfg(feature = "alloc")]
 pub mod delta;
 #[cfg(feature = "alloc")]
 pub mod zigzag;
@@ -1027,6 +1024,58 @@ mod vbzk_tests {
                 assert_eq!(seq, par, "k={k} sequential != parallel");
             }
         }
+    }
+
+    #[test]
+    fn roundtrip_unaligned_n() {
+        // n=100 with k=2,3,4: last sub-stream size differs from n_sub, exercising
+        // the `if i < k-1` branch in decode_vbzk_into with unequal sub-stream lengths.
+        // k=2: n_sub=(100/2)&!7=48, last=52
+        // k=3: n_sub=(100/3)&!7=32, last=36
+        // k=4: n_sub=(100/4)&!7=24, last=28
+        let samples = make_samples(100);
+        for k in [2usize, 3, 4] {
+            let encoded = encode_vbzk(&samples, k);
+            let decoded = decode_vbzk(&encoded, samples.len()).unwrap();
+            assert_eq!(decoded, samples, "k={k} unaligned roundtrip failed");
+        }
+    }
+
+    #[test]
+    fn decode_error_truncated_header() {
+        // k=2 needs a 7-byte header (1 + 1*6). Supply only 6 bytes to hit the
+        // `data.len() < header_len` error check.
+        let data = [2u8, 0, 0, 0, 0, 0]; // 6 bytes; header_len = 7
+        assert!(decode_vbzk(&data, 8).is_err());
+    }
+
+    #[test]
+    fn decode_error_no_ctrl_after_header() {
+        // data.len() == header_len exactly: VBZ body is empty.
+        // Hits the `svb.len() < ctrl_len` check (0 < n.div_ceil(8)).
+        let k = 2usize;
+        #[cfg(not(feature = "std"))]
+        use alloc::vec;
+        let data: Vec<u8> = core::iter::once(k as u8).chain(vec![0u8; 6]).collect();
+        assert!(decode_vbzk(&data, 8).is_err());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn parallel_roundtrip_unaligned_n() {
+        let samples = make_samples(100);
+        for k in [2usize, 3, 4] {
+            let encoded = encode_vbzk(&samples, k);
+            let decoded = decode_vbzk_parallel(&encoded, samples.len()).unwrap();
+            assert_eq!(decoded, samples, "k={k} parallel unaligned roundtrip failed");
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn parallel_decode_error_truncated_header() {
+        let data = [2u8, 0, 0, 0, 0, 0];
+        assert!(decode_vbzk_parallel(&data, 8).is_err());
     }
 }
 

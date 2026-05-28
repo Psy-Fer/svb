@@ -332,6 +332,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn classic_data_len_tag_lt_3_in_pos3() {
+        // Existing test has tag=3 in position 3 of the ctrl byte, where
+        // `(b>>6)&0x03 == (b>>6)|0x03 == 3`, masking the & vs | mutation.
+        // tags: 0,1,2,0 → ctrl=0x24 → (b>>6)=0x00, so & vs | is detectable.
+        let vals = [1u32, 256, 65536, 0xFF];
+        let enc = enc_classic(&vals);
+        assert_eq!(encoded_data_len_classic(&enc[..1], 4), enc.len() - 1);
+    }
+
+    #[test]
+    fn classic_data_len_with_tail() {
+        // n=6: full=1 (main loop runs) + rem=2 (tail loop runs for j=0 and j=1).
+        // rem=1 is insufficient: when j=0 the shift is 0 so >> and << are identical
+        // and j*2 == j/2 == 0. rem=2 exercises j=1 where shift=2, making those
+        // mutations detectable.
+        let vals = [1u32, 256, 65536, 0xFF, 0xFFFF, 65536];
+        let enc = enc_classic(&vals);
+        let ctrl_len = vals.len().div_ceil(4);
+        assert_eq!(
+            encoded_data_len_classic(&enc[..ctrl_len], vals.len()),
+            enc.len() - ctrl_len
+        );
+    }
+
+    #[test]
+    fn classic_data_len_two_ctrl_bytes() {
+        // n=8: full=2 — two complete ctrl bytes, exercising the main loop across
+        // multiple iterations with varied tags.
+        let vals = [1u32, 256, 65536, 0xFF, 0xFFFF, 0xFF_FFFF, 0xFF_FFFF, 1];
+        let enc = enc_classic(&vals);
+        let ctrl_len = vals.len().div_ceil(4);
+        assert_eq!(
+            encoded_data_len_classic(&enc[..ctrl_len], vals.len()),
+            enc.len() - ctrl_len
+        );
+    }
+
     // ── U32Classic errors ─────────────────────────────────────────────────────
 
     #[test]
@@ -416,6 +454,16 @@ mod tests {
             encoded_data_len_0124(&enc[..ctrl_len], vals.len()),
             enc.len() - ctrl_len
         );
+    }
+
+    #[test]
+    fn v0124_data_len_sparse_ctrl() {
+        // ctrl=0x01: only position-0 has tag=1 (1 byte), rest tag=0 (0 bytes).
+        // With j+2 mutation the bit extraction reads a different slot and sums to 0 ≠ 1,
+        // catching the `* with +` and `* with /` mutations in the inner j loop.
+        let vals = [1u32, 0, 0, 0];
+        let enc = enc_0124(&vals);
+        assert_eq!(encoded_data_len_0124(&enc[..1], 4), enc.len() - 1);
     }
 
     // ── U32Variant0124 errors ─────────────────────────────────────────────────

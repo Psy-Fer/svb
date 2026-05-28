@@ -148,27 +148,6 @@ impl Svb16 {
     }
 }
 
-impl crate::coder::Coder for Svb16 {
-    type Elem = u16;
-
-    fn encode_into(&self, values: &[u16], out: &mut Vec<u8>) {
-        dispatch_encode(values, out);
-    }
-
-    fn decode_into(
-        &self,
-        data: &[u8],
-        n: usize,
-        out: &mut Vec<Self::Elem>,
-    ) -> Result<(), DecodeError> {
-        dispatch_decode(data, n, out)
-    }
-
-    fn encoded_data_len(&self, ctrl: &[u8], n: usize) -> usize {
-        scalar::encoded_data_len(ctrl, n)
-    }
-}
-
 // ── cross-path unit tests ─────────────────────────────────────────────────────
 //
 // These tests call the scalar and SIMD decode functions directly to verify

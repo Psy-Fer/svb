@@ -208,22 +208,6 @@ impl U64Coder1234 {
     }
 }
 
-impl crate::coder::Coder for U64Coder1234 {
-    type Elem = u64;
-
-    fn encode_into(&self, values: &[u64], out: &mut Vec<u8>) {
-        dispatch_encode_1234(values, out);
-    }
-
-    fn decode_into(&self, data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(), DecodeError> {
-        dispatch_decode_1234(data, n, out)
-    }
-
-    fn encoded_data_len(&self, ctrl: &[u8], n: usize) -> usize {
-        scalar::encoded_data_len_1234(ctrl, n)
-    }
-}
-
 // ── U64Coder1248 ──────────────────────────────────────────────────────────────
 
 impl_dispatch_encode!(
@@ -343,22 +327,6 @@ impl U64Coder1248 {
         out: &mut Vec<u64>,
     ) -> Result<(), DecodeError> {
         dispatch_decode_1248(data, n, out)
-    }
-}
-
-impl crate::coder::Coder for U64Coder1248 {
-    type Elem = u64;
-
-    fn encode_into(&self, values: &[u64], out: &mut Vec<u8>) {
-        dispatch_encode_1248(values, out);
-    }
-
-    fn decode_into(&self, data: &[u8], n: usize, out: &mut Vec<u64>) -> Result<(), DecodeError> {
-        dispatch_decode_1248(data, n, out)
-    }
-
-    fn encoded_data_len(&self, ctrl: &[u8], n: usize) -> usize {
-        scalar::encoded_data_len_1248(ctrl, n)
     }
 }
 

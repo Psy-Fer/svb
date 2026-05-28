@@ -299,6 +299,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn coder1234_data_len_full_loop() {
+        // Existing n=3 test has full=0, leaving the main loop (line 136-138) dead.
+        // n=5: full=1 (main loop runs once) + rem=1 (tail runs once).
+        // tags: 0,1,2,0,1 → ctrl byte has non-max tags, making & vs | detectable.
+        let vals = [1u64, 256, 65536, 0xFF, 0xFFFF];
+        let enc = enc_1234(&vals);
+        let ctrl_len = vals.len().div_ceil(4);
+        assert_eq!(
+            encoded_data_len_1234(&enc[..ctrl_len], vals.len()),
+            enc.len() - ctrl_len
+        );
+    }
+
+    #[test]
+    fn coder1234_data_len_nonzero_pos3_tag() {
+        // The previous test has tag=0 in position 3 of the ctrl byte, so mutations
+        // on the `(b>>6)` term (col 74) and the final `+` (col 68) are transparent
+        // (subtracting or shifting 0 gives the same result). tag=2 in position 3
+        // makes both mutations detectable.
+        // tags: 0,0,0,2,0 → ctrl[0]=0x80
+        let vals = [1u64, 1, 1, 65537, 1];
+        let enc = enc_1234(&vals);
+        let ctrl_len = vals.len().div_ceil(4);
+        assert_eq!(
+            encoded_data_len_1234(&enc[..ctrl_len], vals.len()),
+            enc.len() - ctrl_len
+        );
+    }
+
     // ── U64Coder1234 truncation behaviour ────────────────────────────────────
 
     #[test]
@@ -382,6 +412,20 @@ mod tests {
     #[test]
     fn coder1248_data_len() {
         let vals = [0u64, 0x1_0000_0000u64];
+        let enc = enc_1248(&vals);
+        let ctrl_len = vals.len().div_ceil(4);
+        assert_eq!(
+            encoded_data_len_1248(&enc[..ctrl_len], vals.len()),
+            enc.len() - ctrl_len
+        );
+    }
+
+    #[test]
+    fn coder1248_data_len_full_loop() {
+        // Existing n=2 test has full=0, so the inner j-loop over a complete ctrl byte
+        // never runs. n=5: full=1 (inner loop runs for all 4 slots) + rem=1.
+        // 1→tag0(1B), 256→tag1(2B), 65536→tag2(4B), 0xFFFF_FFFF→tag2(4B), 1→tag0(1B)
+        let vals = [1u64, 256, 65536, 0xFFFF_FFFF, 1];
         let enc = enc_1248(&vals);
         let ctrl_len = vals.len().div_ceil(4);
         assert_eq!(
