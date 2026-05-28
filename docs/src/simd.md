@@ -25,7 +25,7 @@ On x86-64, `simd-auto` selects AVX2 if available, then SSSE3, then scalar. On AA
 
 ```toml
 # Cross-compile to a known AVX2 target
-svb = { version = "0.1", features = ["simd-avx2"] }
+svb = { version = "0.2", features = ["simd-avx2"] }
 ```
 
 or with `RUSTFLAGS="-C target-cpu=native"` where the build host and run host are the same.

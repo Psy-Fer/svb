@@ -6,7 +6,7 @@ Add `svb` to your `Cargo.toml`. For most users `simd-auto` is the right choice: 
 
 ```toml
 [dependencies]
-svb = { version = "0.1", features = ["simd-auto"] }
+svb = { version = "0.2", features = ["simd-auto"] }
 ```
 
 ## Feature flags

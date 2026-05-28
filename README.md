@@ -32,7 +32,7 @@ The three compose naturally: delta shrinks value magnitudes, zigzag keeps the re
 
 ```toml
 [dependencies]
-svb = { version = "0.1", features = ["simd-auto"] }
+svb = { version = "0.2", features = ["simd-auto"] }
 ```
 
 ## Quick start

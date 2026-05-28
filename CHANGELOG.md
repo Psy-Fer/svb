@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-26
+
 ### Added
 
 - SVB-ZD pipeline: `encode_svbzd` / `encode_svbzd_into` i16 signal → widen to i32 → fused zigzag-delta → U32Classic; wire-compatible with hasindu2008/slow5lib `SLOW5_COMPRESS_SVB_ZD`(BLOW5 files)

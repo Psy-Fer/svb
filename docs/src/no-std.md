@@ -7,7 +7,7 @@
 Disable the default `std` feature and enable `alloc`:
 
 ```toml
-svb = { version = "0.1", default-features = false, features = ["alloc"] }
+svb = { version = "0.2", default-features = false, features = ["alloc"] }
 ```
 
 All encode and decode APIs are available. The [delta](transforms.md) and [zigzag](transforms.md) transforms are also fully available.
@@ -18,10 +18,10 @@ Runtime SIMD detection (`simd-auto`) requires `std` for `is_x86_feature_detected
 
 ```toml
 # no_std with compile-time NEON (AArch64 embedded target)
-svb = { version = "0.1", default-features = false, features = ["alloc", "simd-neon"] }
+svb = { version = "0.2", default-features = false, features = ["alloc", "simd-neon"] }
 ```
 
 ```toml
 # no_std with compile-time AVX2
-svb = { version = "0.1", default-features = false, features = ["alloc", "simd-avx2"] }
+svb = { version = "0.2", default-features = false, features = ["alloc", "simd-avx2"] }
 ```
