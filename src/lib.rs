@@ -1067,7 +1067,10 @@ mod vbzk_tests {
         for k in [2usize, 3, 4] {
             let encoded = encode_vbzk(&samples, k);
             let decoded = decode_vbzk_parallel(&encoded, samples.len()).unwrap();
-            assert_eq!(decoded, samples, "k={k} parallel unaligned roundtrip failed");
+            assert_eq!(
+                decoded, samples,
+                "k={k} parallel unaligned roundtrip failed"
+            );
         }
     }
 
