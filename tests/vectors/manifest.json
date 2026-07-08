@@ -62,5 +62,41 @@
     "purpose": "regression",
     "source": "self-generated (Rust implementation validated against spec examples)",
     "note": "Replace with C reference vectors (streamvbyte64) when available."
+  },
+  "exzd_one_1": {
+    "n": 1,
+    "codec": "ex-zd",
+    "raw_len": 2,
+    "enc_len": 16,
+    "purpose": "parity",
+    "source": "slow5lib C reference (slow5_ptr_compress_solo, SLOW5_COMPRESS_EX_ZD)",
+    "note": "Sample array from test/unit_test_press.c: press_ex_one_valid."
+  },
+  "exzd_big_10": {
+    "n": 10,
+    "codec": "ex-zd",
+    "raw_len": 20,
+    "enc_len": 49,
+    "purpose": "parity",
+    "source": "slow5lib C reference (slow5_ptr_compress_solo, SLOW5_COMPRESS_EX_ZD)",
+    "note": "Sample array from test/unit_test_press.c: press_ex_big_valid."
+  },
+  "exzd_exp_10": {
+    "n": 10,
+    "codec": "ex-zd",
+    "raw_len": 20,
+    "enc_len": 32,
+    "purpose": "parity",
+    "source": "slow5lib C reference (slow5_ptr_compress_solo, SLOW5_COMPRESS_EX_ZD)",
+    "note": "Sample array from test/unit_test_press.c: press_ex_exp_valid."
+  },
+  "exzd_huge_35": {
+    "n": 35,
+    "codec": "ex-zd",
+    "raw_len": 70,
+    "enc_len": 50,
+    "purpose": "parity",
+    "source": "slow5lib C reference (slow5_ptr_compress_solo, SLOW5_COMPRESS_EX_ZD)",
+    "note": "Sample array from test/unit_test_press.c: press_ex_huge_valid."
   }
 }

@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use svb::{
-    decode_vbz, encode_vbz,
+    decode_exzd, decode_vbz, encode_exzd, encode_vbz,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
@@ -54,6 +54,12 @@ proptest! {
         let n = samples.len();
         let enc = encode_vbz(&samples);
         prop_assert_eq!(decode_vbz(&enc, n).unwrap(), samples);
+    }
+
+    #[test]
+    fn exzd_roundtrip(samples in proptest::collection::vec(any::<i16>(), 0usize..=4096)) {
+        let enc = encode_exzd(&samples);
+        prop_assert_eq!(decode_exzd(&enc).unwrap(), samples);
     }
 }
 
@@ -118,4 +124,67 @@ fn vbz_alternating_extremes() {
         .map(|i| if i % 2 == 0 { i16::MIN } else { i16::MAX })
         .collect();
     assert_eq!(decode_vbz(&encode_vbz(&v), v.len()).unwrap(), v);
+}
+
+// ── deterministic ex-zd edge cases ───────────────────────────────────────────
+
+#[test]
+fn exzd_empty() {
+    assert_eq!(decode_exzd(&encode_exzd(&[])).unwrap(), &[] as &[i16]);
+}
+
+#[test]
+fn exzd_single_zero() {
+    let v = vec![0i16];
+    assert_eq!(decode_exzd(&encode_exzd(&v)).unwrap(), v);
+}
+
+#[test]
+fn exzd_single_min() {
+    let v = vec![i16::MIN];
+    assert_eq!(decode_exzd(&encode_exzd(&v)).unwrap(), v);
+}
+
+#[test]
+fn exzd_single_max() {
+    let v = vec![i16::MAX];
+    assert_eq!(decode_exzd(&encode_exzd(&v)).unwrap(), v);
+}
+
+#[test]
+fn exzd_all_zeros() {
+    let v = vec![0i16; 512];
+    assert_eq!(decode_exzd(&encode_exzd(&v)).unwrap(), v);
+}
+
+#[test]
+fn exzd_all_min() {
+    let v = vec![i16::MIN; 512];
+    assert_eq!(decode_exzd(&encode_exzd(&v)).unwrap(), v);
+}
+
+#[test]
+fn exzd_all_max() {
+    let v = vec![i16::MAX; 512];
+    assert_eq!(decode_exzd(&encode_exzd(&v)).unwrap(), v);
+}
+
+#[test]
+fn exzd_monotone_increasing() {
+    let v: Vec<i16> = (i16::MIN..=i16::MAX).collect();
+    assert_eq!(decode_exzd(&encode_exzd(&v)).unwrap(), v);
+}
+
+#[test]
+fn exzd_monotone_decreasing() {
+    let v: Vec<i16> = (i16::MIN..=i16::MAX).rev().collect();
+    assert_eq!(decode_exzd(&encode_exzd(&v)).unwrap(), v);
+}
+
+#[test]
+fn exzd_alternating_extremes() {
+    let v: Vec<i16> = (0..512)
+        .map(|i| if i % 2 == 0 { i16::MIN } else { i16::MAX })
+        .collect();
+    assert_eq!(decode_exzd(&encode_exzd(&v)).unwrap(), v);
 }

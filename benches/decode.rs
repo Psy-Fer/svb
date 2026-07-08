@@ -1,9 +1,9 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use streamvbyte64::Coder as _;
 use svb::{
-    decode_svbzd, decode_svbzd_fused_into, decode_vbz, decode_vbz_fused_from_into,
-    decode_vbz_fused_into, decode_vbz2_into, decode_vbzk_parallel_into, delta, encode_svbzd,
-    encode_vbz, encode_vbz2, encode_vbzk,
+    decode_exzd_into, decode_svbzd, decode_svbzd_fused_into, decode_vbz,
+    decode_vbz_fused_from_into, decode_vbz_fused_into, decode_vbz2_into, decode_vbzk_parallel_into,
+    delta, encode_exzd, encode_svbzd, encode_vbz, encode_vbz2, encode_vbzk,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
@@ -815,6 +815,41 @@ fn bench_svbzd_fused(c: &mut Criterion) {
     g.finish();
 }
 
+// ── ex-zd pipeline ────────────────────────────────────────────────────────────
+//
+// Same nanopore-style i16 signal as the VBZ/SVB-ZD benchmarks. ex-zd adds a
+// qts pre-pass and PFOR exception encoding over SVB-ZD's plain U32Classic
+// pass, trading some compute for better compression on real signal data.
+
+fn bench_exzd_encode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("exzd/encode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let samples = vbz_i16_samples(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &samples, |b, s| {
+            b.iter(|| encode_exzd(s));
+        });
+    }
+    g.finish();
+}
+
+fn bench_exzd_decode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("exzd/decode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let enc = encode_exzd(&vbz_i16_samples(n));
+        let mut out = Vec::with_capacity(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &enc, |b, enc| {
+            b.iter(|| {
+                out.clear();
+                decode_exzd_into(enc, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+}
+
 // ── registry ──────────────────────────────────────────────────────────────────
 
 criterion_group!(
@@ -851,5 +886,7 @@ criterion_group!(
     bench_svbzd_encode,
     bench_svbzd_decode,
     bench_svbzd_fused,
+    bench_exzd_encode,
+    bench_exzd_decode,
 );
 criterion_main!(benches);

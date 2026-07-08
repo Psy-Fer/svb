@@ -30,4 +30,11 @@ pub enum DecodeError {
     /// were present in `data`.
     #[error("control stream shorter than expected: need {need} bytes, have {have}")]
     ControlStreamTooShort { need: usize, have: usize },
+    /// The frame's version byte is not one this crate knows how to decode.
+    ///
+    /// Wire formats that embed a version byte (e.g. ex-zd) use this to
+    /// signal forward-incompatible changes rather than silently
+    /// misinterpreting the payload.
+    #[error("unsupported format version: {version}")]
+    UnsupportedVersion { version: u8 },
 }

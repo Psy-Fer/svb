@@ -15,6 +15,7 @@
 - [Delta and Zigzag](transforms.md)
 - [VBZ Pipeline](vbz.md)
 - [SVB-ZD Pipeline](svbzd.md)
+- [ex-zd Pipeline](exzd.md)
 - [SIMD Backends](simd.md)
 - [no_std Support](no-std.md)
 

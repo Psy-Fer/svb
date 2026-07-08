@@ -42,6 +42,10 @@ pub use error::DecodeError;
 #[cfg(feature = "alloc")]
 pub mod delta;
 #[cfg(feature = "alloc")]
+pub mod patched;
+#[cfg(feature = "alloc")]
+pub mod quantize;
+#[cfg(feature = "alloc")]
 pub mod zigzag;
 
 // ── SIMD dispatch macros ──────────────────────────────────────────────────────
@@ -1286,6 +1290,147 @@ pub fn decode_svbzd_fused_from_into(
     svbzd_fused::decode_from_into(data, n, initial_carry, out)
 }
 
+// ── ex-zd convenience pipeline ─────────────────────────────────────────────────
+//
+// ex-zd is the BLOW5/slow5lib signal compression method that improves on
+// SVB-ZD with a quantization pre-pass and a PFOR-style exception scheme
+// (SLOW5_COMPRESS_EX_ZD):
+//   encode: i16 samples → qts shift → zigzag-delta (u16 domain) → patched(U32Classic) → Vec<u8>
+//   decode: Vec<u8> → patched(U32Classic) → inverse-zigzag-delta (u16 domain) → un-shift → i16 samples
+//
+// Wire format: identical to slow5lib ex-zd (SLOW5_COMPRESS_EX_ZD), version 0.
+// Unlike encode_vbz/encode_svbzd, the frame is self-describing (it embeds its
+// own version byte and sample count), so decode_exzd takes no `n` parameter.
+
+const EXZD_VERSION: u8 = 0;
+const EXZD_HEADER_LEN: usize = 1 + 8 + 1; // version + nin(u64) + q
+
+/// Encode `i16` samples through qts, zigzag-delta, then patched exception encoding.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::{encode_exzd, decode_exzd};
+/// let samples = [100i16, -100, 0, 10000, 3442, 234, 2326, 346, 213, 234];
+/// let encoded = encode_exzd(&samples);
+/// let decoded = decode_exzd(&encoded).unwrap();
+/// assert_eq!(decoded, samples);
+/// ```
+#[cfg(feature = "alloc")]
+pub fn encode_exzd(samples: &[i16]) -> Vec<u8> {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    let mut out = Vec::new();
+    encode_exzd_into(samples, &mut out);
+    out
+}
+
+/// Encode `i16` samples to ex-zd, appending the result to `out`.
+#[cfg(feature = "alloc")]
+pub fn encode_exzd_into(samples: &[i16], out: &mut Vec<u8>) {
+    let nin = samples.len();
+    let q = quantize::find_qts(samples, 5);
+
+    let shifted_storage;
+    let shifted: &[i16] = if q == 0 {
+        samples
+    } else {
+        shifted_storage = quantize::apply_shift(samples, q);
+        &shifted_storage
+    };
+
+    let deltas = delta::encode(shifted);
+    let zd = zigzag::encode(&deltas);
+
+    out.extend_from_slice(&EXZD_VERSION.to_le_bytes());
+    out.extend_from_slice(&(nin as u64).to_le_bytes());
+    out.extend_from_slice(&q.to_le_bytes());
+
+    if nin > 0 {
+        out.extend_from_slice(&zd[0].to_le_bytes());
+        patched::encode_into(&zd[1..], out);
+    }
+}
+
+/// Decode ex-zd bytes into `i16` samples.
+///
+/// Unlike [`decode_vbz`] / [`decode_svbzd`], the sample count is embedded in
+/// the frame itself, so no separate `n` is needed.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::{encode_exzd, decode_exzd};
+/// let samples = [10i16, 11, 12, 11, 9];
+/// let encoded = encode_exzd(&samples);
+/// assert_eq!(decode_exzd(&encoded).unwrap(), samples);
+/// ```
+#[cfg(feature = "alloc")]
+pub fn decode_exzd(data: &[u8]) -> Result<Vec<i16>, DecodeError> {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    let mut out = Vec::new();
+    decode_exzd_into(data, &mut out)?;
+    Ok(out)
+}
+
+/// Decode ex-zd bytes into `i16` samples, appending to `out`.
+#[cfg(feature = "alloc")]
+pub fn decode_exzd_into(data: &[u8], out: &mut Vec<i16>) -> Result<(), DecodeError> {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    if data.len() < EXZD_HEADER_LEN {
+        return Err(DecodeError::ControlStreamTooShort {
+            need: EXZD_HEADER_LEN,
+            have: data.len(),
+        });
+    }
+
+    let version = data[0];
+    if version != EXZD_VERSION {
+        return Err(DecodeError::UnsupportedVersion { version });
+    }
+    let nin = u64::from_le_bytes([
+        data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+    ]) as usize;
+    let q = data[9];
+
+    if nin == 0 {
+        return Ok(());
+    }
+
+    if data.len() < EXZD_HEADER_LEN + 2 {
+        return Err(DecodeError::ControlStreamTooShort {
+            need: EXZD_HEADER_LEN + 2,
+            have: data.len(),
+        });
+    }
+    let zd0 = u16::from_le_bytes([data[EXZD_HEADER_LEN], data[EXZD_HEADER_LEN + 1]]);
+
+    let mut zd: Vec<u16> = Vec::with_capacity(nin);
+    zd.push(zd0);
+    patched::decode_into(&data[EXZD_HEADER_LEN + 2..], nin - 1, &mut zd)?;
+
+    let deltas = zigzag::decode(&zd);
+    let start = out.len();
+    delta::decode_into(&deltas, out);
+
+    if q != 0 {
+        quantize::unshift_inplace(&mut out[start..], q);
+    }
+
+    Ok(())
+}
+
 #[cfg(all(test, feature = "alloc"))]
 mod svbzd_tests {
     use super::*;
@@ -1373,5 +1518,118 @@ mod svbzd_tests {
         let mut combined = out_a;
         combined.extend_from_slice(&out_b);
         assert_eq!(combined, samples);
+    }
+}
+
+#[cfg(all(test, feature = "alloc"))]
+mod exzd_tests {
+    use super::*;
+    #[cfg(not(feature = "std"))]
+    use alloc::vec;
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+
+    #[test]
+    fn roundtrip_empty() {
+        assert_eq!(decode_exzd(&encode_exzd(&[])).unwrap(), &[] as &[i16]);
+    }
+
+    #[test]
+    fn roundtrip_single() {
+        for v in [0i16, 1, -1, i16::MIN, i16::MAX] {
+            assert_eq!(decode_exzd(&encode_exzd(&[v])).unwrap(), [v]);
+        }
+    }
+
+    #[test]
+    fn roundtrip_ramp() {
+        let samples: Vec<i16> = (0..128).collect();
+        assert_eq!(decode_exzd(&encode_exzd(&samples)).unwrap(), samples);
+    }
+
+    #[test]
+    fn roundtrip_extremes() {
+        let samples = vec![i16::MIN, i16::MAX, i16::MIN, i16::MAX];
+        assert_eq!(decode_exzd(&encode_exzd(&samples)).unwrap(), samples);
+    }
+
+    #[test]
+    fn roundtrip_quantized() {
+        // All multiples of 8 but not 16, so qts should find q = 3.
+        let samples: Vec<i16> = vec![0, 8, -8, 16, -24, 800, -816, 8000];
+        assert_eq!(crate::quantize::find_qts(&samples, 5), 3);
+        let enc = encode_exzd(&samples);
+        assert_eq!(enc[9], 3);
+        assert_eq!(decode_exzd(&enc).unwrap(), samples);
+    }
+
+    #[test]
+    fn roundtrip_mostly_exceptions() {
+        // Large alternating jumps push nearly every zigzag-delta code past the
+        // exception threshold, exercising the nex > n/5 (and nex > 1) path hard.
+        let samples: Vec<i16> = (0..64)
+            .map(|i| if i % 2 == 0 { 0 } else { 20000 })
+            .collect();
+        assert_eq!(decode_exzd(&encode_exzd(&samples)).unwrap(), samples);
+    }
+
+    #[test]
+    fn roundtrip_c_reference_vectors() {
+        // Sample sets from slow5lib's test/unit_test_press.c
+        // (press_ex_one_valid / press_ex_big_valid / press_ex_exp_valid / press_ex_huge_valid).
+        let one: Vec<i16> = vec![100];
+        let big: Vec<i16> = vec![100, -100, 0, 10000, 3442, 234, 2326, 346, 213, 234];
+        let exp: Vec<i16> = vec![1039, 588, 588, 593, 586, 574, 570, 585, 588, 586];
+        let huge: Vec<i16> = vec![
+            542, 543, 545, 547, 515, 415, 370, 409, 416, 419, 416, 455, 535, 542, 548, 539, 495,
+            493, 489, 486, 486, 488, 476, 476, 563, 549, 556, 568, 535, 551, 545, 512, 416, 397,
+            393,
+        ];
+        for samples in [one, big, exp, huge] {
+            assert_eq!(decode_exzd(&encode_exzd(&samples)).unwrap(), samples);
+        }
+    }
+
+    #[test]
+    fn encode_exzd_into_appends() {
+        let mut out = encode_exzd(&[1i16, 2, 3]);
+        let first_len = out.len();
+        encode_exzd_into(&[4i16, 5, 6], &mut out);
+        let first = decode_exzd(&out[..first_len]).unwrap();
+        let second = decode_exzd(&out[first_len..]).unwrap();
+        assert_eq!(first, [1, 2, 3]);
+        assert_eq!(second, [4, 5, 6]);
+    }
+
+    #[test]
+    fn decode_exzd_into_appends() {
+        let enc = encode_exzd(&[10i16, 20, 30]);
+        let mut out = vec![99i16];
+        decode_exzd_into(&enc, &mut out).unwrap();
+        assert_eq!(out, [99, 10, 20, 30]);
+    }
+
+    #[test]
+    fn decode_exzd_rejects_bad_version() {
+        let mut enc = encode_exzd(&[1i16, 2, 3]);
+        enc[0] = 1;
+        assert!(matches!(
+            decode_exzd(&enc),
+            Err(DecodeError::UnsupportedVersion { version: 1 })
+        ));
+    }
+
+    #[test]
+    fn decode_exzd_rejects_truncated_header() {
+        assert!(matches!(
+            decode_exzd(&[0u8; 5]),
+            Err(DecodeError::ControlStreamTooShort { .. })
+        ));
+    }
+
+    #[test]
+    fn decode_exzd_rejects_truncated_body() {
+        let enc = encode_exzd(&[1i16, 2, 3, 4, 5]);
+        assert!(decode_exzd(&enc[..enc.len() - 1]).is_err());
     }
 }
