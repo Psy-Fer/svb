@@ -108,6 +108,20 @@ fn vbz_i16_samples(n: usize) -> Vec<i16> {
         .collect()
 }
 
+// ~20% large jumps: exercises ex-zd's exception path hard, unlike the mostly-
+// literal vbz_i16_samples ramp used elsewhere in this file.
+fn spiky_i16_samples(n: usize) -> Vec<i16> {
+    (0..n)
+        .map(|i| {
+            if i % 5 == 0 {
+                ((i as i32 * 6151) % 30000) as i16
+            } else {
+                (i as i16 % 50) - 25
+            }
+        })
+        .collect()
+}
+
 fn bench_delta_encode_i16(c: &mut Criterion) {
     let mut g = c.benchmark_group("delta/encode_i16");
     for &n in SIZES {
@@ -867,6 +881,23 @@ fn bench_exzd_fused(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_exzd_fused_spiky(c: &mut Criterion) {
+    let mut g = c.benchmark_group("exzd_fused_spiky");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let enc = encode_exzd(&spiky_i16_samples(n));
+        let mut out = Vec::with_capacity(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &enc, |b, enc| {
+            b.iter(|| {
+                out.clear();
+                decode_exzd_fused_into(enc, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+}
+
 // ── registry ──────────────────────────────────────────────────────────────────
 
 criterion_group!(
@@ -906,5 +937,6 @@ criterion_group!(
     bench_exzd_encode,
     bench_exzd_decode,
     bench_exzd_fused,
+    bench_exzd_fused_spiky,
 );
 criterion_main!(benches);

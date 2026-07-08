@@ -1427,12 +1427,7 @@ pub fn decode_exzd_fused_into(data: &[u8], out: &mut Vec<i16>) -> Result<(), Dec
         return Ok(());
     };
 
-    let start = out.len();
-    exzd_fused::decode_into(&zd, 0, out);
-
-    if q != 0 {
-        quantize::unshift_inplace(&mut out[start..], q);
-    }
+    exzd_fused::decode_into(&zd, 0, q, out);
 
     Ok(())
 }

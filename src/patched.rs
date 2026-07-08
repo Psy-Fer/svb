@@ -98,15 +98,42 @@ pub fn decode_into(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<usize, D
     if data.len() < 4 {
         return Err(too_short(4, data.len()));
     }
-    let nex = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    let nex = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
     let mut offset = 4;
+    let n_literal = n.saturating_sub(nex);
 
-    let mut ex_pos: Vec<u32> = Vec::new();
-    let mut ex_val: Vec<u32> = Vec::new();
+    if nex == 0 {
+        // No exceptions: the literal stream is the entire output, so widen
+        // straight into `out` — no intermediate buffer or scatter step to pay
+        // for. This is the common case for well-compressing signal (ex-zd's
+        // own encoder warns once exceptions exceed ~20%), so it's worth
+        // special-casing rather than routing it through the general path
+        // below, which would cost an extra allocation and copy for nothing.
+        if data.len() < offset + n_literal {
+            return Err(too_short(offset + n_literal, data.len()));
+        }
+        widen_into(&data[offset..offset + n_literal], out);
+        return Ok(offset + n_literal);
+    }
 
-    if nex > 1 {
-        let nex = nex as usize;
-
+    // Locate the exception metadata and the literal region (reading only the
+    // length prefixes for nex > 1, not decoding the blobs yet) before
+    // touching either. This lets the literal widen below — usually the
+    // larger of the two independent operations — be issued *before* the
+    // U32Classic decode / raw 8-byte read, instead of strictly serializing
+    // "decode exceptions, then widen": neither depends on the other's
+    // output, only on `data`, so ordering them this way gives the CPU more
+    // independent work to overlap.
+    let pos_bytes_range;
+    let val_bytes_range;
+    if nex == 1 {
+        if data.len() < offset + 8 {
+            return Err(too_short(offset + 8, data.len()));
+        }
+        pos_bytes_range = offset..offset + 4;
+        val_bytes_range = offset + 4..offset + 8;
+        offset += 8;
+    } else {
         if data.len() < offset + 4 {
             return Err(too_short(offset + 4, data.len()));
         }
@@ -120,14 +147,8 @@ pub fn decode_into(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<usize, D
         if data.len() < offset + nex_pos_press {
             return Err(too_short(offset + nex_pos_press, data.len()));
         }
-        let mut pos_delta = U32Classic.decode(&data[offset..offset + nex_pos_press], nex)?;
+        pos_bytes_range = offset..offset + nex_pos_press;
         offset += nex_pos_press;
-
-        for i in 1..pos_delta.len() {
-            let prev = pos_delta[i - 1];
-            pos_delta[i] = pos_delta[i].wrapping_add(prev).wrapping_add(1);
-        }
-        ex_pos = pos_delta;
 
         if data.len() < offset + 4 {
             return Err(too_short(offset + 4, data.len()));
@@ -142,43 +163,39 @@ pub fn decode_into(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<usize, D
         if data.len() < offset + nex_press {
             return Err(too_short(offset + nex_press, data.len()));
         }
-        ex_val = U32Classic.decode(&data[offset..offset + nex_press], nex)?;
+        val_bytes_range = offset..offset + nex_press;
         offset += nex_press;
-    } else if nex == 1 {
-        if data.len() < offset + 8 {
-            return Err(too_short(offset + 8, data.len()));
-        }
-        let pos = u32::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ]);
-        let val = u32::from_le_bytes([
-            data[offset + 4],
-            data[offset + 5],
-            data[offset + 6],
-            data[offset + 7],
-        ]);
-        offset += 8;
-        ex_pos.push(pos);
-        ex_val.push(val);
     }
 
-    let nex = nex as usize;
-    let n_literal = n.saturating_sub(nex);
     if data.len() < offset + n_literal {
         return Err(too_short(offset + n_literal, data.len()));
     }
+    let mut literal: Vec<u16> = Vec::new();
+    widen_into(&data[offset..offset + n_literal], &mut literal);
 
-    // Exception positions are sorted and sparse, so the literal bytes between
-    // them form contiguous runs — SIMD-widen each run (u8 -> u16) instead of
-    // branching per element. `pos < prev_pos || pos >= n` guards against a
-    // corrupted/adversarial position stream (e.g. non-increasing after
-    // wraparound in the delta reconstruction above) sending `run_len` negative
-    // or out of bounds.
+    let (ex_pos, ex_val): (Vec<u32>, Vec<u32>) = if nex == 1 {
+        let p = &data[pos_bytes_range];
+        let v = &data[val_bytes_range];
+        (
+            [u32::from_le_bytes([p[0], p[1], p[2], p[3]])].into(),
+            [u32::from_le_bytes([v[0], v[1], v[2], v[3]])].into(),
+        )
+    } else {
+        let mut pos_delta = U32Classic.decode(&data[pos_bytes_range], nex)?;
+        for i in 1..pos_delta.len() {
+            let prev = pos_delta[i - 1];
+            pos_delta[i] = pos_delta[i].wrapping_add(prev).wrapping_add(1);
+        }
+        let ex_val = U32Classic.decode(&data[val_bytes_range], nex)?;
+        (pos_delta, ex_val)
+    };
+
+    // `pos < prev_pos || pos >= n` guards against a corrupted/adversarial
+    // position stream (e.g. non-increasing after wraparound in the delta
+    // reconstruction above) sending `run_len` negative or `literal` slicing
+    // out of bounds.
     out.reserve(n);
-    let mut lit_start = 0usize;
+    let mut cursor = 0usize;
     let mut prev_pos = 0usize;
     for (j, &pos) in ex_pos.iter().enumerate() {
         let pos = pos as usize;
@@ -186,17 +203,15 @@ pub fn decode_into(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<usize, D
             return Err(too_short(offset + n_literal, data.len()));
         }
         let run_len = pos - prev_pos;
-        widen_into(&data[offset + lit_start..offset + lit_start + run_len], out);
-        lit_start += run_len;
+        out.extend_from_slice(&literal[cursor..cursor + run_len]);
+        cursor += run_len;
 
         out.push((ex_val[j] as u16).wrapping_add(THRESHOLD + 1));
         prev_pos = pos + 1;
     }
-    let run_len = n - prev_pos;
-    widen_into(&data[offset + lit_start..offset + lit_start + run_len], out);
-    lit_start += run_len;
+    out.extend_from_slice(&literal[cursor..]);
 
-    Ok(offset + lit_start)
+    Ok(offset + n_literal)
 }
 
 /// Widen a run of literal bytes to `u16` (zero-extend), appending to `out`.
