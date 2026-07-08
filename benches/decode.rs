@@ -1,7 +1,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use streamvbyte64::Coder as _;
 use svb::{
-    decode_exzd_into, decode_svbzd, decode_svbzd_fused_into, decode_vbz,
+    decode_exzd_fused_into, decode_exzd_into, decode_svbzd, decode_svbzd_fused_into, decode_vbz,
     decode_vbz_fused_from_into, decode_vbz_fused_into, decode_vbz2_into, decode_vbzk_parallel_into,
     delta, encode_exzd, encode_svbzd, encode_vbz, encode_vbz2, encode_vbzk,
     u16::Svb16,
@@ -850,6 +850,23 @@ fn bench_exzd_decode(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_exzd_fused(c: &mut Criterion) {
+    let mut g = c.benchmark_group("exzd_fused");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let enc = encode_exzd(&vbz_i16_samples(n));
+        let mut out = Vec::with_capacity(n);
+        g.bench_with_input(BenchmarkId::from_parameter(n), &enc, |b, enc| {
+            b.iter(|| {
+                out.clear();
+                decode_exzd_fused_into(enc, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+}
+
 // ── registry ──────────────────────────────────────────────────────────────────
 
 criterion_group!(
@@ -888,5 +905,6 @@ criterion_group!(
     bench_svbzd_fused,
     bench_exzd_encode,
     bench_exzd_decode,
+    bench_exzd_fused,
 );
 criterion_main!(benches);
