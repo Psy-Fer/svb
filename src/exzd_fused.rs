@@ -50,8 +50,14 @@ use std::vec::Vec;
 /// [`crate::quantize::unshift_inplace`]).
 pub(crate) fn decode_into(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
     let q = q & 15;
+    #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
+    {
+        // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
+        unsafe { decode_avx2(zd, initial, q, out) };
+    }
     #[cfg(all(
-        any(feature = "simd-avx2", feature = "simd-ssse3"),
+        feature = "simd-ssse3",
+        not(feature = "simd-avx2"),
         target_arch = "x86_64"
     ))]
     {
@@ -66,11 +72,17 @@ pub(crate) fn decode_into(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
     #[cfg(all(
         feature = "simd-auto",
         not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
+        feature = "std",
         target_arch = "x86_64"
     ))]
     {
-        // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_sse2(zd, initial, q, out) };
+        if is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 confirmed at runtime.
+            unsafe { decode_avx2(zd, initial, q, out) };
+        } else {
+            // SAFETY: SSE2 is always available on x86_64.
+            unsafe { decode_sse2(zd, initial, q, out) };
+        }
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -81,17 +93,27 @@ pub(crate) fn decode_into(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
         // SAFETY: NEON is mandatory on AArch64.
         unsafe { decode_neon(zd, initial, q, out) };
     }
-    // Scalar fallback: only compiled when no SIMD path covers this target.
+    // Scalar fallback: only compiled when no SIMD path covers this target
+    // (including `simd-auto` on x86_64 without `std`, which can't do
+    // runtime feature detection — see the crate-level no_std note).
     #[cfg(not(any(
+        all(feature = "simd-avx2", target_arch = "x86_64"),
         all(
-            any(feature = "simd-avx2", feature = "simd-ssse3"),
+            feature = "simd-ssse3",
+            not(feature = "simd-avx2"),
             target_arch = "x86_64"
         ),
         all(feature = "simd-neon", target_arch = "aarch64"),
         all(
             feature = "simd-auto",
             not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
-            any(target_arch = "x86_64", target_arch = "aarch64")
+            feature = "std",
+            target_arch = "x86_64"
+        ),
+        all(
+            feature = "simd-auto",
+            not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
+            target_arch = "aarch64"
         )
     )))]
     decode_scalar(zd, initial, q, out);
@@ -171,6 +193,88 @@ unsafe fn decode_sse2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
     }
 
     // Scalar tail for n % 8 remaining values.
+    for &code in &zd[simd_n..] {
+        acc = acc.wrapping_add(unzigzag_one(code));
+        out.push(acc << q);
+    }
+}
+
+// AVX2: 16 u16 codes per iteration — same fusion as decode_sse2, but the
+// prefix-sum scan needs a fourth step. `_mm256_slli_si256` (like all
+// byte-granularity AVX2 shifts) operates *within each 128-bit lane*
+// independently, not across the full 256 bits, so the first three
+// shift-add steps (2/4/8-byte shifts) produce two independent 8-wide local
+// prefix sums — the high half's partial sums don't yet include the low
+// half's total. The fourth step bridges them: extract the low half's total
+// (its last lane), broadcast it into a vector that's zero in the low half
+// and that value in every high-half lane, and add — turning the high
+// half's local sums into correct running sums. Only then is the
+// inter-block carry (`acc`) broadcast-added to all 16 lanes uniformly.
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+#[target_feature(enable = "avx2")]
+unsafe fn decode_avx2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
+    use core::arch::x86_64::*;
+
+    let n = zd.len();
+    out.reserve(n);
+    let base = out.len();
+    let simd_n = (n / 16) * 16;
+
+    let mut acc = initial;
+    let mut i = 0usize;
+
+    let q_vec = _mm_cvtsi32_si128(q as i32);
+
+    while i < simd_n {
+        let result = unsafe {
+            // SAFETY: i + 16 <= simd_n <= n; zd slice bounds are valid.
+            let v = _mm256_loadu_si256(zd.as_ptr().add(i) as *const __m256i);
+
+            // Inverse zigzag: shifted = v >> 1; sign = 0 - (v & 1). AND/SUB/
+            // SHIFT/XOR are full-width, no in-lane restriction.
+            let one = _mm256_set1_epi16(1);
+            let zero = _mm256_setzero_si256();
+            let low_bit = _mm256_and_si256(v, one);
+            let sign = _mm256_sub_epi16(zero, low_bit);
+            let shifted = _mm256_srli_epi16(v, 1);
+            let delta = _mm256_xor_si256(shifted, sign);
+
+            // Three in-lane shift-add steps: two independent 8-wide local
+            // prefix sums (low half = lanes 0..7, high half = lanes 8..15).
+            let d = _mm256_add_epi16(delta, _mm256_slli_si256(delta, 2));
+            let d = _mm256_add_epi16(d, _mm256_slli_si256(d, 4));
+            let d = _mm256_add_epi16(d, _mm256_slli_si256(d, 8));
+
+            // Bridge: add the low half's total to every lane of the high
+            // half only, turning its local sums into correct running sums.
+            let lo = _mm256_extracti128_si256(d, 0);
+            let low_total = _mm_extract_epi16(lo, 7) as i16;
+            let bridge_hi = _mm_set1_epi16(low_total);
+            let bridge = _mm256_inserti128_si256(_mm256_setzero_si256(), bridge_hi, 1);
+            let d = _mm256_add_epi16(d, bridge);
+
+            // Broadcast-add the inter-block carry to all 16 lanes.
+            _mm256_add_epi16(d, _mm256_set1_epi16(acc))
+        };
+        unsafe {
+            // SAFETY: out.reserve(n) ensures capacity; base + i + 16 <= base + n.
+            let out_ptr = out.as_mut_ptr().add(base + i) as *mut __m256i;
+            // Lane 15 (last lane of the high half) of the unshifted `result`
+            // is the prefix sum of all 16 deltas + acc = new accumulator;
+            // qts shift is applied only to the stored copy.
+            let hi = _mm256_extracti128_si256(result, 1);
+            acc = _mm_extract_epi16(hi, 7) as i16;
+            _mm256_storeu_si256(out_ptr, _mm256_sll_epi16(result, q_vec));
+        }
+        i += 16;
+    }
+    unsafe {
+        // SAFETY: elements [base, base + simd_n) were all written above.
+        out.set_len(base + simd_n);
+    }
+
+    // Scalar tail for n % 16 remaining values.
     for &code in &zd[simd_n..] {
         acc = acc.wrapping_add(unzigzag_one(code));
         out.push(acc << q);
@@ -269,7 +373,9 @@ mod tests {
 
     #[test]
     fn small_tail_only() {
-        for n in 0..8 {
+        // 0..16 covers both SSE2/NEON's 8-wide tail boundary and AVX2's
+        // 16-wide one, whichever the dispatch picks for the active features.
+        for n in 0..16 {
             let zd: Vec<u16> = (0..n as u16).map(|i| i * 3 + 1).collect();
             dispatch_matches_reference(&zd, 0);
         }
@@ -277,8 +383,12 @@ mod tests {
 
     #[test]
     fn one_full_block_plus_tail() {
-        let zd: Vec<u16> = (0..13u16).map(|i| i * 37 % 257).collect();
-        dispatch_matches_reference(&zd, 0);
+        // 13 exercises SSE2/NEON's one-block-plus-5-tail; 29 additionally
+        // exercises AVX2's one-block-plus-13-tail.
+        for n in [13u16, 29] {
+            let zd: Vec<u16> = (0..n).map(|i| i * 37 % 257).collect();
+            dispatch_matches_reference(&zd, 0);
+        }
     }
 
     #[test]
@@ -317,6 +427,31 @@ mod tests {
         let mut out = Vec::new();
         decode_into(&zd, 0, 255, &mut out);
         assert_eq!(out, reference(&zd, 0, 255));
+    }
+
+    #[cfg(all(target_arch = "x86_64", feature = "simd-avx2"))]
+    #[test]
+    fn avx2_matches_reference_directly() {
+        // Exhaustively cover every tail length 0..=31 (one full 16-block
+        // plus every possible remainder, and the zero/one/two-block cases)
+        // to nail down the cross-lane bridge step at every boundary.
+        for n in 0..=31usize {
+            for q in [0u8, 1, 5, 15] {
+                let zd: Vec<u16> = (0..n as u32).map(|i| ((i * 6151) % 65536) as u16).collect();
+                let mut out = Vec::new();
+                unsafe { decode_avx2(&zd, 0, q, &mut out) };
+                assert_eq!(out, reference(&zd, 0, q), "n={n} q={q}");
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", feature = "simd-avx2"))]
+    #[test]
+    fn avx2_nonzero_initial_carry() {
+        let zd: Vec<u16> = (0..40u16).map(|i| i * 5 + 2).collect();
+        let mut out = Vec::new();
+        unsafe { decode_avx2(&zd, 1234, 0, &mut out) };
+        assert_eq!(out, reference(&zd, 1234, 0));
     }
 
     #[cfg(all(

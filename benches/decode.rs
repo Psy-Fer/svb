@@ -1,9 +1,10 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use streamvbyte64::Coder as _;
 use svb::{
-    decode_exzd_fused_into, decode_exzd_into, decode_svbzd, decode_svbzd_fused_into, decode_vbz,
-    decode_vbz_fused_from_into, decode_vbz_fused_into, decode_vbz2_into, decode_vbzk_parallel_into,
-    delta, encode_exzd, encode_svbzd, encode_vbz, encode_vbz2, encode_vbzk,
+    ExzdDecoder, decode_exzd_fused_into, decode_exzd_into, decode_svbzd, decode_svbzd_fused_into,
+    decode_vbz, decode_vbz_fused_from_into, decode_vbz_fused_into, decode_vbz2_into,
+    decode_vbzk_parallel_into, delta, encode_exzd, encode_svbzd, encode_vbz, encode_vbz2,
+    encode_vbzk,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
@@ -898,6 +899,68 @@ fn bench_exzd_fused_spiky(c: &mut Criterion) {
     g.finish();
 }
 
+// ── ex-zd: many small reads (realistic BLOW5/nanopore access pattern) ──────────
+//
+// A BLOW5 file holds many thousands of individually-encoded reads, each
+// decoded via its own call. This measures that pattern directly: decoding a
+// batch of distinct, small, pre-encoded reads, comparing the per-call
+// allocating API against `ExzdDecoder`'s reused scratch buffers.
+
+fn many_small_exzd_reads(read_len: usize, num_reads: usize) -> Vec<Vec<u8>> {
+    (0..num_reads)
+        .map(|r| {
+            let samples: Vec<i16> = (0..read_len)
+                .map(|i| {
+                    let base = ((r * 37 + i) as i32 % 500 - 250) as i16;
+                    base.wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
+                })
+                .collect();
+            encode_exzd(&samples)
+        })
+        .collect()
+}
+
+fn bench_exzd_many_small_reads(c: &mut Criterion) {
+    let mut g = c.benchmark_group("exzd_many_small_reads");
+    let num_reads = 2000usize;
+    for &read_len in &[64usize, 512] {
+        let encoded = many_small_exzd_reads(read_len, num_reads);
+        g.throughput(Throughput::Elements((read_len * num_reads) as u64));
+
+        g.bench_with_input(
+            BenchmarkId::new("per_call_alloc", read_len),
+            &encoded,
+            |b, encoded| {
+                let mut out = Vec::new();
+                b.iter(|| {
+                    for enc in encoded {
+                        out.clear();
+                        decode_exzd_fused_into(enc, &mut out).unwrap();
+                        black_box(&out);
+                    }
+                });
+            },
+        );
+
+        g.bench_with_input(
+            BenchmarkId::new("reusable_context", read_len),
+            &encoded,
+            |b, encoded| {
+                let mut out = Vec::new();
+                let mut decoder = ExzdDecoder::new();
+                b.iter(|| {
+                    for enc in encoded {
+                        out.clear();
+                        decoder.decode_into(enc, &mut out).unwrap();
+                        black_box(&out);
+                    }
+                });
+            },
+        );
+    }
+    g.finish();
+}
+
 // ── registry ──────────────────────────────────────────────────────────────────
 
 criterion_group!(
@@ -938,5 +1001,6 @@ criterion_group!(
     bench_exzd_decode,
     bench_exzd_fused,
     bench_exzd_fused_spiky,
+    bench_exzd_many_small_reads,
 );
 criterion_main!(benches);

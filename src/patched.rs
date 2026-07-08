@@ -95,6 +95,29 @@ pub fn encode_into(values: &[u16], out: &mut Vec<u8>) {
 /// assert_eq!(out, [1u16, 300, 2]);
 /// ```
 pub fn decode_into(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<usize, DecodeError> {
+    let mut literal = Vec::new();
+    let mut ex_pos = Vec::new();
+    let mut ex_val = Vec::new();
+    decode_into_with_scratch(data, n, out, &mut literal, &mut ex_pos, &mut ex_val)
+}
+
+/// Same as [`decode_into`], but reuses caller-supplied scratch buffers
+/// (cleared internally) instead of allocating a fresh literal/exception
+/// buffer on every call. Used by [`crate::ExzdDecoder`] to avoid a heap
+/// allocation per decode when repeatedly decoding many small frames (the
+/// typical BLOW5/nanopore workload — many thousands of individual reads).
+pub(crate) fn decode_into_with_scratch(
+    data: &[u8],
+    n: usize,
+    out: &mut Vec<u16>,
+    literal: &mut Vec<u16>,
+    ex_pos: &mut Vec<u32>,
+    ex_val: &mut Vec<u32>,
+) -> Result<usize, DecodeError> {
+    literal.clear();
+    ex_pos.clear();
+    ex_val.clear();
+
     if data.len() < 4 {
         return Err(too_short(4, data.len()));
     }
@@ -170,25 +193,21 @@ pub fn decode_into(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<usize, D
     if data.len() < offset + n_literal {
         return Err(too_short(offset + n_literal, data.len()));
     }
-    let mut literal: Vec<u16> = Vec::new();
-    widen_into(&data[offset..offset + n_literal], &mut literal);
+    widen_into(&data[offset..offset + n_literal], literal);
 
-    let (ex_pos, ex_val): (Vec<u32>, Vec<u32>) = if nex == 1 {
+    if nex == 1 {
         let p = &data[pos_bytes_range];
         let v = &data[val_bytes_range];
-        (
-            [u32::from_le_bytes([p[0], p[1], p[2], p[3]])].into(),
-            [u32::from_le_bytes([v[0], v[1], v[2], v[3]])].into(),
-        )
+        ex_pos.push(u32::from_le_bytes([p[0], p[1], p[2], p[3]]));
+        ex_val.push(u32::from_le_bytes([v[0], v[1], v[2], v[3]]));
     } else {
-        let mut pos_delta = U32Classic.decode(&data[pos_bytes_range], nex)?;
-        for i in 1..pos_delta.len() {
-            let prev = pos_delta[i - 1];
-            pos_delta[i] = pos_delta[i].wrapping_add(prev).wrapping_add(1);
+        U32Classic.decode_into(&data[pos_bytes_range], nex, ex_pos)?;
+        for i in 1..ex_pos.len() {
+            let prev = ex_pos[i - 1];
+            ex_pos[i] = ex_pos[i].wrapping_add(prev).wrapping_add(1);
         }
-        let ex_val = U32Classic.decode(&data[val_bytes_range], nex)?;
-        (pos_delta, ex_val)
-    };
+        U32Classic.decode_into(&data[val_bytes_range], nex, ex_val)?;
+    }
 
     // `pos < prev_pos || pos >= n` guards against a corrupted/adversarial
     // position stream (e.g. non-increasing after wraparound in the delta

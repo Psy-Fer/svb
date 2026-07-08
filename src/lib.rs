@@ -1445,6 +1445,35 @@ fn decode_exzd_header_and_zd(data: &[u8]) -> Result<Option<(u8, Vec<u16>)>, Deco
     #[cfg(feature = "std")]
     use std::vec::Vec;
 
+    let mut zd = Vec::new();
+    let mut literal = Vec::new();
+    let mut ex_pos = Vec::new();
+    let mut ex_val = Vec::new();
+    let q = decode_exzd_header_and_zd_with_scratch(
+        data,
+        &mut zd,
+        &mut literal,
+        &mut ex_pos,
+        &mut ex_val,
+    )?;
+    Ok(q.map(|q| (q, zd)))
+}
+
+/// Same as [`decode_exzd_header_and_zd`], but fills caller-supplied `zd`,
+/// `literal`, `ex_pos`, and `ex_val` scratch buffers (each cleared
+/// internally) instead of allocating fresh ones. Returns `Some(q)`, or
+/// `None` for `nin == 0`. Used by [`ExzdDecoder`] to avoid a heap
+/// allocation per decode when repeatedly decoding many small frames.
+#[cfg(feature = "alloc")]
+fn decode_exzd_header_and_zd_with_scratch(
+    data: &[u8],
+    zd: &mut Vec<u16>,
+    literal: &mut Vec<u16>,
+    ex_pos: &mut Vec<u32>,
+    ex_val: &mut Vec<u32>,
+) -> Result<Option<u8>, DecodeError> {
+    zd.clear();
+
     if data.len() < EXZD_HEADER_LEN {
         return Err(DecodeError::ControlStreamTooShort {
             need: EXZD_HEADER_LEN,
@@ -1473,11 +1502,81 @@ fn decode_exzd_header_and_zd(data: &[u8]) -> Result<Option<(u8, Vec<u16>)>, Deco
     }
     let zd0 = u16::from_le_bytes([data[EXZD_HEADER_LEN], data[EXZD_HEADER_LEN + 1]]);
 
-    let mut zd: Vec<u16> = Vec::with_capacity(nin);
+    zd.reserve(nin);
     zd.push(zd0);
-    patched::decode_into(&data[EXZD_HEADER_LEN + 2..], nin - 1, &mut zd)?;
+    patched::decode_into_with_scratch(
+        &data[EXZD_HEADER_LEN + 2..],
+        nin - 1,
+        zd,
+        literal,
+        ex_pos,
+        ex_val,
+    )?;
 
-    Ok(Some((q, zd)))
+    Ok(Some(q))
+}
+
+/// Reusable scratch buffers for repeatedly decoding ex-zd frames with
+/// [`decode_exzd_fused`]'s algorithm, avoiding a fresh heap allocation on
+/// every call.
+///
+/// The single-shot [`decode_exzd_fused`]/[`decode_exzd_fused_into`]
+/// functions allocate their working buffers (the reconstructed zigzag-delta
+/// array, the widened literal-byte buffer, and the decoded exception
+/// position/residual lists) fresh on every call — the right default for a
+/// one-off decode. But the typical ex-zd workload is a BLOW5/nanopore file
+/// with many thousands of individual reads, each decoded via its own call;
+/// in that pattern, `ExzdDecoder` lets the same buffers be reused across
+/// calls instead of allocated and freed every time.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::{encode_exzd, ExzdDecoder};
+/// let mut decoder = ExzdDecoder::new();
+/// let mut out = Vec::new();
+/// for samples in [vec![1i16, 2, 3], vec![10, 20, 30]] {
+///     let encoded = encode_exzd(&samples);
+///     out.clear();
+///     decoder.decode_into(&encoded, &mut out).unwrap();
+///     assert_eq!(out, samples);
+/// }
+/// ```
+#[cfg(feature = "alloc")]
+#[derive(Default)]
+pub struct ExzdDecoder {
+    zd: Vec<u16>,
+    literal: Vec<u16>,
+    ex_pos: Vec<u32>,
+    ex_val: Vec<u32>,
+}
+
+#[cfg(feature = "alloc")]
+impl ExzdDecoder {
+    /// Create a new decoder with empty (unallocated) scratch buffers.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Decode ex-zd bytes into `i16` samples, appending to `out`.
+    ///
+    /// Identical output to [`decode_exzd_fused`], but reuses this decoder's
+    /// scratch buffers instead of allocating new ones on every call.
+    pub fn decode_into(&mut self, data: &[u8], out: &mut Vec<i16>) -> Result<(), DecodeError> {
+        let Some(q) = decode_exzd_header_and_zd_with_scratch(
+            data,
+            &mut self.zd,
+            &mut self.literal,
+            &mut self.ex_pos,
+            &mut self.ex_val,
+        )?
+        else {
+            return Ok(());
+        };
+
+        exzd_fused::decode_into(&self.zd, 0, q, out);
+        Ok(())
+    }
 }
 
 #[cfg(all(test, feature = "alloc"))]
@@ -1742,6 +1841,41 @@ mod exzd_tests {
         let enc = encode_exzd(&[10i16, 20, 30]);
         let mut out = vec![99i16];
         decode_exzd_fused_into(&enc, &mut out).unwrap();
+        assert_eq!(out, [99, 10, 20, 30]);
+    }
+
+    #[test]
+    fn exzd_decoder_matches_single_shot() {
+        let mut decoder = ExzdDecoder::new();
+        let cases: Vec<Vec<i16>> = vec![
+            vec![],
+            vec![0],
+            vec![i16::MIN, i16::MAX, 0, -1, 1, i16::MIN, i16::MAX, 0],
+            (0..1024)
+                .map(|i| {
+                    ((i as i32 % 500 - 250) as i16)
+                        .wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
+                })
+                .collect(),
+            (0..64)
+                .map(|i| if i % 2 == 0 { 0i16 } else { 20000 })
+                .collect(),
+        ];
+        for samples in cases {
+            let enc = encode_exzd(&samples);
+            let mut out = Vec::new();
+            decoder.decode_into(&enc, &mut out).unwrap();
+            assert_eq!(out, samples);
+            assert_eq!(out, decode_exzd_fused(&enc).unwrap());
+        }
+    }
+
+    #[test]
+    fn exzd_decoder_into_appends() {
+        let mut decoder = ExzdDecoder::new();
+        let enc = encode_exzd(&[10i16, 20, 30]);
+        let mut out = vec![99i16];
+        decoder.decode_into(&enc, &mut out).unwrap();
         assert_eq!(out, [99, 10, 20, 30]);
     }
 }
