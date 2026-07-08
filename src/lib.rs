@@ -189,6 +189,9 @@ mod vbz_fused;
 mod svbzd_fused;
 
 #[cfg(feature = "alloc")]
+mod exzd_fused;
+
+#[cfg(feature = "alloc")]
 mod vbz {
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
@@ -1383,6 +1386,65 @@ pub fn decode_exzd(data: &[u8]) -> Result<Vec<i16>, DecodeError> {
 /// Decode ex-zd bytes into `i16` samples, appending to `out`.
 #[cfg(feature = "alloc")]
 pub fn decode_exzd_into(data: &[u8], out: &mut Vec<i16>) -> Result<(), DecodeError> {
+    let Some((q, zd)) = decode_exzd_header_and_zd(data)? else {
+        return Ok(());
+    };
+
+    let deltas = zigzag::decode(&zd);
+    let start = out.len();
+    delta::decode_into(&deltas, out);
+
+    if q != 0 {
+        quantize::unshift_inplace(&mut out[start..], q);
+    }
+
+    Ok(())
+}
+
+/// Decode ex-zd bytes into `i16` samples using a fused single-pass decoder.
+///
+/// Identical output to [`decode_exzd`], but fuses inverse-zigzag and the
+/// delta prefix sum into one SIMD loop rather than two separate scans. The
+/// exception scan/scatter (`patched::decode_into`) is unchanged — exceptions
+/// sit at arbitrary positions and aren't a natural fit for a fixed-width
+/// SIMD loop, so it stays a distinct pass.
+#[cfg(feature = "alloc")]
+pub fn decode_exzd_fused(data: &[u8]) -> Result<Vec<i16>, DecodeError> {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    let mut out = Vec::new();
+    decode_exzd_fused_into(data, &mut out)?;
+    Ok(out)
+}
+
+/// Decode ex-zd bytes, appending to `out`. See [`decode_exzd_fused`].
+#[cfg(feature = "alloc")]
+pub fn decode_exzd_fused_into(data: &[u8], out: &mut Vec<i16>) -> Result<(), DecodeError> {
+    let Some((q, zd)) = decode_exzd_header_and_zd(data)? else {
+        return Ok(());
+    };
+
+    let start = out.len();
+    exzd_fused::decode_into(&zd, 0, out);
+
+    if q != 0 {
+        quantize::unshift_inplace(&mut out[start..], q);
+    }
+
+    Ok(())
+}
+
+/// Parse the ex-zd header and reconstruct the full `nin`-length zigzag-delta
+/// array (raw `zd[0]` + patched/exception decode of the rest).
+///
+/// Returns `None` for `nin == 0` (nothing to decode). This is the shared
+/// prefix between [`decode_exzd_into`] and [`decode_exzd_fused_into`]; they
+/// differ only in how they turn `zd` into samples.
+#[cfg(feature = "alloc")]
+fn decode_exzd_header_and_zd(data: &[u8]) -> Result<Option<(u8, Vec<u16>)>, DecodeError> {
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
     #[cfg(feature = "std")]
@@ -1405,7 +1467,7 @@ pub fn decode_exzd_into(data: &[u8], out: &mut Vec<i16>) -> Result<(), DecodeErr
     let q = data[9];
 
     if nin == 0 {
-        return Ok(());
+        return Ok(None);
     }
 
     if data.len() < EXZD_HEADER_LEN + 2 {
@@ -1420,15 +1482,7 @@ pub fn decode_exzd_into(data: &[u8], out: &mut Vec<i16>) -> Result<(), DecodeErr
     zd.push(zd0);
     patched::decode_into(&data[EXZD_HEADER_LEN + 2..], nin - 1, &mut zd)?;
 
-    let deltas = zigzag::decode(&zd);
-    let start = out.len();
-    delta::decode_into(&deltas, out);
-
-    if q != 0 {
-        quantize::unshift_inplace(&mut out[start..], q);
-    }
-
-    Ok(())
+    Ok(Some((q, zd)))
 }
 
 #[cfg(all(test, feature = "alloc"))]
@@ -1631,5 +1685,68 @@ mod exzd_tests {
     fn decode_exzd_rejects_truncated_body() {
         let enc = encode_exzd(&[1i16, 2, 3, 4, 5]);
         assert!(decode_exzd(&enc[..enc.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn fused_matches_3pass_empty() {
+        let enc = encode_exzd(&[]);
+        assert_eq!(decode_exzd_fused(&enc).unwrap(), decode_exzd(&enc).unwrap(),);
+    }
+
+    #[test]
+    fn fused_matches_3pass_signal() {
+        let samples: Vec<i16> = (0..1024)
+            .map(|i| {
+                ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
+            })
+            .collect();
+        let enc = encode_exzd(&samples);
+        assert_eq!(decode_exzd_fused(&enc).unwrap(), decode_exzd(&enc).unwrap(),);
+    }
+
+    #[test]
+    fn fused_matches_3pass_extremes() {
+        let samples = vec![i16::MIN, i16::MAX, 0, -1, 1, i16::MIN, i16::MAX, 0];
+        let enc = encode_exzd(&samples);
+        assert_eq!(decode_exzd_fused(&enc).unwrap(), decode_exzd(&enc).unwrap(),);
+    }
+
+    #[test]
+    fn fused_matches_3pass_mostly_exceptions() {
+        let samples: Vec<i16> = (0..64)
+            .map(|i| if i % 2 == 0 { 0 } else { 20000 })
+            .collect();
+        let enc = encode_exzd(&samples);
+        assert_eq!(decode_exzd_fused(&enc).unwrap(), decode_exzd(&enc).unwrap(),);
+    }
+
+    #[test]
+    fn fused_matches_3pass_quantized() {
+        let samples: Vec<i16> = vec![0, 8, -8, 16, -24, 800, -816, 8000];
+        let enc = encode_exzd(&samples);
+        assert_eq!(decode_exzd_fused(&enc).unwrap(), decode_exzd(&enc).unwrap(),);
+    }
+
+    #[test]
+    fn fused_roundtrip_c_reference_vectors() {
+        let one: Vec<i16> = vec![100];
+        let big: Vec<i16> = vec![100, -100, 0, 10000, 3442, 234, 2326, 346, 213, 234];
+        let exp: Vec<i16> = vec![1039, 588, 588, 593, 586, 574, 570, 585, 588, 586];
+        let huge: Vec<i16> = vec![
+            542, 543, 545, 547, 515, 415, 370, 409, 416, 419, 416, 455, 535, 542, 548, 539, 495,
+            493, 489, 486, 486, 488, 476, 476, 563, 549, 556, 568, 535, 551, 545, 512, 416, 397,
+            393,
+        ];
+        for samples in [one, big, exp, huge] {
+            assert_eq!(decode_exzd_fused(&encode_exzd(&samples)).unwrap(), samples);
+        }
+    }
+
+    #[test]
+    fn decode_exzd_fused_into_appends() {
+        let enc = encode_exzd(&[10i16, 20, 30]);
+        let mut out = vec![99i16];
+        decode_exzd_fused_into(&enc, &mut out).unwrap();
+        assert_eq!(out, [99, 10, 20, 30]);
     }
 }

@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use svb::{
-    decode_exzd, decode_vbz, encode_exzd, encode_vbz,
+    decode_exzd, decode_exzd_fused, decode_vbz, encode_exzd, encode_vbz,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
@@ -59,7 +59,8 @@ proptest! {
     #[test]
     fn exzd_roundtrip(samples in proptest::collection::vec(any::<i16>(), 0usize..=4096)) {
         let enc = encode_exzd(&samples);
-        prop_assert_eq!(decode_exzd(&enc).unwrap(), samples);
+        prop_assert_eq!(decode_exzd(&enc).unwrap(), samples.clone());
+        prop_assert_eq!(decode_exzd_fused(&enc).unwrap(), samples);
     }
 }
 

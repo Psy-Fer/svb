@@ -3,7 +3,7 @@
 //! If any of these fail, the wire format has drifted from the spec.
 
 use svb::{
-    decode_exzd, decode_vbz, encode_exzd, encode_vbz,
+    decode_exzd, decode_exzd_fused, decode_vbz, encode_exzd, encode_vbz,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
@@ -302,6 +302,7 @@ macro_rules! exzd_parity_test {
             let enc = include_bytes!(concat!("vectors/", $stem, ".enc"));
             let expected = load_i16(include_bytes!(concat!("vectors/", $stem, ".raw")));
             assert_eq!(decode_exzd(enc).unwrap(), expected);
+            assert_eq!(decode_exzd_fused(enc).unwrap(), expected);
             assert_eq!(encode_exzd(&expected), enc);
         }
     };
