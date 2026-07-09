@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![MSRV: 1.87](https://img.shields.io/badge/rustc-1.87+-blue.svg)](https://blog.rust-lang.org/2025/05/15/Rust-1.87.0/)
 
-Pure-Rust [StreamVByte](https://lemire.me/blog/2017/09/27/stream-vbyte-breaking-new-speed-records-for-integer-compression/) covering all major codec variants for `u16`, `u32`, and `u64` integers. Delta and zigzag encoding are composable layers on top. SIMD back-ends are available for x86-64 (SSSE3, AVX2) and AArch64 (NEON).
+Pure-Rust [StreamVByte](https://lemire.me/blog/2017/09/27/stream-vbyte-breaking-new-speed-records-for-integer-compression/) covering all major codec variants for `u16`, `u32`, and `u64` integers. Delta, zigzag, and quantization are composable layers on top, used to build ready-made signal-compression pipelines (VBZ, SVB-ZD, ex-zd) wire-compatible with the formats used by Oxford Nanopore's POD5 and hasindu2008's slow5lib/BLOW5. SIMD back-ends are available for x86-64 (SSSE3, AVX2) and AArch64 (NEON).
 
 **[Documentation](https://psy-fer.github.io/svb/) | [API reference](https://docs.rs/svb)**
 
@@ -28,11 +28,33 @@ The three compose naturally: delta shrinks value magnitudes, zigzag keeps the re
 | `U64Coder1234` | `u64` | 1/2/3/4 | Values up to `u32::MAX` |
 | `U64Coder1248` | `u64` | 1/2/4/8 | Full u64 range |
 
+## Signal compression pipelines
+
+On top of the raw codecs, `svb` provides three ready-made pipelines for compressing signed 16-bit signal data, differing in wire format and how they handle values that overflow after delta:
+
+| Pipeline | Wire format | Element path | Notes |
+|---|---|---|---|
+| VBZ | ONT POD5 | `i16 → zigzag-delta → Svb16` | Fastest; SVB16's 1-bit tags pack tightest |
+| SVB-ZD | slow5lib/BLOW5 (`SLOW5_COMPRESS_SVB_ZD`) | `i16 → widen to i32 → zigzag-delta → U32Classic` | No truncation risk (widens before delta) |
+| ex-zd | slow5lib/BLOW5 (`SLOW5_COMPRESS_EX_ZD`) | `i16 → qts shift → zigzag-delta (u16) → patched/exception (U32Classic)` | Self-describing frame; best compression on typical nanopore signal |
+
+Each pipeline exposes `encode_*` / `decode_*` (3-pass) / `decode_*_fused` (single SIMD pass, preferred for one-shot decode) / `_into` variants, plus a reusable-scratch decoder (`ExzdDecoder`) for the common BLOW5 access pattern of decoding many small reads in a loop. See the [VBZ](https://psy-fer.github.io/svb/vbz.html), [SVB-ZD](https://psy-fer.github.io/svb/svbzd.html), and [ex-zd](https://psy-fer.github.io/svb/exzd.html) docs pages for wire-format details and the full API.
+
+```rust
+use svb::{encode_exzd, decode_exzd};
+
+let samples: Vec<i16> = vec![100, 101, 103, 102, 98];
+let encoded = encode_exzd(&samples);
+// Self-describing frame: no sample count needed on decode.
+let decoded = decode_exzd(&encoded).unwrap();
+assert_eq!(decoded, samples);
+```
+
 ## Installation
 
 ```toml
 [dependencies]
-svb = { version = "0.2", features = ["simd-auto"] }
+svb = { version = "0.3", features = ["simd-auto"] }
 ```
 
 ## Quick start
@@ -86,6 +108,8 @@ VBZ is ~2.5x slower than SVB16 alone. Breaking down the pipeline (8192 i16 eleme
 
 Around **2x faster on average** than `streamvbyte64` across all variants and sizes (range: 1.4x–2.7x). Full stage-by-stage breakdowns, fused decoder analysis, and VBZ-K parallel decode numbers are in the [Performance](https://psy-fer.github.io/svb/performance.html) docs.
 
+SVB-ZD and ex-zd are also measured against slow5lib's compiled C reference on the same data: SVB-ZD's SIMD encode/decode is 6.6–7.2x over its own scalar fallback, and ex-zd beats the C reference by 2.6–5.1x on real nanopore reads (the regime that matters — real BLOW5 signal has 0.9–2.3% exception density, well below the pathological profiles where the two are closer). See the [Performance](https://psy-fer.github.io/svb/performance.html) docs for the full breakdown, including the from-scratch C comparison methodology.
+
 If you run the benchmarks on another system (especially ARM with NEON) I'd love to see the results. Run:
 
 ```sh
@@ -96,11 +120,15 @@ and open an issue or drop the output in.
 
 ## Validation
 
-Real-data parity testing is done through [pod5lib](https://crates.io/crates/pod5lib), a pure-Rust POD5 reader that uses `svb` for VBZ decompression and validates output against real Oxford Nanopore sequencing data.
+VBZ real-data parity testing is done through [pod5lib](https://crates.io/crates/pod5lib), a pure-Rust POD5 reader that uses `svb` for VBZ decompression and validates output against real Oxford Nanopore sequencing data.
+
+SVB-ZD and ex-zd are validated for byte-exact wire compatibility against slow5lib's own compiled implementation (`slow5_ptr_compress_solo`/`slow5_ptr_depress_solo`), using both slow5lib's unit-test fixtures and real ONT signal extracted from POD5 files (`tests/parity.rs`, `tests/vectors/`).
+
+Every codec's decode path (`Svb16`, `U32Classic`, `U32Variant0124`, `U64Coder1234`, `U64Coder1248`, VBZ, SVB-ZD, ex-zd) is also exercised by fuzz testing (`cargo +nightly fuzz run <target>`, see `fuzz/fuzz_targets/`) — decode on arbitrary/malformed bytes must return a `DecodeError`, never panic.
 
 ## Acknowledgements
 
-StreamVByte was invented by [Daniel Lemire](https://lemire.me), Mauel Kurz, and Robert Rupp. The `U32Classic` wire format is compatible with Lemire's [C streamvbyte library](https://github.com/lemire/streamvbyte). The u64 codec variants follow the format defined by [`streamvbyte64`](https://crates.io/crates/streamvbyte64). Benchmarks compare against `streamvbyte64 v0.2.0`.
+StreamVByte was invented by [Daniel Lemire](https://lemire.me), Mauel Kurz, and Robert Rupp. The `U32Classic` wire format is compatible with Lemire's [C streamvbyte library](https://github.com/lemire/streamvbyte). The u64 codec variants follow the format defined by [`streamvbyte64`](https://crates.io/crates/streamvbyte64). Benchmarks compare against `streamvbyte64 v0.2.0`. The SVB-ZD and ex-zd wire formats and reference algorithms come from [hasindu2008's slow5lib](https://github.com/hasindu2008/slow5lib) (MIT-licensed).
 
 ## AI assistance
 
