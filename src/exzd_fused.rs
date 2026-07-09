@@ -28,13 +28,23 @@
 //! block instead of a whole extra scan.
 //!
 //! A chunked variant that also folded `patched::decode_into`'s
-//! reconstruction into this same loop (processing fixed 8-element chunks so
-//! exception density could never fragment the SIMD width) was tried and
-//! measured slower than this simpler two-stage version across every data
-//! profile tested — re-entering the transform per chunk cost more than the
-//! fragmentation it avoided. Keeping the merge (`patched::decode_into`) and
-//! the transform (this module) as two separate full-array passes is the
-//! faster design in practice, not just simpler.
+//! reconstruction into this same loop (processing fixed-size chunks so
+//! exception density could never fragment the SIMD width) was tried at
+//! *two* chunk widths and measured slower than this simpler two-stage
+//! version both times, across every data profile tested:
+//!
+//! - 8-wide (SSE2): re-entering the transform per chunk paid a fixed setup
+//!   cost (register loads, bounds bookkeeping) that scaled with chunk
+//!   count, and 8-wide chunking meant a lot of chunks.
+//! - 16-wide (AVX2): halving the chunk count didn't help — AVX2's extra
+//!   cross-lane bridge step (extract the low half's total, broadcast it,
+//!   insert into the high half) adds more per-chunk instruction overhead
+//!   than SSE2's simpler in-register 3-step scan ever needed, more than
+//!   offsetting the benefit of paying the per-chunk cost half as often.
+//!
+//! Keeping the merge (`patched::decode_into`) and the transform (this
+//! module) as two separate full-array passes is the faster design in
+//! practice at both widths, not just simpler.
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;

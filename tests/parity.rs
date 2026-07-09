@@ -312,3 +312,14 @@ exzd_parity_test!(exzd_c_reference_one, "exzd_one_1");
 exzd_parity_test!(exzd_c_reference_big, "exzd_big_10");
 exzd_parity_test!(exzd_c_reference_exp, "exzd_exp_10");
 exzd_parity_test!(exzd_c_reference_huge, "exzd_huge_35");
+
+// Same byte-exact check, but against slow5_ptr_compress_solo run on real ONT
+// signal (the same reads used for VBZ parity/benchmark testing, `parity_*.i16`
+// / `bench_00_101988.i16`) rather than slow5lib's tiny synthetic unit-test
+// arrays above (n=1/10/10/35) — those only exercise the wire format's edge
+// cases, not realistic read shapes or the low (~1-2%) exception density real
+// signal actually has.
+exzd_parity_test!(exzd_c_reference_pod5_00, "exzd_pod5_00_02885");
+exzd_parity_test!(exzd_c_reference_pod5_01, "exzd_pod5_01_02915");
+exzd_parity_test!(exzd_c_reference_pod5_02, "exzd_pod5_02_02949");
+exzd_parity_test!(exzd_c_reference_pod5_bench, "exzd_pod5_bench_101988");

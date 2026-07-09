@@ -114,6 +114,32 @@ pub(crate) fn decode_into_with_scratch(
     ex_pos: &mut Vec<u32>,
     ex_val: &mut Vec<u32>,
 ) -> Result<usize, DecodeError> {
+    // `nex * 7 >= n` (>=~14.3% exceptions): the merge_runs/merge_walk
+    // crossover density, found empirically with `merge_density_sweep`
+    // (`cargo test --release -- --ignored --nocapture merge_density_sweep`)
+    // and consistent across n=128/1024/8192 — not the format's own ~20%
+    // "compression may not be ideal" warning threshold, which turned out to
+    // be more conservative than the actual crossover.
+    decode_into_with_scratch_choosing(data, n, out, literal, ex_pos, ex_val, |nex, n| {
+        nex.saturating_mul(7) >= n
+    })
+}
+
+/// Same as [`decode_into_with_scratch`], but `use_walk_merge(nex, n)` picks
+/// the merge strategy instead of the hardcoded density threshold — the hook
+/// [`decode_into_with_scratch`] uses in production, and that
+/// `#[cfg(test)]` benchmarks use to force one strategy or the other when
+/// sweeping for the actual crossover density (see `merge_density_sweep`
+/// below).
+fn decode_into_with_scratch_choosing(
+    data: &[u8],
+    n: usize,
+    out: &mut Vec<u16>,
+    literal: &mut Vec<u16>,
+    ex_pos: &mut Vec<u32>,
+    ex_val: &mut Vec<u32>,
+    use_walk_merge: impl Fn(usize, usize) -> bool,
+) -> Result<usize, DecodeError> {
     literal.clear();
     ex_pos.clear();
     ex_val.clear();
@@ -209,18 +235,50 @@ pub(crate) fn decode_into_with_scratch(
         U32Classic.decode_into(&data[val_bytes_range], nex, ex_val)?;
     }
 
-    // `pos < prev_pos || pos >= n` guards against a corrupted/adversarial
-    // position stream (e.g. non-increasing after wraparound in the delta
-    // reconstruction above) sending `run_len` negative or `literal` slicing
-    // out of bounds.
-    out.reserve(n);
-    let mut cursor = 0usize;
+    // Validate once, up front, so neither merge strategy below needs to
+    // check for corrupted/adversarial input (non-increasing or
+    // out-of-range exception positions).
     let mut prev_pos = 0usize;
-    for (j, &pos) in ex_pos.iter().enumerate() {
+    for &pos in ex_pos.iter() {
         let pos = pos as usize;
         if pos < prev_pos || pos >= n {
             return Err(too_short(offset + n_literal, data.len()));
         }
+        prev_pos = pos + 1;
+    }
+
+    // Two merge strategies, picked by exception density:
+    //
+    // - `merge_runs`: batches each stretch of non-exception values into one
+    //   `extend_from_slice` (a vectorized memcpy), interrupted only by a
+    //   single `push` per exception. Wins when exceptions are rare (long
+    //   runs, few interruptions) — the common case for well-compressing
+    //   signal.
+    // - `merge_walk`: writes every output element individually through a
+    //   raw pointer (no per-call overhead, no bounds/capacity checks).
+    //   Loses to `merge_runs` on long runs (a scalar per-element loop can't
+    //   beat a vectorized memcpy) but wins once runs get short enough that
+    //   `merge_runs`'s per-run call overhead dominates — crossover measured
+    //   at ~14-15% exception density (see `merge_density_sweep`), matching
+    //   the technique slow5lib's C reference (`ex_depress`) uses.
+    out.reserve(n);
+    if use_walk_merge(nex, n) {
+        merge_walk(n, ex_pos, ex_val, literal, out);
+    } else {
+        merge_runs(ex_pos, ex_val, literal, out);
+    }
+
+    Ok(offset + n_literal)
+}
+
+/// Merge literals and exceptions back into `out` by copying each
+/// non-exception run in one `extend_from_slice` call. See the dispatch
+/// comment in [`decode_into_with_scratch`] for when this wins.
+fn merge_runs(ex_pos: &[u32], ex_val: &[u32], literal: &[u16], out: &mut Vec<u16>) {
+    let mut cursor = 0usize;
+    let mut prev_pos = 0usize;
+    for (j, &pos) in ex_pos.iter().enumerate() {
+        let pos = pos as usize;
         let run_len = pos - prev_pos;
         out.extend_from_slice(&literal[cursor..cursor + run_len]);
         cursor += run_len;
@@ -229,8 +287,65 @@ pub(crate) fn decode_into_with_scratch(
         prev_pos = pos + 1;
     }
     out.extend_from_slice(&literal[cursor..]);
+}
 
-    Ok(offset + n_literal)
+/// Merge literals and exceptions back into `out` with one raw-pointer write
+/// per output element (no bounds/capacity checks). See the dispatch comment
+/// in [`decode_into_with_scratch`] for when this wins.
+///
+/// A two-phase variant (scatter exceptions into their final positions
+/// first, then a separate walk that only ever fills literals) was tried,
+/// matching slow5lib's C reference (`ex_depress`) structure exactly — it
+/// measured no difference from this single combined loop. Investigating why
+/// C still edges this out at high exception density (~9-11% at n=1024/8192)
+/// found the gap isn't really about C vs Rust: compiling the *same* C
+/// source with clang instead of gcc is itself 15-18% faster, since both
+/// clang and rustc share the LLVM backend. Disassembling this function
+/// showed LLVM 4×-unrolling the scatter phase and splitting the walk phase
+/// into multiple specialized loop variants for the Rust version, vs. the
+/// single compact loop it emits for the structurally-identical C — likely
+/// driven by the stronger `noalias` guarantees Rust's `&mut` references let
+/// rustc emit, giving LLVM's unrolling heuristics different (here not
+/// better) incentives than the equivalent raw-pointer C. Not chased
+/// further: closing this would mean fighting LLVM's cost model rather than
+/// fixing an identifiable inefficiency in this code.
+fn merge_walk(n: usize, ex_pos: &[u32], ex_val: &[u32], literal: &[u16], out: &mut Vec<u16>) {
+    let out_base = out.len();
+    // SAFETY: caller (`decode_into_with_scratch`) already called
+    // `out.reserve(n)`, guaranteeing capacity for n more elements from
+    // out_base; the loop below writes each index in [0, n) exactly once via
+    // out_ptr, so out.set_len(out_base + n) afterwards is sound.
+    let out_ptr = unsafe { out.as_mut_ptr().add(out_base) };
+    debug_assert_eq!(ex_pos.len(), ex_val.len());
+    let mut lit_cursor = 0usize;
+    let mut j = 0usize;
+    for i in 0..n {
+        // SAFETY: `j < ex_pos.len()` is checked here, and `ex_pos`/`ex_val`
+        // are always populated with the same length (both decoded from
+        // `nex` items in `decode_into_with_scratch`) — but that invariant
+        // lives in the caller, not in a form LLVM can see across the two
+        // independent slices, so plain `ex_val[j]` indexing paid a real
+        // (if perfectly-predicted and measurably free) bounds check here
+        // despite being provably in range.
+        if j < ex_pos.len() && unsafe { *ex_pos.get_unchecked(j) as usize == i } {
+            // SAFETY: i < n, out_ptr has room for n elements.
+            unsafe {
+                *out_ptr.add(i) = (*ex_val.get_unchecked(j) as u16).wrapping_add(THRESHOLD + 1)
+            };
+            j += 1;
+        } else {
+            // SAFETY: exactly n - nex literal values were widened by the
+            // caller, and lit_cursor advances once per non-exception i in
+            // [0, n), so it never reaches literal.len(); i < n so
+            // out_ptr.add(i) is valid.
+            unsafe {
+                *out_ptr.add(i) = *literal.get_unchecked(lit_cursor);
+            }
+            lit_cursor += 1;
+        }
+    }
+    // SAFETY: every index in [0, n) was written above.
+    unsafe { out.set_len(out_base + n) };
 }
 
 /// Widen a run of literal bytes to `u16` (zero-extend), appending to `out`.
@@ -497,5 +612,79 @@ mod tests {
 
         let mut out = Vec::new();
         assert!(decode_into(&data, 3, &mut out).is_err());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    #[ignore = "manual perf sweep, not part of CI - run with \
+                `cargo test --release --features simd-avx2 -- --ignored --nocapture merge_density_sweep`"]
+    fn merge_density_sweep() {
+        use std::time::Instant;
+
+        fn gen_values(n: usize, density_pct: usize) -> Vec<u16> {
+            let stride = (100 / density_pct.max(1)).max(1);
+            (0..n)
+                .map(|i| {
+                    if i % stride == 0 {
+                        300 + (i % 5000) as u16
+                    } else {
+                        (i % 200) as u16
+                    }
+                })
+                .collect()
+        }
+
+        fn time_strategy(enc: &[u8], n: usize, iters: usize, force_walk: bool) -> f64 {
+            let mut out = Vec::new();
+            let mut literal = Vec::new();
+            let mut ex_pos = Vec::new();
+            let mut ex_val = Vec::new();
+            // Warm up.
+            decode_into_with_scratch_choosing(
+                enc,
+                n,
+                &mut out,
+                &mut literal,
+                &mut ex_pos,
+                &mut ex_val,
+                |_, _| force_walk,
+            )
+            .unwrap();
+
+            let t0 = Instant::now();
+            for _ in 0..iters {
+                out.clear();
+                decode_into_with_scratch_choosing(
+                    enc,
+                    n,
+                    &mut out,
+                    &mut literal,
+                    &mut ex_pos,
+                    &mut ex_val,
+                    |_, _| force_walk,
+                )
+                .unwrap();
+            }
+            t0.elapsed().as_secs_f64() / iters as f64
+        }
+
+        for n in [128usize, 1024, 8192] {
+            let iters = 20_000;
+            eprintln!("--- n={n} ---");
+            eprintln!("density%  runs(ns)  walk(ns)  walk/runs  winner");
+            for density_pct in [8, 10, 12, 13, 14, 15, 16, 18, 20, 25, 30] {
+                let values = gen_values(n, density_pct);
+                let mut enc = Vec::new();
+                encode_into(&values, &mut enc);
+
+                let runs_ns = time_strategy(&enc, n, iters, false) * 1e9;
+                let walk_ns = time_strategy(&enc, n, iters, true) * 1e9;
+                let winner = if walk_ns < runs_ns { "walk" } else { "runs" };
+                eprintln!(
+                    "{density_pct:>7}  {runs_ns:>9.1}  {walk_ns:>9.1}  {:>9.3}  {winner}",
+                    walk_ns / runs_ns
+                );
+            }
+        }
     }
 }

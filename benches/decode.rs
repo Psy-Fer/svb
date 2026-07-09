@@ -899,6 +899,84 @@ fn bench_exzd_fused_spiky(c: &mut Criterion) {
     g.finish();
 }
 
+// ── ex-zd: real ONT signal (not synthetic ramp/spiky) ───────────────────────────
+//
+// `vbz_i16_samples`/`spiky_i16_samples` are synthetic stand-ins chosen to
+// exercise specific code paths (mostly-literal, ~20% exceptions). This
+// benchmarks the same decode paths against real nanopore signal instead —
+// the same POD5-sourced i16 arrays already used for VBZ parity/benchmark
+// tests (`tests/vectors/*.i16`) — as a check against over-fitting to the
+// synthetic profiles. Measured exception density on these real reads is
+// ~0.9-2.3%, well below both the adaptive merge dispatch's ~14.3% threshold
+// and the ~20% "spiky" stress profile: real signal looks far more like
+// `vbz_i16_samples` than `spiky_i16_samples`.
+
+fn load_i16(bytes: &[u8]) -> Vec<i16> {
+    bytes
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect()
+}
+
+fn real_ont_reads() -> Vec<(&'static str, Vec<i16>)> {
+    vec![
+        (
+            "parity_00_02885",
+            load_i16(include_bytes!("../tests/vectors/parity_00_02885.i16")),
+        ),
+        (
+            "parity_01_02915",
+            load_i16(include_bytes!("../tests/vectors/parity_01_02915.i16")),
+        ),
+        (
+            "parity_02_02949",
+            load_i16(include_bytes!("../tests/vectors/parity_02_02949.i16")),
+        ),
+        (
+            "bench_00_101988",
+            load_i16(include_bytes!("../tests/vectors/bench_00_101988.i16")),
+        ),
+    ]
+}
+
+fn bench_exzd_real_reads(c: &mut Criterion) {
+    let mut g = c.benchmark_group("exzd_real_reads");
+    for (name, samples) in real_ont_reads() {
+        let n = samples.len();
+        g.throughput(Throughput::Elements(n as u64));
+        let enc = encode_exzd(&samples);
+
+        g.bench_with_input(BenchmarkId::new("decode_3pass", name), &enc, |b, enc| {
+            let mut out = Vec::with_capacity(n);
+            b.iter(|| {
+                out.clear();
+                decode_exzd_into(enc, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+
+        g.bench_with_input(BenchmarkId::new("decode_fused", name), &enc, |b, enc| {
+            let mut out = Vec::with_capacity(n);
+            b.iter(|| {
+                out.clear();
+                decode_exzd_fused_into(enc, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+
+        g.bench_with_input(BenchmarkId::new("decoder_reused", name), &enc, |b, enc| {
+            let mut out = Vec::with_capacity(n);
+            let mut decoder = ExzdDecoder::new();
+            b.iter(|| {
+                out.clear();
+                decoder.decode_into(enc, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+}
+
 // ── ex-zd: many small reads (realistic BLOW5/nanopore access pattern) ──────────
 //
 // A BLOW5 file holds many thousands of individually-encoded reads, each
@@ -1001,6 +1079,7 @@ criterion_group!(
     bench_exzd_decode,
     bench_exzd_fused,
     bench_exzd_fused_spiky,
+    bench_exzd_real_reads,
     bench_exzd_many_small_reads,
 );
 criterion_main!(benches);

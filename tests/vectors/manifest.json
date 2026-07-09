@@ -98,5 +98,41 @@
     "purpose": "parity",
     "source": "slow5lib C reference (slow5_ptr_compress_solo, SLOW5_COMPRESS_EX_ZD)",
     "note": "Sample array from test/unit_test_press.c: press_ex_huge_valid."
+  },
+  "exzd_pod5_00_02885": {
+    "n": 2885,
+    "codec": "ex-zd",
+    "raw_len": 5770,
+    "enc_len": 2981,
+    "purpose": "parity",
+    "source": "slow5lib C reference (slow5_ptr_compress_solo, SLOW5_COMPRESS_EX_ZD)",
+    "note": "Real ONT signal (same array as parity_00_02885.i16, originally sourced from a POD5 read for VBZ parity testing) run through ex-zd, not a synthetic array. Measured exception density ~1.5%."
+  },
+  "exzd_pod5_01_02915": {
+    "n": 2915,
+    "codec": "ex-zd",
+    "raw_len": 5830,
+    "enc_len": 3053,
+    "purpose": "parity",
+    "source": "slow5lib C reference (slow5_ptr_compress_solo, SLOW5_COMPRESS_EX_ZD)",
+    "note": "Real ONT signal (same array as parity_01_02915.i16). Measured exception density ~2.3%."
+  },
+  "exzd_pod5_02_02949": {
+    "n": 2949,
+    "codec": "ex-zd",
+    "raw_len": 5898,
+    "enc_len": 3040,
+    "purpose": "parity",
+    "source": "slow5lib C reference (slow5_ptr_compress_solo, SLOW5_COMPRESS_EX_ZD)",
+    "note": "Real ONT signal (same array as parity_02_02949.i16). Measured exception density ~1.4%."
+  },
+  "exzd_pod5_bench_101988": {
+    "n": 101988,
+    "codec": "ex-zd",
+    "raw_len": 203976,
+    "enc_len": 103643,
+    "purpose": "parity",
+    "source": "slow5lib C reference (slow5_ptr_compress_solo, SLOW5_COMPRESS_EX_ZD)",
+    "note": "Real ONT signal, largest available read (same array as bench_00_101988.i16). Measured exception density ~0.9%."
   }
 }
