@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- ex-zd pipeline: `encode_exzd` / `encode_exzd_into` i16 signal → qts (quantize-trailing-shift) → zigzag-delta (u16 domain) → PFOR-style patched/exception encoding; wire-compatible with hasindu2008/slow5lib `SLOW5_COMPRESS_EX_ZD` (BLOW5 files)
+- `decode_exzd` / `decode_exzd_into` 3-pass ex-zd decode
+- `decode_exzd_fused` / `decode_exzd_fused_into` single SIMD pass fusing inverse-zigzag + delta prefix sum + qts left-shift (`exzd_fused.rs`), AVX2/SSE2/NEON
+- `ExzdDecoder` reusable-scratch decoder — avoids a fresh heap allocation per call when decoding many small BLOW5 reads; 1.24-1.79× faster than the per-call-allocating API for that access pattern
+- `quantize` module: `find_qts` / `apply_shift` / `unshift_inplace`, the qts pre-pass specific to ex-zd
+- `patched` module: PFOR-style patched/exception codec (`encode_into` / `decode_into`) over `&[u16]`, generically useful beyond ex-zd; adaptive merge strategy picks between a run-based (`extend_from_slice`) and a raw-pointer walk merge based on exception density, threshold found empirically at ~14.3% (`patched::merge_density_sweep`, an `#[ignore]`d diagnostic test)
+- SIMD-accelerated literal-byte widening in `patched::widen_into` (SSE2/NEON)
+- Real C-encoded and real-ONT-signal wire-compatibility fixtures in `tests/parity.rs` / `tests/vectors/` (`exzd_*`, `exzd_pod5_*`), verified byte-exact against slow5lib's `slow5_ptr_compress_solo`/`slow5_ptr_depress_solo`
+- `docs/src/exzd.md` ex-zd pipeline documentation page; ex-zd performance section in `docs/src/performance.md` (including a from-scratch comparison against the slow5lib C reference on both synthetic and real nanopore data)
+- `bench_exzd_*` criterion benchmarks in `benches/decode.rs`, including a real-ONT-read benchmark group (`bench_exzd_real_reads`) alongside the synthetic ones
+
 ## [0.2.0] - 2026-05-26
 
 ### Added
