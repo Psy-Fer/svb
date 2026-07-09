@@ -1,6 +1,6 @@
 [package]
 name = "svb"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.87"
 description = "Pure-Rust StreamVByte: integer compression for u16/u32/u64 with SIMD decode (AVX2, SSSE3, NEON)"

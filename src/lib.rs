@@ -1502,6 +1502,20 @@ fn decode_exzd_header_and_zd_with_scratch(
     }
     let zd0 = u16::from_le_bytes([data[EXZD_HEADER_LEN], data[EXZD_HEADER_LEN + 1]]);
 
+    // `nin` is an untrusted header field; a corrupted/crafted frame can claim
+    // an absurd sample count. The patched-encoding payload can never be
+    // shorter than `nin - 1` bytes (every element costs at least one byte,
+    // whether stored as a literal or contributing to the exception arrays),
+    // so this rejects bogus `nin` before it reaches `zd.reserve`, which would
+    // otherwise panic with "capacity overflow" for a large enough value.
+    let remaining = data.len() - (EXZD_HEADER_LEN + 2);
+    if nin - 1 > remaining {
+        return Err(DecodeError::ControlStreamTooShort {
+            need: nin - 1,
+            have: remaining,
+        });
+    }
+
     zd.reserve(nin);
     zd.push(zd0);
     patched::decode_into_with_scratch(

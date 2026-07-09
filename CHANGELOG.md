@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-09
+
 ### Added
 
 - ex-zd pipeline: `encode_exzd` / `encode_exzd_into` i16 signal → qts (quantize-trailing-shift) → zigzag-delta (u16 domain) → PFOR-style patched/exception encoding; wire-compatible with hasindu2008/slow5lib `SLOW5_COMPRESS_EX_ZD` (BLOW5 files)
@@ -19,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Real C-encoded and real-ONT-signal wire-compatibility fixtures in `tests/parity.rs` / `tests/vectors/` (`exzd_*`, `exzd_pod5_*`), verified byte-exact against slow5lib's `slow5_ptr_compress_solo`/`slow5_ptr_depress_solo`
 - `docs/src/exzd.md` ex-zd pipeline documentation page; ex-zd performance section in `docs/src/performance.md` (including a from-scratch comparison against the slow5lib C reference on both synthetic and real nanopore data)
 - `bench_exzd_*` criterion benchmarks in `benches/decode.rs`, including a real-ONT-read benchmark group (`bench_exzd_real_reads`) alongside the synthetic ones
+- Fuzz targets `decode_exzd`, `exzd_roundtrip`, `decode_svbzd`, `svbzd_roundtrip` (`fuzz/fuzz_targets/`), closing the last codec variants without decode/roundtrip fuzz coverage
+
+### Fixed
+
+- **Malformed-input panics across every SIMD decode backend.** Adding the fuzz targets above surfaced a systemic bug: the "padded tail" loop present in every AVX2/SSE2/NEON decode path (`u16`, `u32` Classic/Variant0124, `u64` Coder1234/Coder1248, plus the fused decoders in `vbz_fused.rs` and `svbzd_fused.rs`) advanced its read position using a ctrl-byte-derived width without validating it against the real remaining bytes. Truncated or corrupted input (a mismatched `n`, or a corrupted length header reaching `decode_svbzd`/`decode_exzd`) could push the read position out of bounds, panicking instead of returning a `DecodeError`. All ~21 call sites now validate the remaining-byte bound before reading and return `DecodeError::DataTruncated` instead of panicking. Confirmed fixed by re-running the full fuzz corpus (including the pre-existing `u32_classic_decode`, `u32_variant0124_decode`, `u64_coder1234_decode`, `u64_coder1248_decode`, `decode_vbz`, `svb16_decode` targets, which had never been run to completion before and crashed on the same pattern) with zero crashes.
+- **`decode_exzd` capacity-overflow panic on a crafted frame header.** The frame's `nin` (sample count) field was passed directly to `Vec::reserve` with no sanity check; a corrupted or malicious header with an implausibly large `nin` panicked with "capacity overflow" instead of returning `DecodeError::ControlStreamTooShort`. Fixed by bounding `nin` against the actual remaining buffer length before reserving.
 
 ## [0.2.0] - 2026-05-26
 

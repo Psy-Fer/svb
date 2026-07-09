@@ -313,19 +313,31 @@ pub(super) unsafe fn decode_into_classic(
         out.set_len(base + decoded);
     }
 
-    // Padded tail: guard fired (rem < 16) but complete groups of 4 may remain.
-    // Copy the remaining data bytes into a zero-padded 32-byte buffer so every
-    // 16-byte PSHUFB load is in-bounds (padded_pos ≤ rem−4 ≤ 11; [11,27) ⊆ [0,32)).
+    // Padded tail: for well-formed input, guard fires (rem < 16) with complete
+    // groups of 4 remaining, fitting a zero-padded 32-byte buffer. `rem` and
+    // each iteration's `consumed` are still re-validated below, since a
+    // truncated/corrupted `data` (mismatched against the declared `n`) can't
+    // be trusted to satisfy that bound.
     if decoded + 4 <= n {
         let mut padded = [0u8; 32];
         let rem = data_bytes.len() - data_pos;
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated {
+                index: base + decoded,
+            });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
         while decoded + 4 <= n {
             let cb = ctrl[ctrl_pos];
-            // SAFETY: padded is 32 bytes; padded_pos ≤ rem − DATA_LEN_min (≥4) ≤ 11;
-            // load [padded_pos, padded_pos+16) ⊆ [0, 27) ⊆ [0, 32).
+            let consumed = DATA_LEN[cb as usize] as usize;
+            if padded_pos + consumed > rem || padded_pos + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated {
+                    index: base + decoded,
+                });
+            }
+            // SAFETY: padded_pos + 16 <= padded.len() checked above.
             let result = unsafe {
                 let mask = _mm_loadu_si128(TABLE[cb as usize].as_ptr() as *const __m128i);
                 let chunk = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
@@ -336,7 +348,6 @@ pub(super) unsafe fn decode_into_classic(
                 let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
                 _mm_storeu_si128(out_ptr, result);
             }
-            let consumed = DATA_LEN[cb as usize] as usize;
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;
@@ -427,18 +438,31 @@ pub(super) unsafe fn decode_into_0124(
         out.set_len(base + decoded);
     }
 
-    // Padded tail: guard fired (rem < 16) but complete groups of 4 may remain.
-    // For 0124, DATA_LEN can be 0, so padded_pos ≤ rem ≤ 15; [15,31) ⊆ [0,32).
+    // Padded tail: for well-formed input, guard fires (rem < 16) with complete
+    // groups of 4 remaining (DATA_LEN can be 0 for 0124), fitting a 32-byte
+    // zero-padded buffer. `rem` and each iteration's `consumed` are still
+    // re-validated below, since a truncated/corrupted `data` (mismatched
+    // against the declared `n`) can't be trusted to satisfy that bound.
     if decoded + 4 <= n {
         let mut padded = [0u8; 32];
         let rem = data_bytes.len() - data_pos;
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated {
+                index: base + decoded,
+            });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
         while decoded + 4 <= n {
             let cb = ctrl[ctrl_pos];
-            // SAFETY: padded is 32 bytes; padded_pos ≤ rem ≤ 15;
-            // load [padded_pos, padded_pos+16) ⊆ [0, 31) ⊆ [0, 32).
+            let consumed = DATA_LEN_0124[cb as usize] as usize;
+            if padded_pos + consumed > rem || padded_pos + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated {
+                    index: base + decoded,
+                });
+            }
+            // SAFETY: padded_pos + 16 <= padded.len() checked above.
             let result = unsafe {
                 let mask = _mm_loadu_si128(TABLE_0124[cb as usize].as_ptr() as *const __m128i);
                 let chunk = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
@@ -449,7 +473,6 @@ pub(super) unsafe fn decode_into_0124(
                 let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
                 _mm_storeu_si128(out_ptr, result);
             }
-            let consumed = DATA_LEN_0124[cb as usize] as usize;
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;

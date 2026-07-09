@@ -197,20 +197,29 @@ pub(crate) unsafe fn decode_ssse3(
         decoded += 8;
     }
 
-    // ── padded tail: guard fired but full groups of 8 may remain ─────────────
+    // ── padded tail: for well-formed input, guard fired with full groups of 8
+    // still remaining, fitting a zero-padded 32-byte buffer. `rem` and each
+    // iteration's `bytes_consumed` are still re-validated below, since a
+    // truncated/corrupted `data` (mismatched against the declared `n`) can't
+    // be trusted to satisfy that bound. ─────────────────────────────────────
     if decoded + 8 <= n {
         let mut padded = [0u8; 32];
         let rem = data_bytes.len() - data_pos;
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated { index: decoded });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
         while decoded + 8 <= n {
             let cb = ctrl[ctrl_pos];
             let bytes_consumed = 8 + cb.count_ones() as usize;
+            if padded_pos + bytes_consumed > rem || padded_pos + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated { index: decoded });
+            }
 
             unsafe {
-                // SAFETY: padded is 32 bytes; padded_pos <= rem - 8 <= 7;
-                // load range [padded_pos, padded_pos+16) ⊆ [0,23) ⊆ [0,32).
+                // SAFETY: padded_pos + 16 <= padded.len() checked above.
                 let shuf = _mm_loadu_si128(TABLE[cb as usize].as_ptr() as *const __m128i);
                 let chunk = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
                 let u16s = _mm_shuffle_epi8(chunk, shuf);
@@ -336,18 +345,27 @@ pub(crate) unsafe fn decode_neon(
         decoded += 8;
     }
 
-    // Padded tail.
+    // Padded tail: `rem` and each iteration's `bytes_consumed` are validated
+    // below, since a truncated/corrupted `data` (mismatched against the
+    // declared `n`) can't be trusted to fit the fixed-size padded buffer.
     if decoded + 8 <= n {
         let mut padded = [0u8; 32];
         let rem = data_bytes.len() - data_pos;
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated { index: decoded });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
         while decoded + 8 <= n {
             let cb = ctrl[ctrl_pos];
             let bytes_consumed = 8 + cb.count_ones() as usize;
+            if padded_pos + bytes_consumed > rem || padded_pos + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated { index: decoded });
+            }
 
             unsafe {
+                // SAFETY: padded_pos + 16 <= padded.len() checked above.
                 let shuf = vld1q_u8(TABLE[cb as usize].as_ptr());
                 let chunk = vld1q_u8(padded.as_ptr().add(padded_pos));
                 let u8s = vqtbl1q_u8(chunk, shuf);
@@ -650,16 +668,28 @@ unsafe fn decode_ssse3_2chain(
             cp += 1;
         }
 
-        // Padded tail for chain A (guard fired: <16 bytes remain).
+        // Padded tail for chain A: for well-formed input, guard fired with
+        // <16 bytes remaining, fitting a zero-padded 32-byte buffer. `rem`
+        // and each iteration's consumed width are still re-validated below,
+        // since `mid_data_offset` (from the untrusted VBZ2 header) mismatched
+        // against the true ctrl/data content can't be trusted to satisfy
+        // that bound.
         if cp < ctrl_half {
             let mut padded = [0u8; 32];
             let rem = mid_data_offset - dpa;
+            if rem > padded.len() {
+                return Err(DecodeError::DataTruncated { index: cp * 8 });
+            }
             padded[..rem].copy_from_slice(&data_bytes[dpa..mid_data_offset]);
             let mut ppos = 0usize;
             while cp < ctrl_half {
                 let cb = ctrl[cp];
+                let consumed = 8 + cb.count_ones() as usize;
+                if ppos + consumed > rem || ppos + 16 > padded.len() {
+                    return Err(DecodeError::DataTruncated { index: cp * 8 });
+                }
                 unsafe {
-                    // SAFETY: padded is 32 bytes; ppos ≤ rem ≤ 15; load [ppos,ppos+16) ⊆ [0,31) ⊆ [0,32).
+                    // SAFETY: ppos + 16 <= padded.len() checked above.
                     let shuf = _mm_loadu_si128(TABLE[cb as usize].as_ptr() as *const __m128i);
                     let chunk = _mm_loadu_si128(padded.as_ptr().add(ppos) as *const __m128i);
                     let u16s = _mm_shuffle_epi8(chunk, shuf);
@@ -674,7 +704,7 @@ unsafe fn decode_ssse3_2chain(
                     _mm_storeu_si128(out_ptr_a.add(cp * 8) as *mut __m128i, result);
                     acc_a = _mm_extract_epi16(result, 7) as i16;
                 }
-                ppos += 8 + cb.count_ones() as usize;
+                ppos += consumed;
                 cp += 1;
             }
         }
@@ -809,16 +839,28 @@ unsafe fn decode_neon_2chain(
             cp += 1;
         }
 
-        // Padded tail for chain A (guard fired: <16 bytes remain).
+        // Padded tail for chain A: for well-formed input, guard fired with
+        // <16 bytes remaining, fitting a zero-padded 32-byte buffer. `rem`
+        // and each iteration's consumed width are still re-validated below,
+        // since `mid_data_offset` (from the untrusted VBZ2 header) mismatched
+        // against the true ctrl/data content can't be trusted to satisfy
+        // that bound.
         if cp < ctrl_half {
             let mut padded = [0u8; 32];
             let rem = mid_data_offset - dpa;
+            if rem > padded.len() {
+                return Err(DecodeError::DataTruncated { index: cp * 8 });
+            }
             padded[..rem].copy_from_slice(&data_bytes[dpa..mid_data_offset]);
             let mut ppos = 0usize;
             while cp < ctrl_half {
                 let cb = ctrl[cp];
+                let consumed = 8 + cb.count_ones() as usize;
+                if ppos + consumed > rem || ppos + 16 > padded.len() {
+                    return Err(DecodeError::DataTruncated { index: cp * 8 });
+                }
                 unsafe {
-                    // SAFETY: padded is 32 bytes; ppos ≤ rem ≤ 15; load [ppos, ppos+16) ⊆ [0,31) ⊆ [0,32).
+                    // SAFETY: ppos + 16 <= padded.len() checked above.
                     let shuf = vld1q_u8(TABLE[cb as usize].as_ptr());
                     let chunk = vld1q_u8(padded.as_ptr().add(ppos));
                     let u8s = vqtbl1q_u8(chunk, shuf);
@@ -834,7 +876,7 @@ unsafe fn decode_neon_2chain(
                     vst1q_s16(out_ptr_a.add(cp * 8), result);
                     acc_a = vgetq_lane_s16(result, 7);
                 }
-                ppos += 8 + cb.count_ones() as usize;
+                ppos += consumed;
                 cp += 1;
             }
         }

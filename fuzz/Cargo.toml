@@ -76,3 +76,31 @@ path = "fuzz_targets/u64_roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "decode_svbzd"
+path = "fuzz_targets/decode_svbzd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "svbzd_roundtrip"
+path = "fuzz_targets/svbzd_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_exzd"
+path = "fuzz_targets/decode_exzd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "exzd_roundtrip"
+path = "fuzz_targets/exzd_roundtrip.rs"
+test = false
+doc = false
+bench = false

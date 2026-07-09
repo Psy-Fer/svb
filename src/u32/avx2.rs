@@ -362,19 +362,34 @@ pub(super) unsafe fn decode_into_classic(
     }
 
     // SSE2-style padded tail: guard fired but complete groups of 4 may remain.
-    // Copy the remaining data bytes (< c0_bytes + 16 ≤ 32) into a zero-padded
-    // 64-byte buffer so every 16-byte load is in-bounds.
+    // Copy the remaining data bytes into a zero-padded 64-byte buffer so every
+    // 16-byte load is in-bounds. For well-formed input this is < c0_bytes + 16
+    // ≤ 32 bytes, but `rem`/`consumed` are re-validated below on every
+    // iteration regardless, since a truncated/corrupted `data` (mismatched
+    // against the declared `n`) can't be trusted to satisfy that bound.
     if decoded + 4 <= n {
         let mut padded = [0u8; 64];
         let rem = data_bytes.len() - data_pos;
-        // rem < c0_bytes + 16 ≤ 32, so rem fits in padded with room to spare.
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated {
+                index: base + decoded,
+            });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
         while decoded + 4 <= n {
             let cb = ctrl[ctrl_pos];
-            // SAFETY: padded is 64 bytes; padded_pos ≤ rem − DATA_LEN_min (≥4 for Classic)
-            // ≤ 31 − 4 = 27; load [padded_pos, padded_pos+16) ⊆ [0, 43) ⊆ [0, 64).
+            let consumed = DATA_LEN[cb as usize] as usize;
+            // Reject before loading if this element's claimed width doesn't
+            // actually fit in the real remaining bytes, or would push the
+            // load past the padded buffer itself.
+            if padded_pos + consumed > rem || padded_pos + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated {
+                    index: base + decoded,
+                });
+            }
+            // SAFETY: padded_pos + 16 <= padded.len() checked above.
             let result = unsafe {
                 let mask = _mm_loadu_si128(TABLE[cb as usize].as_ptr() as *const __m128i);
                 let chunk = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
@@ -385,7 +400,6 @@ pub(super) unsafe fn decode_into_classic(
                 let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
                 _mm_storeu_si128(out_ptr, result);
             }
-            let consumed = DATA_LEN[cb as usize] as usize;
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;
@@ -487,11 +501,12 @@ pub(super) unsafe fn decode_into_0124(
         out.set_len(base + decoded);
     }
 
-    // SSE2-style padded tail: guard fires when rem < c0_bytes + 16 (c0_bytes ≤ 16 →
-    // rem ≤ 31). Copy remaining bytes into a 64-byte zero-padded stack buffer.
-    //
-    // Load bound: padded_pos accumulates DATA_LEN_0124[cb] per iteration; since all
-    // consumed groups fit within rem, padded_pos ≤ rem ≤ 31; load end ≤ 47 ≤ 64. ✓
+    // SSE2-style padded tail: for well-formed input, guard fires when
+    // rem < c0_bytes + 16 (c0_bytes ≤ 16 → rem ≤ 31), leaving a small
+    // remainder that fits a 64-byte zero-padded stack buffer. `rem` and each
+    // iteration's `consumed` are still re-validated below, since a
+    // truncated/corrupted `data` (mismatched against the declared `n`) can't
+    // be trusted to satisfy that bound.
     //
     // No-infinite-loop note: DATA_LEN_0124[cb] = 0 when all four tags in cb are 0
     // (a ctrl byte of 0x00 means all four values are zero and consume no data bytes).
@@ -500,13 +515,23 @@ pub(super) unsafe fn decode_into_0124(
     if decoded + 4 <= n {
         let mut padded = [0u8; 64];
         let rem = data_bytes.len() - data_pos;
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated {
+                index: base + decoded,
+            });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
         while decoded + 4 <= n {
             let cb = ctrl[ctrl_pos];
-            // SAFETY: padded is 64 bytes; padded_pos ≤ rem ≤ 31;
-            // load [padded_pos, padded_pos+16) ⊆ [0, 47) ⊆ [0, 64).
+            let consumed = DATA_LEN_0124[cb as usize] as usize;
+            if padded_pos + consumed > rem || padded_pos + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated {
+                    index: base + decoded,
+                });
+            }
+            // SAFETY: padded_pos + 16 <= padded.len() checked above.
             let result = unsafe {
                 let mask = _mm_loadu_si128(TABLE_0124[cb as usize].as_ptr() as *const __m128i);
                 let chunk = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
@@ -517,7 +542,6 @@ pub(super) unsafe fn decode_into_0124(
                 let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
                 _mm_storeu_si128(out_ptr, result);
             }
-            let consumed = DATA_LEN_0124[cb as usize] as usize;
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;

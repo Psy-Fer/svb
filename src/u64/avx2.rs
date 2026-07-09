@@ -378,21 +378,34 @@ pub(super) unsafe fn decode_into_1234(
         out.set_len(base + decoded);
     }
 
-    // SSE2-style padded tail: guard fired (rem < c0_bytes + 16 ≤ 32) but groups of 4 remain.
-    // Copy remaining data into a zero-padded 64-byte buffer.
-    // padded_pos ≤ rem − 4 ≤ 27; load [27, 43) ⊆ [0, 64). ✓
+    // SSE2-style padded tail: for well-formed input, guard fires
+    // (rem < c0_bytes + 16 ≤ 32) with groups of 4 remaining, fitting a
+    // zero-padded 64-byte buffer. `rem` and each iteration's `consumed` are
+    // still re-validated below, since a truncated/corrupted `data`
+    // (mismatched against the declared `n`) can't be trusted to satisfy that
+    // bound.
     if decoded + 4 <= n {
         let zero = _mm_setzero_si128();
         let mut padded = [0u8; 64];
         let rem = data_bytes.len() - data_pos;
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated {
+                index: base + decoded,
+            });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
         while decoded + 4 <= n {
             let cb = ctrl[ctrl_pos];
+            let consumed = DATA_LEN_1234[cb as usize] as usize;
+            if padded_pos + consumed > rem || padded_pos + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated {
+                    index: base + decoded,
+                });
+            }
             let u32s = unsafe {
-                // SAFETY: padded is 64 bytes; padded_pos ≤ rem − DATA_LEN_min (≥4) ≤ 27;
-                // load [padded_pos, padded_pos+16) ⊆ [0, 43) ⊆ [0, 64).
+                // SAFETY: padded_pos + 16 <= padded.len() checked above.
                 let mask = _mm_loadu_si128(TABLE_1234[cb as usize].as_ptr() as *const __m128i);
                 let chunk = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
                 _mm_shuffle_epi8(chunk, mask)
@@ -405,7 +418,6 @@ pub(super) unsafe fn decode_into_1234(
                 _mm_storeu_si128(out_ptr, lo);
                 _mm_storeu_si128(out_ptr.add(1), hi);
             }
-            let consumed = DATA_LEN_1234[cb as usize] as usize;
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;
@@ -543,6 +555,11 @@ pub(super) unsafe fn decode_into_1248(
     if decoded + 4 <= n {
         let mut padded = [0u8; 96];
         let rem = data_bytes.len() - data_pos;
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated {
+                index: base + decoded,
+            });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
@@ -551,10 +568,18 @@ pub(super) unsafe fn decode_into_1248(
             let lo_key = (cb & 0x0F) as usize;
             let hi_key = (cb >> 4) as usize;
             let lo_bytes = DATA_LEN_1248_PAIR[lo_key] as usize;
+            let hi_bytes = DATA_LEN_1248_PAIR[hi_key] as usize;
+            let consumed = lo_bytes + hi_bytes;
+            // The hi load starts at padded_pos + lo_bytes and also reads 16
+            // bytes, so it - not the lo load - is the binding bound check.
+            if padded_pos + consumed > rem || padded_pos + lo_bytes + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated {
+                    index: base + decoded,
+                });
+            }
             let (lo_pair, hi_pair) = unsafe {
-                // SAFETY: padded is 96 bytes. By derivation above:
-                // padded_pos + lo_bytes ≤ 61; lo load [padded_pos, padded_pos+16) ⊆ [0,78) ⊆ [0,96);
-                // hi load [padded_pos+lo_bytes, padded_pos+lo_bytes+16) ⊆ [0,77) ⊆ [0,96).
+                // SAFETY: padded_pos + lo_bytes + 16 <= padded.len() checked above;
+                // the lo load (ending at padded_pos + 16) is within that same bound.
                 let mask_lo = _mm_loadu_si128(TABLE_1248_PAIR[lo_key].as_ptr() as *const __m128i);
                 let chunk_lo = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
                 let lo = _mm_shuffle_epi8(chunk_lo, mask_lo);
@@ -570,7 +595,6 @@ pub(super) unsafe fn decode_into_1248(
                 _mm_storeu_si128(out_ptr, lo_pair);
                 _mm_storeu_si128(out_ptr.add(1), hi_pair);
             }
-            let consumed = lo_bytes + DATA_LEN_1248_PAIR[hi_key] as usize;
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;

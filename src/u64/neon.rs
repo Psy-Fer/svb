@@ -316,19 +316,32 @@ pub(super) unsafe fn decode_into_1234(
         out.set_len(base + decoded);
     }
 
-    // Padded tail: guard fired (rem < 16) but complete groups of 4 may remain.
-    // DATA_LEN_1234 ≥ 4; padded_pos ≤ rem−4 ≤ 11; load [11,27) ⊆ [0,32). ✓
+    // Padded tail: for well-formed input, guard fires (rem < 16) with complete
+    // groups of 4 remaining, fitting a zero-padded 32-byte buffer. `rem` and
+    // each iteration's `consumed` are still re-validated below, since a
+    // truncated/corrupted `data` (mismatched against the declared `n`) can't
+    // be trusted to satisfy that bound.
     if decoded + 4 <= n {
         let mut padded = [0u8; 32];
         let rem = data_bytes.len() - data_pos;
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated {
+                index: base + decoded,
+            });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
         while decoded + 4 <= n {
             let cb = ctrl[ctrl_pos];
+            let consumed = DATA_LEN_1234[cb as usize] as usize;
+            if padded_pos + consumed > rem || padded_pos + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated {
+                    index: base + decoded,
+                });
+            }
             let u32s = unsafe {
-                // SAFETY: padded is 32 bytes; padded_pos ≤ rem−4 ≤ 11;
-                // load [padded_pos, padded_pos+16) ⊆ [0, 27) ⊆ [0, 32).
+                // SAFETY: padded_pos + 16 <= padded.len() checked above.
                 let mask = vld1q_u8(TABLE_1234[cb as usize].as_ptr());
                 let chunk = vld1q_u8(padded.as_ptr().add(padded_pos));
                 vreinterpretq_u32_u8(vqtbl1q_u8(chunk, mask))
@@ -341,7 +354,6 @@ pub(super) unsafe fn decode_into_1234(
                 vst1q_u64(out_ptr, lo);
                 vst1q_u64(out_ptr.add(2), hi);
             }
-            let consumed = DATA_LEN_1234[cb as usize] as usize;
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;
@@ -450,6 +462,11 @@ pub(super) unsafe fn decode_into_1248(
     if decoded + 4 <= n {
         let mut padded = [0u8; 64];
         let rem = data_bytes.len() - data_pos;
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated {
+                index: base + decoded,
+            });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
@@ -458,10 +475,18 @@ pub(super) unsafe fn decode_into_1248(
             let lo_key = (cb & 0x0F) as usize;
             let hi_key = (cb >> 4) as usize;
             let lo_bytes = DATA_LEN_1248_PAIR[lo_key] as usize;
+            let hi_bytes = DATA_LEN_1248_PAIR[hi_key] as usize;
+            let consumed = lo_bytes + hi_bytes;
+            // The hi load starts at padded_pos + lo_bytes and also reads 16
+            // bytes, so it - not the lo load - is the binding bound check.
+            if padded_pos + consumed > rem || padded_pos + lo_bytes + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated {
+                    index: base + decoded,
+                });
+            }
             let (lo_pair, hi_pair) = unsafe {
-                // SAFETY: padded is 64 bytes; padded_pos+lo_bytes ≤ rem−hi_bytes ≤ 29;
-                // lo load [padded_pos, padded_pos+16) ⊆ [0,46) ⊆ [0,64);
-                // hi load [padded_pos+lo_bytes, padded_pos+lo_bytes+16) ⊆ [0,45) ⊆ [0,64).
+                // SAFETY: padded_pos + lo_bytes + 16 <= padded.len() checked above;
+                // the lo load (ending at padded_pos + 16) is within that same bound.
                 let mask_lo = vld1q_u8(TABLE_1248_PAIR[lo_key].as_ptr());
                 let chunk_lo = vld1q_u8(padded.as_ptr().add(padded_pos));
                 let lo = vqtbl1q_u8(chunk_lo, mask_lo);
@@ -476,7 +501,6 @@ pub(super) unsafe fn decode_into_1248(
                 vst1q_u8(out_ptr, lo_pair);
                 vst1q_u8(out_ptr.add(16), hi_pair);
             }
-            let consumed = lo_bytes + DATA_LEN_1248_PAIR[hi_key] as usize;
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;

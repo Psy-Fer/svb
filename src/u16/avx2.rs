@@ -195,19 +195,33 @@ pub(super) unsafe fn decode_into(
         out.set_len(base + decoded);
     }
 
-    // SSE2-style padded tail: guard fired (rem < c0_bytes+16 ≤ 32) but groups of 8 remain.
-    // c0_bytes ∈ [8,16]; rem ≤ 31; padded_pos ≤ rem−8 ≤ 23; load [23,39) ⊆ [0,64). ✓
+    // SSE2-style padded tail: for well-formed input, guard fires
+    // (rem < c0_bytes+16 ≤ 32) with groups of 8 remaining, fitting a
+    // zero-padded 64-byte buffer. `rem` and each iteration's `consumed` are
+    // still re-validated below, since a truncated/corrupted `data`
+    // (mismatched against the declared `n`) can't be trusted to satisfy that
+    // bound.
     if decoded + 8 <= n {
         let mut padded = [0u8; 64];
         let rem = data_bytes.len() - data_pos;
+        if rem > padded.len() {
+            return Err(DecodeError::DataTruncated {
+                index: base + decoded,
+            });
+        }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
 
         while decoded + 8 <= n {
             let cb = ctrl[ctrl_pos];
+            let consumed = 8 + cb.count_ones() as usize;
+            if padded_pos + consumed > rem || padded_pos + 16 > padded.len() {
+                return Err(DecodeError::DataTruncated {
+                    index: base + decoded,
+                });
+            }
             let result = unsafe {
-                // SAFETY: padded is 64 bytes; padded_pos ≤ rem−8 ≤ 23;
-                // load [padded_pos, padded_pos+16) ⊆ [0, 39) ⊆ [0, 64).
+                // SAFETY: padded_pos + 16 <= padded.len() checked above.
                 let mask = _mm_loadu_si128(TABLE[cb as usize].as_ptr() as *const __m128i);
                 let chunk = _mm_loadu_si128(padded.as_ptr().add(padded_pos) as *const __m128i);
                 _mm_shuffle_epi8(chunk, mask)
@@ -217,7 +231,6 @@ pub(super) unsafe fn decode_into(
                 let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
                 _mm_storeu_si128(out_ptr, result);
             }
-            let consumed = 8 + cb.count_ones() as usize;
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;
