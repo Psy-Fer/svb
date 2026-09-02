@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-02
+
+### Changed
+
+- Removed the `thiserror` dependency; `DecodeError`'s `Display` and `Error` impls are now hand-written against `core::error::Error`. Error messages and public API are unchanged. The crate now has zero runtime dependencies, and `std` no longer forwards a feature to a third-party crate (`std = ["alloc"]`).
+
 ## [0.3.0] - 2026-07-09
 
 ### Added

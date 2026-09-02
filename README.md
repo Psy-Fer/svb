@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![MSRV: 1.87](https://img.shields.io/badge/rustc-1.87+-blue.svg)](https://blog.rust-lang.org/2025/05/15/Rust-1.87.0/)
 
-Pure-Rust [StreamVByte](https://lemire.me/blog/2017/09/27/stream-vbyte-breaking-new-speed-records-for-integer-compression/) covering all major codec variants for `u16`, `u32`, and `u64` integers. Delta, zigzag, and quantization are composable layers on top, used to build ready-made signal-compression pipelines (VBZ, SVB-ZD, ex-zd) wire-compatible with the formats used by Oxford Nanopore's POD5 and hasindu2008's slow5lib/BLOW5. SIMD back-ends are available for x86-64 (SSSE3, AVX2) and AArch64 (NEON).
+Pure-Rust [StreamVByte](https://lemire.me/blog/2017/09/27/stream-vbyte-breaking-new-speed-records-for-integer-compression/) covering all major codec variants for `u16`, `u32`, and `u64` integers. Delta, zigzag, and quantization are composable layers on top, used to build ready-made signal-compression pipelines (VBZ, SVB-ZD, ex-zd) wire-compatible with the formats used by Oxford Nanopore's POD5 and hasindu2008's slow5lib/BLOW5. SIMD back-ends are available for x86-64 (SSSE3, AVX2) and AArch64 (NEON). No runtime dependencies.
 
 **[Documentation](https://psy-fer.github.io/svb/) | [API reference](https://docs.rs/svb)**
 
@@ -56,6 +56,8 @@ assert_eq!(decoded, samples);
 [dependencies]
 svb = { version = "0.3", features = ["simd-auto"] }
 ```
+
+`svb` has zero runtime dependencies — nothing but `core`/`alloc` and, with the default `std` feature, `std`. Test and benchmark dependencies are dev-only and are not built by downstream users.
 
 ## Quick start
 
