@@ -1,4 +1,5 @@
-use core::{error::Error, fmt::Display};
+use core::error::Error;
+use core::fmt;
 
 /// Errors that can occur when decoding a StreamVByte-encoded byte slice.
 ///
@@ -36,17 +37,17 @@ pub enum DecodeError {
     UnsupportedVersion { version: u8 },
 }
 
-impl Display for DecodeError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DecodeError::DataTruncated { index } => {
+            Self::DataTruncated { index } => {
                 write!(f, "data truncated: expected more bytes at value {index}")
             }
-            DecodeError::ControlStreamTooShort { need, have } => write!(
+            Self::ControlStreamTooShort { need, have } => write!(
                 f,
                 "control stream shorter than expected: need {need} bytes, have {have}"
             ),
-            DecodeError::UnsupportedVersion { version } => {
+            Self::UnsupportedVersion { version } => {
                 write!(f, "unsupported format version: {version}")
             }
         }
