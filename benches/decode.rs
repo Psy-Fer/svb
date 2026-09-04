@@ -2,13 +2,16 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use streamvbyte64::Coder as _;
 use svb::{
     ExzdDecoder, decode_exzd_fused_into, decode_exzd_into, decode_svbzd, decode_svbzd_fused_into,
-    decode_vbz, decode_vbz_fused_from_into, decode_vbz_fused_into, decode_vbz2_into, delta,
-    encode_exzd, encode_svbzd, encode_vbz, encode_vbz2, encode_vbzk,
+    decode_vbz, decode_vbz_fused_from_into, decode_vbz_fused_into, delta, encode_exzd,
+    encode_svbzd, encode_vbz, encode_vbzk,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
     zigzag,
 };
+// VBZ2 is deprecated but still benchmarked until it is removed.
+#[allow(deprecated)]
+use svb::{decode_vbz2_into, encode_vbz2};
 
 const SIZES: &[usize] = &[128, 1024, 8192];
 
@@ -263,6 +266,7 @@ fn bench_vbz_fused(c: &mut Criterion) {
     group.finish();
 }
 
+#[allow(deprecated)]
 fn bench_vbz2_decode(c: &mut Criterion) {
     let mut group = c.benchmark_group("vbz2_fused");
     for &n in &[128usize, 1024, 8192] {
@@ -618,6 +622,7 @@ fn bench_compare_u64_coder1248_decode(c: &mut Criterion) {
 // mirroring how a real POD5 reader would assign chunks to a fixed thread pool.
 // Throughput is reported as total elements (n × BATCH) per wall-clock second.
 
+#[allow(deprecated)]
 fn bench_vbz2_parallel(c: &mut Criterion) {
     use std::time::{Duration, Instant};
 
