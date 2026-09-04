@@ -543,9 +543,7 @@ mod vbz2_tests {
     #[test]
     fn roundtrip_large() {
         let samples: Vec<i16> = (0..8192)
-            .map(|i| {
-                ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
-            })
+            .map(|i| ((i % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
             .collect();
         let encoded = encode_vbz2(&samples);
         let decoded = decode_vbz2(&encoded, samples.len()).unwrap();
@@ -1129,9 +1127,7 @@ mod vbz_fused_tests {
     #[test]
     fn fused_matches_reference_large() {
         let samples: Vec<i16> = (0..1024)
-            .map(|i| {
-                ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
-            })
+            .map(|i| ((i % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
             .collect();
         let enc = encode_vbz(&samples);
         assert_eq!(
@@ -1628,9 +1624,7 @@ mod svbzd_tests {
     #[test]
     fn fused_matches_3pass() {
         let samples: Vec<i16> = (0..1024)
-            .map(|i| {
-                ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
-            })
+            .map(|i| ((i % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
             .collect();
         let enc = encode_svbzd(&samples);
         assert_eq!(
@@ -1804,9 +1798,7 @@ mod exzd_tests {
     #[test]
     fn fused_matches_3pass_signal() {
         let samples: Vec<i16> = (0..1024)
-            .map(|i| {
-                ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
-            })
+            .map(|i| ((i % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
             .collect();
         let enc = encode_exzd(&samples);
         assert_eq!(decode_exzd_fused(&enc).unwrap(), decode_exzd(&enc).unwrap(),);
@@ -1866,10 +1858,7 @@ mod exzd_tests {
             vec![0],
             vec![i16::MIN, i16::MAX, 0, -1, 1, i16::MIN, i16::MAX, 0],
             (0..1024)
-                .map(|i| {
-                    ((i as i32 % 500 - 250) as i16)
-                        .wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
-                })
+                .map(|i| ((i % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
                 .collect(),
             (0..64)
                 .map(|i| if i % 2 == 0 { 0i16 } else { 20000 })

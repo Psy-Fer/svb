@@ -361,7 +361,7 @@ mod cross_path {
         fn alternating_one_and_two_byte() {
             // Ctrl byte 0b01010101 = 0x55 for every ctrl byte.
             let values: Vec<u16> = (0..64)
-                .map(|i| if i % 2 == 0 { i as u16 } else { 300 + i })
+                .map(|i| if i % 2 == 0 { i } else { 300 + i })
                 .collect();
             check_all(&values);
         }
@@ -478,7 +478,7 @@ mod cross_path {
                 return;
             }
             let values: Vec<u16> = (0..100)
-                .map(|i| if i % 2 == 0 { i as u16 } else { 300 + i })
+                .map(|i| if i % 2 == 0 { i } else { 300 + i })
                 .collect();
             let enc = ssse3_encode(&values).unwrap();
             let got = decode_scalar(&enc, values.len());
@@ -564,7 +564,7 @@ mod cross_path {
                 return;
             }
             let values: Vec<u16> = (0..200)
-                .map(|i| if i % 2 == 0 { i as u16 } else { 300 + i })
+                .map(|i| if i % 2 == 0 { i } else { 300 + i })
                 .collect();
             let enc = avx2_encode(&values).unwrap();
             let got = decode_scalar(&enc, values.len());

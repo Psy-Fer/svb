@@ -79,9 +79,10 @@ jobs:
       - name: fmt
         run: cargo fmt --check
 
-      # simd-auto activates all SIMD code paths so clippy sees everything.
+      # simd-auto activates all SIMD code paths so clippy sees everything;
+      # --all-targets extends the lint to tests and benches.
       - name: clippy
-        run: cargo clippy --features simd-auto -- -D clippy::all
+        run: cargo clippy --features simd-auto --all-targets -- -D clippy::all
 
   # ── MSRV ─────────────────────────────────────────────────────────────────────
 

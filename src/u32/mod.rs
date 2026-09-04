@@ -474,7 +474,7 @@ mod cross_path {
             );
             #[test]
             fn all_zeros() {
-                check(&vec![0u32; 32]);
+                check(&[0u32; 32]);
             }
         }
     }
