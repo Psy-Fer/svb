@@ -1785,7 +1785,7 @@ mod tests {
     ))]
     #[test]
     fn sse2_i32_nonzero_initial() {
-        let deltas: Vec<i32> = (0..40).map(|i| i as i32).collect();
+        let deltas: Vec<i32> = (0..40).collect();
         let (s, v) = decode_both_i32_sse2(1000, &deltas);
         assert_eq!(s, v);
     }
@@ -1809,7 +1809,7 @@ mod tests {
     ))]
     #[test]
     fn sse2_i32_all_tail_lengths() {
-        let pool: Vec<i32> = (0..8).map(|i| (i * 3 - 10) as i32).collect();
+        let pool: Vec<i32> = (0..8).map(|i| i * 3 - 10).collect();
         for n in 0..=8usize {
             let (s, v) = decode_both_i32_sse2(5, &pool[..n]);
             assert_eq!(s, v, "tail n={n}");
@@ -1822,7 +1822,7 @@ mod tests {
     ))]
     #[test]
     fn sse2_i32_multiple_blocks() {
-        let deltas: Vec<i32> = (0..12).map(|i| (i as i32).wrapping_mul(7)).collect();
+        let deltas: Vec<i32> = (0..12).map(|i: i32| i.wrapping_mul(7)).collect();
         let (s, v) = decode_both_i32_sse2(-100, &deltas);
         assert_eq!(s, v);
     }
@@ -2067,7 +2067,7 @@ mod tests {
     ))]
     #[test]
     fn avx2_i32_nonzero_initial() {
-        let deltas: Vec<i32> = (0..40).map(|i| i as i32).collect();
+        let deltas: Vec<i32> = (0..40).collect();
         if let Some((s, v)) = decode_both_i32_avx2(1000, &deltas) {
             assert_eq!(s, v);
         }
@@ -2095,7 +2095,7 @@ mod tests {
     ))]
     #[test]
     fn avx2_i32_all_tail_lengths() {
-        let pool: Vec<i32> = (0..16).map(|i| (i * 3 - 10) as i32).collect();
+        let pool: Vec<i32> = (0..16).map(|i| i * 3 - 10).collect();
         for n in 0..=16usize {
             if let Some((s, v)) = decode_both_i32_avx2(5, &pool[..n]) {
                 assert_eq!(s, v, "tail n={n}");
