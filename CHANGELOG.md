@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `decode_into` on every codec now leaves `out` at its original length on error. Previously it kept any values decoded before the error.
 - The `Vec` methods zero-fill the output before the codec writes into it, which costs about 4-5 ns per call for `Svb16` (15-20% at 128 values, 2-3% at 8192) and 2-12% for the u32 and u64 codecs in most benchmarks. The largest case is `U64Coder1234::decode` at 8192 values, which zero-fills 64 KB and is 28% slower. The slice functions have no such cost. See the "Slice API" section of `docs/src/performance.md`.
-- `delta::decode`, `decode_into` and the other `Vec` decode functions copy the deltas into the output and decode them in place. `zigzag::decode` and `decode_into` zero-fill the output before decoding into it.
+- `delta::decode`, `decode_into` and the other `Vec` decode functions copy the deltas into the output and decode them in place, which makes them about 8-11% slower than 0.3.1 for `i16`. `zigzag::decode` and `decode_into` are now a plain loop that the compiler vectorizes, measured as fast as the 0.3.1 SSE2 path.
 - The SIMD encoders no longer reserve 16 bytes of padding. Their stores never go past `max_encoded_len`, and a canary test checks this for every encode kernel.
 
 ### Fixed

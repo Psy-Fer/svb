@@ -27,7 +27,7 @@ mod private {
 /// Zigzag is most useful after [`crate::delta`] encoding: delta produces
 /// signed differences, and zigzag remaps them to small unsigned values that
 /// StreamVByte can pack tightly.
-pub trait Zigzag: private::Sealed + Sized + Copy + Default {
+pub trait Zigzag: private::Sealed + Sized + Copy {
     type Unsigned: Copy;
     fn encode_one(self) -> Self::Unsigned;
     fn decode_one(encoded: Self::Unsigned) -> Self;
@@ -174,7 +174,7 @@ pub fn encode_into<T: Zigzag>(samples: &[T], out: &mut Vec<T::Unsigned>) {
 /// assert_eq!(samples, [0, -1, 1, -2]);
 /// ```
 pub fn decode<T: Zigzag>(codes: &[T::Unsigned]) -> Vec<T> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(codes.len());
     decode_into(codes, &mut out);
     out
 }
@@ -190,9 +190,9 @@ pub fn decode<T: Zigzag>(codes: &[T::Unsigned]) -> Vec<T> {
 /// assert_eq!(out, [0i16, -1, 1]);
 /// ```
 pub fn decode_into<T: Zigzag>(codes: &[T::Unsigned], out: &mut Vec<T>) {
-    let start = out.len();
-    out.resize(start + codes.len(), T::default());
-    decode_to_slice(codes, &mut out[start..]);
+    // The compiler vectorizes this loop. Measured as fast as the SSE2 kernel
+    // behind `decode_to_slice`, and it needs no zero-fill of `out` first.
+    out.extend(codes.iter().map(|&c| T::decode_one(c)));
 }
 
 /// Zigzag-encode `samples` into `out`, which must be the same length.

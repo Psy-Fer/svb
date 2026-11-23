@@ -471,6 +471,35 @@ above, which was measured on different hardware.
 For the lowest per-call cost on small inputs, use the slice functions with a
 buffer that is reused between calls.
 
+### Delta and zigzag
+
+Standalone timing program, same machine, pinned to one core, best of 9 timed
+runs per process, two processes each for 0.3.1 and 0.4.0 run alternately.
+`i16` data shaped like nanopore signal. "reuse" means a cleared `Vec` reused
+each call.
+
+| | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| delta `decode_into` (reuse), 0.3.1 | 22.1 ns | 245 ns | 2034 ns |
+| delta `decode_into` (reuse), 0.4.0 | 24.0 ns | 271 ns | 2206 ns |
+| delta `decode_to_slice` | 23.1 ns | 248 ns | 2029 ns |
+| delta `decode_in_place` | 22.5 ns | 247 ns | 2027 ns |
+| zigzag `decode_into` (reuse), 0.3.1 | 9.1 ns | 63.7 ns | 468 ns |
+| zigzag `decode_into` (reuse), 0.4.0 | 8.4 ns | 63.3 ns | 464 ns |
+| zigzag `decode_to_slice` | 8.8 ns | 63.5 ns | 461 ns |
+
+- The delta kernels run at the same speed as 0.3.1, both into a separate
+  slice and in place. Because a kernel's source and destination may be the
+  same buffer, the compiler can no longer assume they do not overlap; this
+  made no measurable difference.
+- delta's `Vec` functions copy the deltas into the output and then decode in
+  place, which costs 8-11%.
+- zigzag's `Vec` functions use a plain `extend` with `decode_one`. The compiler
+  vectorizes it and it matches the SSE2 kernel. An earlier version that
+  zero-filled the output and called the SSE2 kernel was 10-40% slower than
+  0.3.1 in criterion.
+- Use `decode_vbz_fused` rather than these three steps for VBZ data.
+
 ## Running benchmarks
 
 ```sh
