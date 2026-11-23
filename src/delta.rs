@@ -1234,6 +1234,9 @@ unsafe fn decode_2chain_neon_i16(
 //
 // Safety (all kernels): `src` must be valid for reading and `dst` for writing
 // `n` values. They may be equal but must not otherwise overlap.
+// The AVX2 kernels also require the CPU to support AVX2. They are compiled
+// with `#[target_feature(enable = "avx2")]` so the intrinsics inline; without
+// it each intrinsic is an out-of-line call and i32 decode is about 20x slower.
 
 // ── SSE2 implementations (x86_64) ─────────────────────────────────────────────
 
@@ -1395,6 +1398,7 @@ unsafe fn decode_sse2_u64(initial: u64, src: *const u64, dst: *mut u64, n: usize
 //   4. Extract hi-lane element 3 as new acc.
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
+#[target_feature(enable = "avx2")]
 unsafe fn decode_avx2_i32(initial: i32, src: *const i32, dst: *mut i32, n: usize) -> (i32, usize) {
     use core::arch::x86_64::*;
 
@@ -1403,36 +1407,32 @@ unsafe fn decode_avx2_i32(initial: i32, src: *const i32, dst: *mut i32, n: usize
     let mut i = 0usize;
 
     while i < simd_n {
-        let v = unsafe {
-            // SAFETY: caller ensures i + 8 <= n and pointers are valid.
-            _mm256_loadu_si256(src.add(i) as *const __m256i)
-        };
+        // SAFETY: i + 8 <= simd_n <= n, so src is valid for this block.
+        let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
 
         // Step 1: intra-lane prefix sums (each 128-bit lane independently).
-        let v = unsafe { _mm256_add_epi32(v, _mm256_slli_si256(v, 4)) };
-        let v = unsafe { _mm256_add_epi32(v, _mm256_slli_si256(v, 8)) };
+        let v = _mm256_add_epi32(v, _mm256_slli_si256(v, 4));
+        let v = _mm256_add_epi32(v, _mm256_slli_si256(v, 8));
 
         // Step 2: carry lo lane's element-3 sum into the hi lane.
         // Extract lo 128-bit lane, broadcast element 3 to all positions.
-        let lo128 = unsafe { _mm256_castsi256_si128(v) };
+        let lo128 = _mm256_castsi256_si128(v);
         // _mm_shuffle_epi32 with 0xFF broadcasts element 3.
-        let p3 = unsafe { _mm_shuffle_epi32(lo128, 0xFF_u32 as i32) };
+        let p3 = _mm_shuffle_epi32(lo128, 0xFF_u32 as i32);
         // Place p3 only in hi 128 bits, zero in lo.
-        let carry = unsafe { _mm256_set_m128i(p3, _mm_setzero_si128()) };
-        let v = unsafe { _mm256_add_epi32(v, carry) };
+        let carry = _mm256_set_m128i(p3, _mm_setzero_si128());
+        let v = _mm256_add_epi32(v, carry);
 
         // Step 3: add inter-block accumulator to all lanes.
-        let result = unsafe { _mm256_add_epi32(v, _mm256_set1_epi32(acc)) };
+        let result = _mm256_add_epi32(v, _mm256_set1_epi32(acc));
 
-        unsafe {
-            // SAFETY: out pointer valid for i + 8 elements.
-            _mm256_storeu_si256(dst.add(i) as *mut __m256i, result);
-            // Extract hi lane element 3 as new accumulator.
-            // _mm256_extracti128_si256(result, 1) gets the hi 128-bit lane.
-            // Shuffle broadcasts element 3; cvtsi128_si32 reads low 32 bits.
-            let hi128 = _mm256_extracti128_si256(result, 1);
-            acc = _mm_cvtsi128_si32(_mm_shuffle_epi32(hi128, 0xFF_u32 as i32));
-        }
+        // SAFETY: i + 8 <= n, so dst is valid for this block.
+        unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, result) };
+        // Extract hi lane element 3 as new accumulator.
+        // _mm256_extracti128_si256(result, 1) gets the hi 128-bit lane.
+        // Shuffle broadcasts element 3; cvtsi128_si32 reads low 32 bits.
+        let hi128 = _mm256_extracti128_si256(result, 1);
+        acc = _mm_cvtsi128_si32(_mm_shuffle_epi32(hi128, 0xFF_u32 as i32));
         i += 8;
     }
     // Finish the remaining whole blocks of 4 with SSE2.
@@ -1460,6 +1460,7 @@ unsafe fn decode_avx2_u32(initial: u32, src: *const u32, dst: *mut u32, n: usize
 //   3. Add acc, extract new acc from hi lane element 1.
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
+#[target_feature(enable = "avx2")]
 unsafe fn decode_avx2_i64(initial: i64, src: *const i64, dst: *mut i64, n: usize) -> (i64, usize) {
     use core::arch::x86_64::*;
 
@@ -1468,31 +1469,27 @@ unsafe fn decode_avx2_i64(initial: i64, src: *const i64, dst: *mut i64, n: usize
     let mut i = 0usize;
 
     while i < simd_n {
-        let v = unsafe {
-            // SAFETY: caller ensures i + 4 <= n and pointers are valid.
-            _mm256_loadu_si256(src.add(i) as *const __m256i)
-        };
+        // SAFETY: i + 4 <= simd_n <= n, so src is valid for this block.
+        let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
 
         // Step 1: intra-lane prefix sum (1 step for 2 elements/lane).
-        let v = unsafe { _mm256_add_epi64(v, _mm256_slli_si256(v, 8)) };
+        let v = _mm256_add_epi64(v, _mm256_slli_si256(v, 8));
 
         // Step 2: carry lo lane's element-1 into hi lane.
-        let lo128 = unsafe { _mm256_castsi256_si128(v) };
+        let lo128 = _mm256_castsi256_si128(v);
         // _mm_unpackhi_epi64 duplicates element 1 of lo lane into both positions.
-        let p1 = unsafe { _mm_unpackhi_epi64(lo128, lo128) };
-        let carry = unsafe { _mm256_set_m128i(p1, _mm_setzero_si128()) };
-        let v = unsafe { _mm256_add_epi64(v, carry) };
+        let p1 = _mm_unpackhi_epi64(lo128, lo128);
+        let carry = _mm256_set_m128i(p1, _mm_setzero_si128());
+        let v = _mm256_add_epi64(v, carry);
 
         // Step 3: add inter-block accumulator.
-        let result = unsafe { _mm256_add_epi64(v, _mm256_set1_epi64x(acc)) };
+        let result = _mm256_add_epi64(v, _mm256_set1_epi64x(acc));
 
-        unsafe {
-            // SAFETY: out pointer valid for i + 4 elements.
-            _mm256_storeu_si256(dst.add(i) as *mut __m256i, result);
-            // Extract hi lane element 1 as new accumulator.
-            let hi128 = _mm256_extracti128_si256(result, 1);
-            acc = _mm_cvtsi128_si64(_mm_unpackhi_epi64(hi128, hi128));
-        }
+        // SAFETY: i + 4 <= n, so dst is valid for this block.
+        unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, result) };
+        // Extract hi lane element 1 as new accumulator.
+        let hi128 = _mm256_extracti128_si256(result, 1);
+        acc = _mm_cvtsi128_si64(_mm_unpackhi_epi64(hi128, hi128));
         i += 4;
     }
     // Finish the remaining whole blocks of 2 with SSE2.

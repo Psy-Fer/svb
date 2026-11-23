@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The AVX2 delta decode kernels (used for `i32`, `u32`, `i64` and `u64` under `simd-auto` and `simd-avx2`) were compiled without `#[target_feature(enable = "avx2")]`, so every AVX2 intrinsic was an out-of-line function call. `delta::decode` for `i32` ran at about 5.5 ns per value. With the attribute it is 8-13x faster for `i32` and `i64`. `i16`/`u16` delta, which uses SSE2, and the VBZ, SVB-ZD and ex-zd pipelines were not affected.
 - `DecodeError::DataTruncated { index }` from the SSSE3, AVX2 and NEON decoders of every codec now reports the index in the whole output when the error happens in the scalar tail. Previously it reported the index within the tail.
 
 ## [0.3.1] - 2026-09-02

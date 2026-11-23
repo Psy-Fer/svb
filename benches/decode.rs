@@ -222,6 +222,41 @@ fn bench_delta_zigzag_slices(c: &mut Criterion) {
     }
     g.finish();
 
+    // i32 and i64 take the AVX2 delta kernels under simd-auto (i16 uses SSE2).
+    let mut g = c.benchmark_group("delta/decode_i32_to_slice");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let deltas: Vec<i32> = vbz_i16_samples(n)
+            .iter()
+            .map(|&x| x as i32 * 1000)
+            .collect();
+        let mut out = vec![0i32; n];
+        g.bench_with_input(BenchmarkId::from_parameter(n), &deltas, |b, d| {
+            b.iter(|| {
+                delta::decode_to_slice(d, &mut out);
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+
+    let mut g = c.benchmark_group("delta/decode_i64_to_slice");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let deltas: Vec<i64> = vbz_i16_samples(n)
+            .iter()
+            .map(|&x| (x as i64) << 20)
+            .collect();
+        let mut out = vec![0i64; n];
+        g.bench_with_input(BenchmarkId::from_parameter(n), &deltas, |b, d| {
+            b.iter(|| {
+                delta::decode_to_slice(d, &mut out);
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+
     let mut g = c.benchmark_group("zigzag/decode_u16_to_slice");
     for &n in SIZES {
         g.throughput(Throughput::Elements(n as u64));

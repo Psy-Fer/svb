@@ -500,6 +500,19 @@ each call.
   0.3.1 in criterion.
 - Use `decode_vbz_fused` rather than these three steps for VBZ data.
 
+The AVX2 delta kernels for `i32`/`u32` and `i64`/`u64` were missing
+`#[target_feature(enable = "avx2")]` in 0.3.1 and earlier, so the intrinsics
+were not inlined. Same program, `decode_into` with a reused `Vec`:
+
+| | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| `i32`, 0.3.1 | 719 ns | 5679 ns | 47722 ns |
+| `i32`, 0.4.0 | 53.1 ns | 424 ns | 3729 ns |
+| `i64`, 0.3.1 | 947 ns | 7489 ns | 61864 ns |
+| `i64`, 0.4.0 | 103 ns | 827 ns | 7457 ns |
+
+`decode_to_slice` for `i32` is 33.5 / 382 / 3231 ns at the same sizes.
+
 ## Running benchmarks
 
 ```sh

@@ -12,8 +12,8 @@
 //! dependency stall, and this avoids materializing an intermediate
 //! `Vec<i16>` of deltas between two full scans.
 //!
-//! The SIMD math itself is not new: it's `zigzag::decode_into_sse2`/
-//! `decode_into_neon` (element-wise inverse-zigzag) combined with
+//! The SIMD math itself is not new: it's `zigzag::decode_blocks_sse2`/
+//! `decode_blocks_neon` (element-wise inverse-zigzag) combined with
 //! `delta::decode_sse2_i16`/`decode_neon_i16`'s three-step prefix-sum scan,
 //! recombined into a single loop instead of two.
 //!
@@ -145,7 +145,7 @@ fn decode_scalar(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
 }
 
 // SSE2: 8 u16 codes per iteration.
-// Inverse zigzag (element-wise, from zigzag::decode_into_sse2) feeds directly
+// Inverse zigzag (element-wise, from zigzag::decode_blocks_sse2) feeds directly
 // into the three-step prefix-sum scan (from delta::decode_sse2_i16) in the
 // same register, instead of round-tripping through an intermediate buffer.
 // The qts shift is applied to `result` (the unshifted accumulated value)
@@ -292,7 +292,7 @@ unsafe fn decode_avx2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
 }
 
 // NEON: 8 u16 codes per iteration. Same fusion as decode_sse2, using
-// zigzag::decode_into_neon's element-wise unzigzag and delta::decode_neon_i16's
+// zigzag::decode_blocks_neon's element-wise unzigzag and delta::decode_neon_i16's
 // vextq_s16-based three-step prefix-sum scan.
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
