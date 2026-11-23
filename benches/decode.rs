@@ -222,6 +222,40 @@ fn bench_svb16_decode(c: &mut Criterion) {
     g.finish();
 }
 
+// Slice API: buffers are allocated once outside the timed loop.
+fn bench_svb16_encode_to_slice(c: &mut Criterion) {
+    let mut g = c.benchmark_group("svb16/encode_to_slice");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        for kind in ["small", "large", "mixed"] {
+            let (values, _) = svb16_data(n, kind);
+            let mut buf = vec![0u8; Svb16.max_encoded_len(n)];
+            g.bench_with_input(BenchmarkId::new(kind, n), &values, |b, v| {
+                b.iter(|| Svb16.encode_to_slice(v, &mut buf).unwrap());
+            });
+        }
+    }
+    g.finish();
+}
+
+fn bench_svb16_decode_to_slice(c: &mut Criterion) {
+    let mut g = c.benchmark_group("svb16/decode_to_slice");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        for kind in ["small", "large", "mixed"] {
+            let (_, enc) = svb16_data(n, kind);
+            let mut out = vec![0u16; n];
+            g.bench_with_input(BenchmarkId::new(kind, n), &enc, |b, enc| {
+                b.iter(|| {
+                    Svb16.decode_to_slice(enc, &mut out).unwrap();
+                    black_box(&out);
+                });
+            });
+        }
+    }
+    g.finish();
+}
+
 // ── VBZ pipeline ──────────────────────────────────────────────────────────────
 
 fn bench_vbz_encode(c: &mut Criterion) {
@@ -1054,6 +1088,8 @@ criterion_group!(
     bench_zigzag_decode_u16,
     bench_svb16_encode,
     bench_svb16_decode,
+    bench_svb16_encode_to_slice,
+    bench_svb16_decode_to_slice,
     bench_vbz_encode,
     bench_vbz_decode,
     bench_vbz_fused,

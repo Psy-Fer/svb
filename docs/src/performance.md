@@ -352,6 +352,69 @@ Measured with `simd-avx2` on GitHub Actions ubuntu-latest (Azure x86-64).
 largest gap (approaching 3×); the u64 codecs are closer because 8-byte elements
 reduce the SIMD parallelism available per control byte.
 
+## Slice API and the `Vec` wrappers
+
+Since 0.4.0 the codec kernels write into caller-supplied slices
+(`encode_to_slice`, `decode_to_slice`), and the `Vec` methods (`encode`,
+`encode_into`, `decode`, `decode_into`) are wrappers around them. So far this
+covers `Svb16` only.
+
+### SIMD encode does not need padding
+
+The C StreamVByte library adds 16 bytes of padding to its worst-case output
+size, because the SIMD encoder writes a full 16-byte register per block even
+when the block packs to fewer bytes. Before 0.4.0 the `svb` encoders reserved
+the same 16 bytes of `Vec` capacity.
+
+For `Svb16` the padding is not needed. Each block of 8 values is stored with
+one 16-byte store at `data_pos`. The values before the block took at most 2
+bytes each, so `data_pos <= 2 * i`, and the store ends at
+`2 * i + 16 = 2 * (i + 8) <= 2 * n`. A store can write past the data encoded so
+far, but never past `ctrl_len + 2 * n`, which is what `max_encoded_len` returns.
+The AVX2 path does two such stores per 16 values and stays within the same
+bound. A test (`u16::cross_path::encode_with`) runs every encode kernel on a
+slice of exactly `max_encoded_len` bytes followed by canary bytes, and fails if
+any canary byte changes.
+
+The same argument holds whenever a store covers the worst case for its block
+(block values x max byte width >= store width). Each u32/u64 kernel still has to
+be checked.
+
+### Cost of the `Vec` wrappers
+
+The kernels take `&mut [T]`, so a `Vec` wrapper has to grow the vector with
+`resize` before calling them, which zero-fills the new space. The kernel then
+overwrites it. The old code wrote straight into spare capacity and called
+`set_len`, with no zeroing. Writing into spare capacity from the new kernels
+would need `&mut [MaybeUninit<T>]` kernels and `unsafe` (`set_len`, and a cast
+from `&mut [T]`) outside the SIMD modules, which the crate does not allow. The
+zero-fill is accepted as the cost of keeping that rule.
+
+Measured on an Intel i7-11800H (AVX2), Rust 1.99, `simd-auto`, pinned to one
+core, best of 14 timed runs. "main" is 0.3.1; "reuse" means the same `Vec` is
+cleared and reused each call, so no allocation is timed.
+
+| `Svb16` | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| decode, 0.3.1 `decode_into` (reuse) | 22.5-24.9 ns | 155-171 ns | 1219-1225 ns |
+| decode, `decode_to_slice` | 22.5-27.7 ns | 163-164 ns | 1187-1220 ns |
+| decode, `decode_into` (reuse) | 26.9-29.9 ns | 168-173 ns | 1250-1260 ns |
+| encode, 0.3.1 `encode_into` (reuse) | 24.5-25.8 ns | 170-180 ns | 1305-1388 ns |
+| encode, `encode_to_slice` | 25.9 ns | 168-169 ns | 1270 ns |
+| encode, `encode_into` (reuse) | 29.8 ns | 184-185 ns | 1319-1337 ns |
+
+Ranges are over the "small" (all 1-byte) and "large" (all 2-byte) inputs.
+
+- The slice kernels run at the same speed as the 0.3.1 code.
+- The `Vec` wrappers are about 4-5 ns slower per call. That is 15-20% at
+  n=128, 2-9% at n=1024 and 2-3% at n=8192.
+- `decode` (which allocates) now uses `vec![0; n]` and is about 12 ns slower at
+  n=128. In criterion the same benchmark went from 41 ns to 80 ns; the reason
+  for the larger gap there is not known.
+
+For the lowest per-call cost on small inputs, use the slice functions with a
+buffer that is reused between calls.
+
 ## Running benchmarks
 
 ```sh
