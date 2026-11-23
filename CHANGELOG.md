@@ -11,17 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Slice API for every codec (issue #4): `max_encoded_len`, `encode_to_slice` and `decode_to_slice` on `Svb16`, `U32Classic`, `U32Variant0124`, `U64Coder1234` and `U64Coder1248` encode into and decode from caller-supplied slices, so the output can live in any storage type. The `Vec` methods are now wrappers around them.
 - `EncodeError::OutputTooSmall`, returned by `encode_to_slice` when the output slice is shorter than `max_encoded_len`.
+- `decode_vbz_fused_to_slice` and `decode_vbz_fused_from_to_slice` decode VBZ into a caller-supplied `&mut [i16]`, with `n = out.len()`. VBZ-K (experimental) gains `decode_vbzk_to_slice` and `decode_vbzk_parallel_to_slice`; the parallel version has each thread decode straight into its own part of `out`.
 - Slice functions for the delta and zigzag layers: `delta::encode_to_slice`, `delta::decode_to_slice` and their `_with_initial` forms, `delta::decode_in_place` / `decode_with_initial_in_place` (decode a slice of deltas without a second buffer), `delta::decode_2chain_to_slice`, `zigzag::encode_to_slice` and `zigzag::decode_to_slice`. The output must be the same length as the input; they panic otherwise.
 
 ### Changed
 
-- `decode_into` on every codec now leaves `out` at its original length on error. Previously it kept any values decoded before the error.
+- `decode_into` on every codec, `decode_vbz_fused_into`, `decode_vbz_fused_from_into`, `decode_vbzk_into` and `decode_vbzk_parallel_into` now leave `out` at its original length on error. Previously they kept any values decoded before the error.
 - The `Vec` methods zero-fill the output before the codec writes into it, which costs about 4-5 ns per call for `Svb16` (15-20% at 128 values, 2-3% at 8192) and 2-12% for the u32 and u64 codecs in most benchmarks. The largest case is `U64Coder1234::decode` at 8192 values, which zero-fills 64 KB and is 28% slower. The slice functions have no such cost. See the "Slice API" section of `docs/src/performance.md`.
 - `delta::decode`, `decode_into` and the other `Vec` decode functions copy the deltas into the output and decode them in place, which makes them about 8-11% slower than 0.3.1 for `i16`. `zigzag::decode` and `decode_into` are now a plain loop that the compiler vectorizes, measured as fast as the 0.3.1 SSE2 path.
 - The SIMD encoders no longer reserve 16 bytes of padding. Their stores never go past `max_encoded_len`, and a canary test checks this for every encode kernel.
 
 ### Fixed
 
+- `decode_vbzk`, `decode_vbzk_into` and the parallel VBZ-K decoders panicked on a header whose data offsets pointed past the end of the data or went backwards. The offsets are now checked and these return `DecodeError::DataTruncated`.
+- `DataTruncated` indices from VBZ-K decode are now relative to the whole output instead of the sub-stream.
 - The AVX2 delta decode kernels (used for `i32`, `u32`, `i64` and `u64` under `simd-auto` and `simd-avx2`) were compiled without `#[target_feature(enable = "avx2")]`, so every AVX2 intrinsic was an out-of-line function call. `delta::decode` for `i32` ran at about 5.5 ns per value. With the attribute it is 8-13x faster for `i32` and `i64`. `i16`/`u16` delta, which uses SSE2, and the VBZ, SVB-ZD and ex-zd pipelines were not affected.
 - `DecodeError::DataTruncated { index }` from the SSSE3, AVX2 and NEON decoders of every codec now reports the index in the whole output when the error happens in the scalar tail. Previously it reported the index within the tail.
 

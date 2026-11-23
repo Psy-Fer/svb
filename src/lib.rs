@@ -265,9 +265,28 @@ pub fn decode_vbz_fused(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> 
 }
 
 /// Decode a VBZ-encoded byte stream, appending to `out`. See [`decode_vbz_fused`].
+///
+/// On error `out` is left at its original length.
 #[cfg(feature = "alloc")]
 pub fn decode_vbz_fused_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
     vbz_fused::decode_into(data, n, out)
+}
+
+/// Decode a VBZ-encoded byte stream into `out` with the fused decoder.
+///
+/// The number of samples decoded is `out.len()`, which must equal the number
+/// that was encoded. On error the contents of `out` are unspecified.
+///
+/// ```
+/// let samples = [500i16, 510, 505, 520, 300, 301];
+/// let encoded = svb::encode_vbz(&samples);
+/// let mut out = [0i16; 6];
+/// svb::decode_vbz_fused_to_slice(&encoded, &mut out).unwrap();
+/// assert_eq!(out, samples);
+/// ```
+#[cfg(feature = "alloc")]
+pub fn decode_vbz_fused_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
+    vbz_fused::decode_from_to_slice(data, 0, out)
 }
 
 /// Decode a VBZ half-stream starting from an arbitrary `initial_carry` value.
@@ -325,6 +344,21 @@ pub fn decode_vbz_fused_from_into(
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
     vbz_fused::decode_from_into(data, n, initial_carry, out)
+}
+
+/// Decode a VBZ half-stream starting from `initial_carry` into `out`, which
+/// holds `out.len()` samples. On error the contents of `out` are unspecified.
+///
+/// See [`decode_vbz_fused_from`] for the split-stream pattern. Writing each
+/// half into its own part of one output slice (for example with
+/// `split_at_mut`) avoids concatenating the halves afterwards.
+#[cfg(feature = "alloc")]
+pub fn decode_vbz_fused_from_to_slice(
+    data: &[u8],
+    initial_carry: i16,
+    out: &mut [i16],
+) -> Result<(), DecodeError> {
+    vbz_fused::decode_from_to_slice(data, initial_carry, out)
 }
 
 // ── VBZ2 format ───────────────────────────────────────────────────────────────
@@ -701,51 +735,72 @@ pub fn decode_vbzk(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
 }
 
 /// Decode VBZ-K encoded data sequentially (one sub-stream at a time), appending to `out`.
+///
+/// On error `out` is left at its original length.
 #[cfg(feature = "alloc")]
 pub fn decode_vbzk_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
-    if n == 0 {
-        return Ok(());
+    let start = out.len();
+    out.resize(start + n, 0);
+    let result = decode_vbzk_to_slice(data, &mut out[start..]);
+    if result.is_err() {
+        out.truncate(start);
     }
-    if data.is_empty() {
-        return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
-    }
+    result
+}
 
-    let k = data[0] as usize;
+/// Decode VBZ-K encoded data sequentially into `out`, which holds `out.len()`
+/// samples. On error the contents of `out` are unspecified.
+///
+/// ```
+/// let samples: Vec<i16> = (0..100).map(|i| i * 3 - 150).collect();
+/// let encoded = svb::encode_vbzk(&samples, 4);
+/// let mut out = vec![0i16; samples.len()];
+/// svb::decode_vbzk_to_slice(&encoded, &mut out).unwrap();
+/// assert_eq!(out, samples);
+/// ```
+#[cfg(feature = "alloc")]
+pub fn decode_vbzk_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
+    for s in parse_vbzk(data, out.len())? {
+        let sub_out = &mut out[s.start..s.start + s.len];
+        vbz_fused::decode_parts_to_slice(s.ctrl, s.data, s.initial, sub_out)
+            .map_err(|e| offset_index(e, s.start))?;
+    }
+    Ok(())
+}
+
+// One VBZ-K sub-stream: its ctrl and data bytes, where its samples go in the
+// output, and the carry it starts from.
+#[cfg(feature = "alloc")]
+struct VbzkStream<'a> {
+    ctrl: &'a [u8],
+    data: &'a [u8],
+    start: usize,
+    len: usize,
+    initial: i16,
+}
+
+// Parse a VBZ-K header and split the body into its sub-streams. The data
+// offsets in the header are checked: a sub-stream whose data would start past
+// the end of the body, or before the previous one, returns `DataTruncated`
+// with the index of that sub-stream's first sample.
+#[cfg(feature = "alloc")]
+fn parse_vbzk(data: &[u8], n: usize) -> Result<Vec<VbzkStream<'_>>, DecodeError> {
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let Some(&k) = data.first() else {
+        return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
+    };
+    let k = k as usize;
     if k == 0 {
         return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
     }
-
     let header_len = 1 + (k - 1) * 6;
     if data.len() < header_len {
         return Err(DecodeError::ControlStreamTooShort {
             need: header_len,
             have: data.len(),
         });
-    }
-
-    // Parse k-1 split points from the header.
-    // carries[i] = initial carry for sub-stream i+1 (i.e., samples[n_sub*(i+1) - 1])
-    // data_offsets[i] = data byte offset for sub-stream i+1's start (within data_bytes).
-    // We build full arrays of length k+1 for the boundaries:
-    //   sub_carry[0] = 0          (stream 0 starts with carry=0)
-    //   sub_carry[i] = carries[i-1] for i in 1..k
-    //   data_start[0] = 0
-    //   data_start[i] = data_offsets[i-1] for i in 1..k
-    //   data_start[k] = total data_bytes len (filled after parsing body length)
-
-    #[cfg(not(feature = "std"))]
-    use alloc::vec;
-
-    let mut sub_carry = vec![0i16; k];
-    let mut data_start = vec![0usize; k + 1];
-
-    for i in 1..k {
-        let off = 1 + (i - 1) * 6;
-        let carry = i16::from_le_bytes([data[off], data[off + 1]]);
-        let d_off = u32::from_le_bytes([data[off + 2], data[off + 3], data[off + 4], data[off + 5]])
-            as usize;
-        sub_carry[i] = carry;
-        data_start[i] = d_off;
     }
 
     let svb = &data[header_len..];
@@ -759,27 +814,58 @@ pub fn decode_vbzk_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(),
     let ctrl = &svb[..ctrl_len];
     let data_bytes = &svb[ctrl_len..];
 
-    // Set the final boundary: total data_bytes length.
-    data_start[k] = data_bytes.len();
+    // Sub-stream i (for i >= 1) starts at header entry i - 1:
+    // [carry: i16 LE][data offset: u32 LE].
+    let entry = |i: usize| -> (i16, usize) {
+        if i == 0 {
+            return (0, 0);
+        }
+        let off = 1 + (i - 1) * 6;
+        let carry = i16::from_le_bytes([data[off], data[off + 1]]);
+        let d_off =
+            u32::from_le_bytes([data[off + 2], data[off + 3], data[off + 4], data[off + 5]]);
+        (carry, d_off as usize)
+    };
 
     let n_sub = (n / k) & !7;
-    out.reserve(n);
-
+    let mut streams = Vec::with_capacity(k);
     for i in 0..k {
-        let sub_n = if i < k - 1 {
+        let len = if i < k - 1 {
             n_sub
         } else {
             n - (k - 1) * n_sub
         };
+        let start = i * n_sub;
+        let (initial, d_start) = entry(i);
+        let d_end = if i + 1 < k {
+            entry(i + 1).1
+        } else {
+            data_bytes.len()
+        };
+        if d_start > d_end || d_end > data_bytes.len() {
+            return Err(DecodeError::DataTruncated { index: start });
+        }
         let ctrl_start = i * (n_sub / 8);
-        let ctrl_end = ctrl_start + sub_n.div_ceil(8);
-        let sub_ctrl = &ctrl[ctrl_start..ctrl_end];
-        let sub_data = &data_bytes[data_start[i]..data_start[i + 1]];
-        let initial = sub_carry[i];
-        vbz_fused::decode_parts_into(sub_ctrl, sub_data, sub_n, initial, out)?;
+        streams.push(VbzkStream {
+            ctrl: &ctrl[ctrl_start..ctrl_start + len.div_ceil(8)],
+            data: &data_bytes[d_start..d_end],
+            start,
+            len,
+            initial,
+        });
     }
+    Ok(streams)
+}
 
-    Ok(())
+// Shift a `DataTruncated` index from a sub-stream to the whole output.
+#[cfg(feature = "alloc")]
+fn offset_index(e: DecodeError, base: usize) -> DecodeError {
+    match e {
+        DecodeError::DataTruncated { index } => DecodeError::DataTruncated {
+            index: base + index,
+        },
+        other => other,
+    }
 }
 
 /// Decode VBZ-K encoded data in parallel using `k` threads, returning a new `Vec<i16>`.
@@ -809,104 +895,54 @@ pub fn decode_vbzk_parallel_into(
     n: usize,
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
-    if n == 0 {
-        return Ok(());
+    let start = out.len();
+    out.resize(start + n, 0);
+    let result = decode_vbzk_parallel_to_slice(data, &mut out[start..]);
+    if result.is_err() {
+        out.truncate(start);
     }
-    if data.is_empty() {
-        return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
-    }
+    result
+}
 
-    let k = data[0] as usize;
-    if k == 0 {
-        return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
-    }
+/// Decode VBZ-K encoded data in parallel into `out`, which holds `out.len()`
+/// samples. Each thread writes its sub-stream straight into its own part of
+/// `out`. On error the contents of `out` are unspecified.
+///
+/// Has the same per-call thread-spawn cost as [`decode_vbzk_parallel_into`].
+#[cfg(all(feature = "alloc", feature = "std"))]
+pub fn decode_vbzk_parallel_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
+    let streams = parse_vbzk(data, out.len())?;
 
-    let header_len = 1 + (k - 1) * 6;
-    if data.len() < header_len {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: header_len,
-            have: data.len(),
-        });
-    }
-
-    let mut sub_carry = vec![0i16; k];
-    let mut data_start = vec![0usize; k + 1];
-
-    for i in 1..k {
-        let off = 1 + (i - 1) * 6;
-        let carry = i16::from_le_bytes([data[off], data[off + 1]]);
-        let d_off = u32::from_le_bytes([data[off + 2], data[off + 3], data[off + 4], data[off + 5]])
-            as usize;
-        sub_carry[i] = carry;
-        data_start[i] = d_off;
+    // Split `out` into one part per sub-stream, in order.
+    let mut parts = Vec::with_capacity(streams.len());
+    let mut rest = out;
+    for s in &streams {
+        let (part, tail) = rest.split_at_mut(s.len);
+        parts.push(part);
+        rest = tail;
     }
 
-    let svb = &data[header_len..];
-    let ctrl_len = n.div_ceil(8);
-    if svb.len() < ctrl_len {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: ctrl_len,
-            have: svb.len(),
-        });
-    }
-    let ctrl = &svb[..ctrl_len];
-    let data_bytes = &svb[ctrl_len..];
-    data_start[k] = data_bytes.len();
-
-    let n_sub = (n / k) & !7;
-
-    // Build per-sub-stream parameter list before entering the scope.
-    struct SubStream<'a> {
-        ctrl: &'a [u8],
-        data: &'a [u8],
-        sub_n: usize,
-        initial: i16,
-    }
-
-    let streams: Vec<SubStream<'_>> = (0..k)
-        .map(|i| {
-            let sub_n = if i < k - 1 {
-                n_sub
-            } else {
-                n - (k - 1) * n_sub
-            };
-            let ctrl_start = i * (n_sub / 8);
-            let ctrl_end = ctrl_start + sub_n.div_ceil(8);
-            SubStream {
-                ctrl: &ctrl[ctrl_start..ctrl_end],
-                data: &data_bytes[data_start[i]..data_start[i + 1]],
-                sub_n,
-                initial: sub_carry[i],
-            }
-        })
-        .collect();
-
-    // Decode each sub-stream in a separate thread.
-    let results: Vec<Result<Vec<i16>, DecodeError>> = std::thread::scope(|scope| {
+    std::thread::scope(|scope| {
         let handles: Vec<_> = streams
             .iter()
-            .map(|s| {
+            .zip(parts)
+            .map(|(s, part)| {
                 scope.spawn(move || {
-                    let mut sub_out = Vec::with_capacity(s.sub_n);
-                    vbz_fused::decode_parts_into(s.ctrl, s.data, s.sub_n, s.initial, &mut sub_out)?;
-                    Ok(sub_out)
+                    vbz_fused::decode_parts_to_slice(s.ctrl, s.data, s.initial, part)
+                        .map_err(|e| offset_index(e, s.start))
                 })
             })
             .collect();
-        handles
+        // Join every thread before returning, then report the first error.
+        let results: Vec<_> = handles
             .into_iter()
             .map(|h| {
                 h.join()
                     .unwrap_or(Err(DecodeError::DataTruncated { index: 0 }))
             })
-            .collect()
-    });
-
-    out.reserve(n);
-    for result in results {
-        out.extend_from_slice(&result?);
-    }
-    Ok(())
+            .collect();
+        results.into_iter().collect::<Result<(), DecodeError>>()
+    })
 }
 
 #[cfg(all(test, feature = "alloc"))]
@@ -1058,6 +1094,77 @@ mod vbzk_tests {
     fn parallel_decode_error_truncated_header() {
         let data = [2u8, 0, 0, 0, 0, 0];
         assert!(decode_vbzk_parallel(&data, 8).is_err());
+    }
+
+    #[test]
+    fn to_slice_matches_vec_decode() {
+        for k in [1usize, 2, 3, 4, 8] {
+            for n in [0usize, 1, 7, 8, 9, 31, 64, 100, 257] {
+                let samples = make_samples(n);
+                let enc = encode_vbzk(&samples, k);
+                let mut out = vec![0i16; n];
+                decode_vbzk_to_slice(&enc, &mut out).unwrap();
+                assert_eq!(out, samples, "seq k={k} n={n}");
+                #[cfg(feature = "std")]
+                {
+                    let mut par = vec![0i16; n];
+                    decode_vbzk_parallel_to_slice(&enc, &mut par).unwrap();
+                    assert_eq!(par, samples, "par k={k} n={n}");
+                }
+            }
+        }
+    }
+
+    // Offsets in the header are untrusted. These used to panic on slicing.
+    #[test]
+    fn corrupt_data_offsets_return_error() {
+        let samples = make_samples(256);
+        let enc = encode_vbzk(&samples, 4);
+        // Header entry i (sub-stream i + 1) holds its data offset at 1 + 6i + 2.
+        let past_end = |mut e: Vec<u8>| {
+            e[3..7].copy_from_slice(&u32::MAX.to_le_bytes());
+            e
+        };
+        let decreasing = |mut e: Vec<u8>| {
+            // Sub-stream 3 starts before sub-stream 2.
+            let off2 = u32::from_le_bytes([e[9], e[10], e[11], e[12]]);
+            e[15..19].copy_from_slice(&(off2 - 1).to_le_bytes());
+            e
+        };
+        for (name, bad) in [
+            ("past_end", past_end(enc.clone())),
+            ("decreasing", decreasing(enc.clone())),
+        ] {
+            assert!(decode_vbzk(&bad, 256).is_err(), "{name} seq");
+            #[cfg(feature = "std")]
+            assert!(decode_vbzk_parallel(&bad, 256).is_err(), "{name} par");
+        }
+    }
+
+    #[test]
+    fn error_index_is_absolute_across_sub_streams() {
+        // k=2, n=37: sub-stream 1 holds values 16..37. All 1-byte codes, so
+        // dropping the last byte leaves value 36 short.
+        let samples = vec![2i16; 37];
+        let mut enc = encode_vbzk(&samples, 2);
+        enc.pop();
+        let mut out = vec![0i16; 37];
+        let err = decode_vbzk_to_slice(&enc, &mut out).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::DataTruncated { index: 36 }),
+            "seq {err:?}"
+        );
+        #[cfg(feature = "std")]
+        {
+            let err = decode_vbzk_parallel_to_slice(&enc, &mut out).unwrap_err();
+            assert!(
+                matches!(err, DecodeError::DataTruncated { index: 36 }),
+                "par {err:?}"
+            );
+        }
+        let mut v = vec![1i16];
+        assert!(decode_vbzk_into(&enc, 37, &mut v).is_err());
+        assert_eq!(v, [1]);
     }
 }
 

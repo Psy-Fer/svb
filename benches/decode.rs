@@ -380,6 +380,60 @@ fn bench_vbz_fused(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_vbz_fused_to_slice(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vbz_fused_to_slice");
+    for &n in &[128usize, 1024, 8192] {
+        group.throughput(Throughput::Elements(n as u64));
+        let encoded = encode_vbz(&vbz_i16_samples(n));
+        let mut out = vec![0i16; n];
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| {
+                svb::decode_vbz_fused_to_slice(&encoded, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+    }
+    group.finish();
+}
+
+// VBZ-K through the library API, k=4. The parallel variants spawn threads on
+// every call, so they mostly measure that cost at this size.
+fn bench_vbzk_api(c: &mut Criterion) {
+    const N: usize = 8192;
+    let encoded = encode_vbzk(&vbz_i16_samples(N), 4);
+    let mut group = c.benchmark_group("vbzk_api");
+    group.throughput(Throughput::Elements(N as u64));
+    let mut v = Vec::with_capacity(N);
+    group.bench_function("seq_into/k=4/8192", |b| {
+        b.iter(|| {
+            v.clear();
+            svb::decode_vbzk_into(&encoded, N, &mut v).unwrap();
+            black_box(&v);
+        });
+    });
+    let mut out = vec![0i16; N];
+    group.bench_function("seq_to_slice/k=4/8192", |b| {
+        b.iter(|| {
+            svb::decode_vbzk_to_slice(&encoded, &mut out).unwrap();
+            black_box(&out);
+        });
+    });
+    group.bench_function("par_into/k=4/8192", |b| {
+        b.iter(|| {
+            v.clear();
+            svb::decode_vbzk_parallel_into(&encoded, N, &mut v).unwrap();
+            black_box(&v);
+        });
+    });
+    group.bench_function("par_to_slice/k=4/8192", |b| {
+        b.iter(|| {
+            svb::decode_vbzk_parallel_to_slice(&encoded, &mut out).unwrap();
+            black_box(&out);
+        });
+    });
+    group.finish();
+}
+
 #[allow(deprecated)]
 fn bench_vbz2_decode(c: &mut Criterion) {
     let mut group = c.benchmark_group("vbz2_fused");
@@ -1239,6 +1293,8 @@ criterion_group!(
     bench_vbz_encode,
     bench_vbz_decode,
     bench_vbz_fused,
+    bench_vbz_fused_to_slice,
+    bench_vbzk_api,
     bench_vbz2_decode,
     bench_vbz2_parallel,
     bench_u32_classic_encode,
