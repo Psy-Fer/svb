@@ -356,8 +356,8 @@ reduce the SIMD parallelism available per control byte.
 
 Since 0.4.0 the codec kernels write into caller-supplied slices
 (`encode_to_slice`, `decode_to_slice`), and the `Vec` methods (`encode`,
-`encode_into`, `decode`, `decode_into`) are wrappers around them. So far this
-covers `Svb16` only.
+`encode_into`, `decode`, `decode_into`) are wrappers around them. This covers
+all five codecs.
 
 ### SIMD encode does not need padding
 
@@ -372,13 +372,24 @@ bytes each, so `data_pos <= 2 * i`, and the store ends at
 `2 * i + 16 = 2 * (i + 8) <= 2 * n`. A store can write past the data encoded so
 far, but never past `ctrl_len + 2 * n`, which is what `max_encoded_len` returns.
 The AVX2 path does two such stores per 16 values and stays within the same
-bound. A test (`u16::cross_path::encode_with`) runs every encode kernel on a
+bound. A test (`test_util::encode_checked`) runs every encode kernel on a
 slice of exactly `max_encoded_len` bytes followed by canary bytes, and fails if
 any canary byte changes.
 
 The same argument holds whenever a store covers the worst case for its block
-(block values x max byte width >= store width). Each u32/u64 kernel still has to
-be checked.
+(values per store x widest byte width >= store width), and it holds for every
+kernel:
+
+| Codec | Store | Covers | Ends at or before |
+|---|---|---|---|
+| `Svb16` | 16 bytes | 8 values x 2 bytes | `ctrl_len + 2 * n` |
+| `U32Classic`, `U32Variant0124` | 16 bytes | 4 values x 4 bytes | `ctrl_len + 4 * n` |
+| `U64Coder1234` | 16 bytes | 4 values x 4 bytes | `ctrl_len + 4 * n` |
+| `U64Coder1248` | 16 bytes | 2 values x 8 bytes | `ctrl_len + 8 * n` |
+
+The canary test covers the u32 and u64 kernels as well
+(`crate::test_util::encode_checked`). An extra stray store past the encoded
+data, which leaves the output unchanged, fails it.
 
 ### Cost of the `Vec` wrappers
 

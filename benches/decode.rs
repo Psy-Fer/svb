@@ -319,6 +319,71 @@ fn bench_vbz2_decode(c: &mut Criterion) {
     group.finish();
 }
 
+// ── slice API (u32/u64) ───────────────────────────────────────────────────────
+//
+// Buffers are allocated once outside the timed loop, so these measure the
+// kernels without the Vec wrappers' allocation and zero-fill.
+
+macro_rules! bench_codec_slices {
+    ($fn_name:ident, $group:literal, $codec:expr, $data:ident, $T:ty) => {
+        fn $fn_name(c: &mut Criterion) {
+            let mut g = c.benchmark_group(concat!($group, "/encode_to_slice"));
+            for &n in SIZES {
+                g.throughput(Throughput::Elements(n as u64));
+                let (values, _) = $data(n);
+                let mut buf = vec![0u8; $codec.max_encoded_len(n)];
+                g.bench_with_input(BenchmarkId::from_parameter(n), &values, |b, v| {
+                    b.iter(|| $codec.encode_to_slice(v, &mut buf).unwrap());
+                });
+            }
+            g.finish();
+
+            let mut g = c.benchmark_group(concat!($group, "/decode_to_slice"));
+            for &n in SIZES {
+                g.throughput(Throughput::Elements(n as u64));
+                let (_, enc) = $data(n);
+                let mut out: Vec<$T> = vec![0; n];
+                g.bench_with_input(BenchmarkId::from_parameter(n), &enc, |b, enc| {
+                    b.iter(|| {
+                        $codec.decode_to_slice(enc, &mut out).unwrap();
+                        black_box(&out);
+                    });
+                });
+            }
+            g.finish();
+        }
+    };
+}
+
+bench_codec_slices!(
+    bench_u32_classic_slices,
+    "u32_classic",
+    U32Classic,
+    u32_data,
+    u32
+);
+bench_codec_slices!(
+    bench_u32_0124_slices,
+    "u32_variant0124",
+    U32Variant0124,
+    u32_0124_data,
+    u32
+);
+bench_codec_slices!(
+    bench_u64_1234_slices,
+    "u64_coder1234",
+    U64Coder1234,
+    u64_1234_data,
+    u64
+);
+bench_codec_slices!(
+    bench_u64_1248_slices,
+    "u64_coder1248",
+    U64Coder1248,
+    u64_1248_data,
+    u64
+);
+
 // ── U32 ───────────────────────────────────────────────────────────────────────
 
 fn bench_u32_classic_encode(c: &mut Criterion) {
@@ -1105,6 +1170,10 @@ criterion_group!(
     bench_u64_coder1234_decode,
     bench_u64_coder1248_encode,
     bench_u64_coder1248_decode,
+    bench_u32_classic_slices,
+    bench_u32_0124_slices,
+    bench_u64_1234_slices,
+    bench_u64_1248_slices,
     bench_compare_u32_classic_encode,
     bench_compare_u32_classic_decode,
     bench_compare_u32_variant0124_encode,

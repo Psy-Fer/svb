@@ -33,3 +33,40 @@ All codecs use the same flat layout: control bytes first, data bytes immediately
 ```
 
 The control stream length is always `ceil(n / 4)` bytes for 2-bit codecs, `ceil(n / 8)` for `Svb16`. No length prefix is stored; the caller supplies the element count to `decode`.
+
+## Encoding into your own buffer
+
+Every codec has `encode_to_slice` and `decode_to_slice`, which work on plain
+slices, so the output can live in any storage type that gives you a `&mut [u8]`
+or `&mut [T]`. The `Vec` methods (`encode`, `encode_into`, `decode`,
+`decode_into`) are wrappers around them.
+
+Size the encode buffer with `max_encoded_len(n)`, the worst-case encoded size:
+
+| Variant | `max_encoded_len(n)` |
+|---|---|
+| `Svb16` | `ceil(n / 8) + 2 * n` |
+| `U32Classic`, `U32Variant0124`, `U64Coder1234` | `ceil(n / 4) + 4 * n` |
+| `U64Coder1248` | `ceil(n / 4) + 8 * n` |
+
+```rust
+use svb::u32::U32Classic;
+
+let values = [1u32, 300, 70_000, u32::MAX];
+let mut buf = vec![0u8; U32Classic.max_encoded_len(values.len())];
+let len = U32Classic.encode_to_slice(&values, &mut buf).unwrap();
+
+let mut out = [0u32; 4];
+U32Classic.decode_to_slice(&buf[..len], &mut out).unwrap();
+assert_eq!(out, values);
+```
+
+- `encode_to_slice` returns `EncodeError::OutputTooSmall` if the buffer is
+  shorter than `max_encoded_len(n)`, even when the actual encoded bytes would
+  have fitted. Bytes after the returned length may be overwritten.
+- `decode_to_slice` decodes exactly `out.len()` values. The count is not stored
+  in the encoded bytes, so `out.len()` must match the number of values that
+  were encoded.
+- The `Vec` methods zero-fill the new space before the codec writes into it.
+  That costs a few nanoseconds per call, which matters only for small inputs;
+  see [Performance](../performance.md#slice-api-and-the-vec-wrappers).

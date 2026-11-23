@@ -24,9 +24,11 @@ assert_eq!(decoded, values);
 
 ## Encoding into your own buffer
 
-`encode_to_slice` and `decode_to_slice` work on plain slices, so the output can
-live in any storage type that gives you a `&mut [u8]` or `&mut [u16]`. Size the
-encode buffer with `max_encoded_len(n)`, which is `ceil(n / 8) + 2 * n`.
+`encode_to_slice` and `decode_to_slice` encode into and decode from
+caller-supplied slices. For `Svb16`, `max_encoded_len(n)` is
+`ceil(n / 8) + 2 * n`. See
+[Encoding into your own buffer](index.md#encoding-into-your-own-buffer) for the
+rules that apply to every codec.
 
 ```rust
 use svb::u16::Svb16;
@@ -39,17 +41,6 @@ let mut out = [0u16; 4];
 Svb16.decode_to_slice(&buf[..len], &mut out).unwrap();
 assert_eq!(out, values);
 ```
-
-- `encode_to_slice` returns `EncodeError::OutputTooSmall` if the buffer is
-  shorter than `max_encoded_len(n)`, even when the actual encoded bytes would
-  have fitted. Bytes after the returned length may be overwritten.
-- `decode_to_slice` decodes exactly `out.len()` values. As with `decode`, the
-  count is not stored in the encoded bytes, so `out.len()` must match the
-  number of values that were encoded.
-
-The `Vec` methods are wrappers around these and zero-fill the new space before
-the kernel writes into it. That costs about 4-5 ns per call, which matters only
-for small inputs; see [Performance](../performance.md#slice-api-and-the-vec-wrappers).
 
 ## Control stream layout
 

@@ -48,128 +48,18 @@ pub mod quantize;
 #[cfg(feature = "alloc")]
 pub mod zigzag;
 
-// ── SIMD dispatch macros ──────────────────────────────────────────────────────
+// ── SIMD dispatch macro ───────────────────────────────────────────────────────
 //
-// These macros generate the 5-way cfg dispatch used by every codec variant.
-// Each arm is individually gated so that exactly one branch is active at a time,
+// Generates the 5-way cfg dispatch used by every codec variant. Each arm is
+// individually gated so that exactly one branch is active at a time,
 // preventing unreachable_code warnings when multiple simd-* features overlap.
-//
-// Usage:
-//   impl_dispatch_encode!(fn_name, ElemType, avx2_fn, sse2_fn, neon_fn, scalar_fn);
-//   impl_dispatch_decode!(fn_name, ElemType, avx2_fn, sse2_fn, neon_fn, scalar_fn);
-//
-// Adding a new target architecture requires editing only the macro bodies here.
-
-#[cfg(feature = "alloc")]
-macro_rules! impl_dispatch_encode {
-    ($name:ident, $T:ty, $avx2_fn:path, $sse2_fn:path, $neon_fn:path, $scalar_fn:path) => {
-        fn $name(values: &[$T], out: &mut Vec<u8>) {
-            #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
-            {
-                // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
-                return unsafe { $avx2_fn(values, out) };
-            }
-            #[cfg(all(
-                feature = "simd-ssse3",
-                not(feature = "simd-avx2"),
-                target_arch = "x86_64"
-            ))]
-            {
-                // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime.
-                return unsafe { $sse2_fn(values, out) };
-            }
-            #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
-            {
-                // SAFETY: NEON is mandatory on AArch64.
-                return unsafe { $neon_fn(values, out) };
-            }
-            #[cfg(all(
-                feature = "simd-auto",
-                not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
-            ))]
-            {
-                #[cfg(all(feature = "std", target_arch = "x86_64"))]
-                {
-                    if is_x86_feature_detected!("avx2") {
-                        // SAFETY: AVX2 confirmed at runtime.
-                        return unsafe { $avx2_fn(values, out) };
-                    }
-                    if is_x86_feature_detected!("ssse3") {
-                        // SAFETY: SSSE3 confirmed at runtime.
-                        return unsafe { $sse2_fn(values, out) };
-                    }
-                }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    // SAFETY: NEON is mandatory on AArch64.
-                    return unsafe { $neon_fn(values, out) };
-                }
-            }
-            $scalar_fn(values, out)
-        }
-    };
-}
-
-#[cfg(feature = "alloc")]
-macro_rules! impl_dispatch_decode {
-    ($name:ident, $T:ty, $avx2_fn:path, $sse2_fn:path, $neon_fn:path, $scalar_fn:path) => {
-        fn $name(
-            data: &[u8],
-            n: usize,
-            out: &mut Vec<$T>,
-        ) -> Result<(), crate::error::DecodeError> {
-            #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
-            {
-                // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
-                return unsafe { $avx2_fn(data, n, out) };
-            }
-            #[cfg(all(
-                feature = "simd-ssse3",
-                not(feature = "simd-avx2"),
-                target_arch = "x86_64"
-            ))]
-            {
-                // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime.
-                return unsafe { $sse2_fn(data, n, out) };
-            }
-            #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
-            {
-                // SAFETY: NEON is mandatory on AArch64.
-                return unsafe { $neon_fn(data, n, out) };
-            }
-            #[cfg(all(
-                feature = "simd-auto",
-                not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
-            ))]
-            {
-                #[cfg(all(feature = "std", target_arch = "x86_64"))]
-                {
-                    if is_x86_feature_detected!("avx2") {
-                        // SAFETY: AVX2 confirmed at runtime.
-                        return unsafe { $avx2_fn(data, n, out) };
-                    }
-                    if is_x86_feature_detected!("ssse3") {
-                        // SAFETY: SSSE3 confirmed at runtime.
-                        return unsafe { $sse2_fn(data, n, out) };
-                    }
-                }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    // SAFETY: NEON is mandatory on AArch64.
-                    return unsafe { $neon_fn(data, n, out) };
-                }
-            }
-            $scalar_fn(data, n, out)
-        }
-    };
-}
-
-// Same 5-way dispatch as above, for any signature. Used by the slice kernels.
 //
 // Usage:
 //   impl_dispatch! { fn name(a: A, b: B) -> R; avx2_fn, sse2_fn, neon_fn, scalar_fn }
 //
 // Call it with braces: rustfmt reformats parenthesised calls and breaks the `;`.
+// Adding a new target architecture requires editing only the macro body here.
+
 #[cfg(feature = "alloc")]
 macro_rules! impl_dispatch {
     (fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;
@@ -219,6 +109,33 @@ macro_rules! impl_dispatch {
             $scalar_fn($($arg),*)
         }
     };
+}
+
+#[cfg(all(test, feature = "alloc"))]
+pub(crate) mod test_util {
+    #[cfg(not(feature = "std"))]
+    use alloc::{vec, vec::Vec};
+
+    /// Run an encode kernel on a slice of exactly `max` bytes, followed by
+    /// canary bytes, and check the kernel did not write past the end of its
+    /// slice. Returns the encoded bytes.
+    pub(crate) fn encode_checked<T>(
+        values: &[T],
+        max: usize,
+        f: impl FnOnce(&[T], &mut [u8]) -> usize,
+    ) -> Vec<u8> {
+        const CANARY: u8 = 0xA5;
+        let mut buf = vec![CANARY; max + 64];
+        let written = f(values, &mut buf[..max]);
+        assert!(written <= max);
+        assert!(
+            buf[max..].iter().all(|&b| b == CANARY),
+            "encode wrote past max_encoded_len, n={}",
+            values.len()
+        );
+        buf.truncate(written);
+        buf
+    }
 }
 
 #[cfg(feature = "alloc")]

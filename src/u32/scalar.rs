@@ -1,33 +1,35 @@
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(feature = "std")]
-use std::vec::Vec;
-
 use crate::error::DecodeError;
 
-// ── shared helpers ────────────────────────────────────────────────────────────
-
-/// Extract the 2-bit tag for value `i` from the control stream.
-#[inline]
-fn get_tag(ctrl: &[u8], i: usize) -> u8 {
-    (ctrl[i / 4] >> ((i % 4) * 2)) & 0x03
-}
+// The encode functions below take an `out` slice of at least
+// `ctrl_len + 4 * values.len()` bytes; the caller checks this. They panic on a
+// shorter slice.
 
 // ── U32Classic (Lemire) ───────────────────────────────────────────────────────
 // tag → byte width: tag + 1  (0→1, 1→2, 2→3, 3→4)
 // value ranges:  0x00–0xFF→tag0, 0x100–0xFFFF→tag1,
 //                0x10000–0xFFFFFF→tag2, 0x1000000–0xFFFFFFFF→tag3
 
-pub(super) fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
-    let n = values.len();
-    if n == 0 {
-        return;
-    }
-    let ctrl_len = n.div_ceil(4);
-    let ctrl_start = out.len();
-    out.resize(ctrl_start + ctrl_len, 0u8);
+/// Encode `values` into `out` and return the number of bytes written.
+pub(super) fn encode_to_slice_classic(values: &[u32], out: &mut [u8]) -> usize {
+    let ctrl_len = values.len().div_ceil(4);
+    out[..ctrl_len].fill(0);
+    encode_tail_classic(values, 0, out, ctrl_len, 0)
+}
 
-    for (i, &v) in values.iter().enumerate() {
+/// Encode `values[start..]`, continuing an encode a SIMD path has started.
+///
+/// `start` must be a multiple of 4, and `data_pos` is the number of data bytes
+/// already written after the `ctrl_len` control bytes. Control bytes from
+/// `start / 4` onwards must be zero. Returns the total bytes written.
+pub(super) fn encode_tail_classic(
+    values: &[u32],
+    start: usize,
+    out: &mut [u8],
+    ctrl_len: usize,
+    mut data_pos: usize,
+) -> usize {
+    let (ctrl, data) = out.split_at_mut(ctrl_len);
+    for (i, &v) in values.iter().enumerate().skip(start) {
         let (tag, count): (u8, usize) = if v <= 0xFF {
             (0, 1)
         } else if v <= 0xFFFF {
@@ -37,46 +39,48 @@ pub(super) fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
         } else {
             (3, 4)
         };
-        out[ctrl_start + i / 4] |= tag << ((i % 4) * 2);
-        out.extend_from_slice(&v.to_le_bytes()[..count]);
+        ctrl[i / 4] |= tag << ((i % 4) * 2);
+        data[data_pos..data_pos + count].copy_from_slice(&v.to_le_bytes()[..count]);
+        data_pos += count;
     }
+    ctrl_len + data_pos
 }
 
-/// Decode `n` U32Classic values from pre-split `ctrl` and `data` byte slices.
-///
-/// Unlike [`decode_into_classic`], this function does not split the buffer;
-/// the caller is responsible for passing the ctrl and data streams separately.
-/// Used by SIMD decode paths to handle the scalar tail.
+/// Decode `out.len()` U32Classic values from pre-split `ctrl` and `data` byte
+/// slices. Used by the SIMD decode paths for their scalar tail. `first_index`
+/// is the index of `out[0]` in the whole output, used in error reports.
 pub(super) fn decode_classic_from_raw(
     ctrl: &[u8],
     data: &[u8],
-    n: usize,
-    out: &mut Vec<u32>,
+    out: &mut [u32],
+    first_index: usize,
 ) -> Result<(), DecodeError> {
-    out.reserve(n);
     let mut pos = 0usize;
-    for i in 0..n {
+    for (i, o) in out.iter_mut().enumerate() {
         let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
         let count = (tag + 1) as usize;
         if pos + count > data.len() {
-            return Err(DecodeError::DataTruncated { index: i });
+            return Err(DecodeError::DataTruncated {
+                index: first_index + i,
+            });
         }
         let mut bytes = [0u8; 4];
         bytes[..count].copy_from_slice(&data[pos..pos + count]);
-        out.push(u32::from_le_bytes(bytes));
+        *o = u32::from_le_bytes(bytes);
         pos += count;
     }
     Ok(())
 }
 
-pub(super) fn decode_into_classic(
-    data: &[u8],
-    n: usize,
-    out: &mut Vec<u32>,
-) -> Result<(), DecodeError> {
-    if n == 0 {
-        return Ok(());
-    }
+/// Decode `out.len()` U32Classic values from `data`.
+pub(super) fn decode_to_slice_classic(data: &[u8], out: &mut [u32]) -> Result<(), DecodeError> {
+    let ctrl_len = check_ctrl_len(data, out.len())?;
+    decode_classic_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)
+}
+
+/// Return the control stream length for `n` values, or an error if `data` is
+/// shorter than that.
+fn check_ctrl_len(data: &[u8], n: usize) -> Result<usize, DecodeError> {
     let ctrl_len = n.div_ceil(4);
     if data.len() < ctrl_len {
         return Err(DecodeError::ControlStreamTooShort {
@@ -84,22 +88,7 @@ pub(super) fn decode_into_classic(
             have: data.len(),
         });
     }
-    let ctrl = &data[..ctrl_len];
-    let mut pos = ctrl_len;
-    out.reserve(n);
-
-    for i in 0..n {
-        let tag = get_tag(ctrl, i);
-        let count = (tag + 1) as usize;
-        if pos + count > data.len() {
-            return Err(DecodeError::DataTruncated { index: i });
-        }
-        let mut bytes = [0u8; 4];
-        bytes[..count].copy_from_slice(&data[pos..pos + count]);
-        out.push(u32::from_le_bytes(bytes));
-        pos += count;
-    }
-    Ok(())
+    Ok(ctrl_len)
 }
 
 #[allow(dead_code)]
@@ -124,16 +113,24 @@ pub(super) fn encoded_data_len_classic(ctrl: &[u8], n: usize) -> usize {
 
 const WIDTHS_0124: [usize; 4] = [0, 1, 2, 4];
 
-pub(super) fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
-    let n = values.len();
-    if n == 0 {
-        return;
-    }
-    let ctrl_len = n.div_ceil(4);
-    let ctrl_start = out.len();
-    out.resize(ctrl_start + ctrl_len, 0u8);
+/// Encode `values` into `out` and return the number of bytes written.
+pub(super) fn encode_to_slice_0124(values: &[u32], out: &mut [u8]) -> usize {
+    let ctrl_len = values.len().div_ceil(4);
+    out[..ctrl_len].fill(0);
+    encode_tail_0124(values, 0, out, ctrl_len, 0)
+}
 
-    for (i, &v) in values.iter().enumerate() {
+/// Encode `values[start..]`, continuing an encode a SIMD path has started.
+/// Same contract as [`encode_tail_classic`].
+pub(super) fn encode_tail_0124(
+    values: &[u32],
+    start: usize,
+    out: &mut [u8],
+    ctrl_len: usize,
+    mut data_pos: usize,
+) -> usize {
+    let (ctrl, data) = out.split_at_mut(ctrl_len);
+    for (i, &v) in values.iter().enumerate().skip(start) {
         let (tag, count): (u8, usize) = if v == 0 {
             (0, 0)
         } else if v <= 0xFF {
@@ -143,77 +140,42 @@ pub(super) fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
         } else {
             (3, 4)
         };
-        out[ctrl_start + i / 4] |= tag << ((i % 4) * 2);
-        if count > 0 {
-            out.extend_from_slice(&v.to_le_bytes()[..count]);
-        }
+        ctrl[i / 4] |= tag << ((i % 4) * 2);
+        data[data_pos..data_pos + count].copy_from_slice(&v.to_le_bytes()[..count]);
+        data_pos += count;
     }
+    ctrl_len + data_pos
 }
 
-/// Decode `n` Variant0124 values from pre-split `ctrl` and `data` byte slices.
-///
-/// Used by SIMD decode paths to handle the scalar tail.
+/// Decode `out.len()` Variant0124 values from pre-split `ctrl` and `data` byte
+/// slices. Same contract as [`decode_classic_from_raw`].
 pub(super) fn decode_0124_from_raw(
     ctrl: &[u8],
     data: &[u8],
-    n: usize,
-    out: &mut Vec<u32>,
+    out: &mut [u32],
+    first_index: usize,
 ) -> Result<(), DecodeError> {
-    out.reserve(n);
     let mut pos = 0usize;
-    for i in 0..n {
+    for (i, o) in out.iter_mut().enumerate() {
         let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
         let count = WIDTHS_0124[tag as usize];
-        if count == 0 {
-            out.push(0);
-        } else {
-            if pos + count > data.len() {
-                return Err(DecodeError::DataTruncated { index: i });
-            }
-            let mut bytes = [0u8; 4];
-            bytes[..count].copy_from_slice(&data[pos..pos + count]);
-            out.push(u32::from_le_bytes(bytes));
-            pos += count;
+        if pos + count > data.len() {
+            return Err(DecodeError::DataTruncated {
+                index: first_index + i,
+            });
         }
+        let mut bytes = [0u8; 4];
+        bytes[..count].copy_from_slice(&data[pos..pos + count]);
+        *o = u32::from_le_bytes(bytes);
+        pos += count;
     }
     Ok(())
 }
 
-pub(super) fn decode_into_0124(
-    data: &[u8],
-    n: usize,
-    out: &mut Vec<u32>,
-) -> Result<(), DecodeError> {
-    if n == 0 {
-        return Ok(());
-    }
-    let ctrl_len = n.div_ceil(4);
-    if data.len() < ctrl_len {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: ctrl_len,
-            have: data.len(),
-        });
-    }
-    let ctrl = &data[..ctrl_len];
-    let mut pos = ctrl_len;
-    out.reserve(n);
-
-    for i in 0..n {
-        let tag = get_tag(ctrl, i);
-        let count = WIDTHS_0124[tag as usize];
-        if count == 0 {
-            out.push(0);
-        } else {
-            if pos + count > data.len() {
-                return Err(DecodeError::DataTruncated { index: i });
-            }
-            let mut bytes = [0u8; 4];
-            bytes[..count].copy_from_slice(&data[pos..pos + count]);
-            out.push(u32::from_le_bytes(bytes));
-            pos += count;
-        }
-    }
-    Ok(())
+/// Decode `out.len()` Variant0124 values from `data`.
+pub(super) fn decode_to_slice_0124(data: &[u8], out: &mut [u32]) -> Result<(), DecodeError> {
+    let ctrl_len = check_ctrl_len(data, out.len())?;
+    decode_0124_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)
 }
 
 #[allow(dead_code)]
@@ -238,26 +200,28 @@ pub(super) fn encoded_data_len_0124(ctrl: &[u8], n: usize) -> usize {
 mod tests {
     use super::*;
     #[cfg(not(feature = "std"))]
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
 
     fn enc_classic(v: &[u32]) -> Vec<u8> {
-        let mut out = Vec::new();
-        encode_into_classic(v, &mut out);
+        let mut out = vec![0u8; v.len().div_ceil(4) + 4 * v.len()];
+        let len = encode_to_slice_classic(v, &mut out);
+        out.truncate(len);
         out
     }
     fn dec_classic(d: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
-        let mut out = Vec::new();
-        decode_into_classic(d, n, &mut out)?;
+        let mut out = vec![0u32; n];
+        decode_to_slice_classic(d, &mut out)?;
         Ok(out)
     }
     fn enc_0124(v: &[u32]) -> Vec<u8> {
-        let mut out = Vec::new();
-        encode_into_0124(v, &mut out);
+        let mut out = vec![0u8; v.len().div_ceil(4) + 4 * v.len()];
+        let len = encode_to_slice_0124(v, &mut out);
+        out.truncate(len);
         out
     }
     fn dec_0124(d: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
-        let mut out = Vec::new();
-        decode_into_0124(d, n, &mut out)?;
+        let mut out = vec![0u32; n];
+        decode_to_slice_0124(d, &mut out)?;
         Ok(out)
     }
 

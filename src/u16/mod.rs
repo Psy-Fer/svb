@@ -245,22 +245,10 @@ mod cross_path {
         encode_with(values, scalar::encode_to_slice)
     }
 
-    /// Run an encode kernel on a slice of exactly `max_encoded_len` bytes,
-    /// followed by canary bytes, and check the kernel did not write past the
-    /// end of its slice.
+    /// Encode with `f` into a slice of exactly `max_encoded_len` bytes and
+    /// check it did not write past the end (see `test_util::encode_checked`).
     fn encode_with(values: &[u16], f: impl FnOnce(&[u16], &mut [u8]) -> usize) -> Vec<u8> {
-        const CANARY: u8 = 0xA5;
-        let max = super::Svb16.max_encoded_len(values.len());
-        let mut buf = vec![CANARY; max + 64];
-        let written = f(values, &mut buf[..max]);
-        assert!(written <= max);
-        assert!(
-            buf[max..].iter().all(|&b| b == CANARY),
-            "encode wrote past max_encoded_len, n={}",
-            values.len()
-        );
-        buf.truncate(written);
-        buf
+        crate::test_util::encode_checked(values, super::Svb16.max_encoded_len(values.len()), f)
     }
 
     // ── x86_64 ───────────────────────────────────────────────────────────────

@@ -6,11 +6,6 @@
 
 use core::arch::x86_64::*;
 
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(feature = "std")]
-use std::vec::Vec;
-
 use super::shuffle::{
     DATA_LEN, DATA_LEN_0124, ENCODE_TABLE_0124, ENCODE_TABLE_CLASSIC, TABLE, TABLE_0124,
 };
@@ -21,30 +16,23 @@ use crate::error::DecodeError;
 /// Processes 4 values per ctrl byte. The ctrl byte is computed using the signed
 /// bias trick (unsigned comparison via i32 bias 0x80000000). `PSHUFB` packs the
 /// variable-width data bytes in a single instruction. Stores 16 bytes per
-/// iteration (overwriting into the +16-byte guard in the reserved capacity) and
-/// advances the data pointer by the exact byte count for that ctrl byte.
-/// Remaining values (n % 4) are handled by the scalar path.
+/// iteration and advances the data pointer by the exact byte count for that
+/// ctrl byte, so a store can write past the data encoded so far but never past
+/// `ctrl_len + 4 * n`. Remaining values (n % 4) are handled by the scalar path.
 ///
 /// # Safety
-/// The executing CPU must support SSSE3.
+/// The executing CPU must support SSSE3. `out.len()` must be at least
+/// `ctrl_len + 4 * values.len()`.
 #[allow(dead_code)]
 #[target_feature(enable = "ssse3")]
-pub(super) unsafe fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
+pub(super) unsafe fn encode_to_slice_classic(values: &[u32], out: &mut [u8]) -> usize {
     let n = values.len();
-    if n == 0 {
-        return;
-    }
-
     let ctrl_len = n.div_ceil(4);
-    let ctrl_start = out.len();
-
-    // Reserve ctrl bytes + worst-case data (4 bytes/value) + 16-byte SIMD overrun guard.
-    out.reserve(ctrl_len + 4 * n + 16);
-    // Zero-initialize ctrl bytes so the scalar tail can OR into them safely.
-    out.resize(ctrl_start + ctrl_len, 0u8);
+    debug_assert!(out.len() >= ctrl_len + 4 * n);
+    // Zero the ctrl bytes so the scalar tail can OR into them.
+    out[..ctrl_len].fill(0);
 
     let simd_n = (n / 4) * 4;
-    let data_start = ctrl_start + ctrl_len;
     let base_ptr = out.as_mut_ptr();
     let mut data_pos = 0usize;
 
@@ -94,44 +82,25 @@ pub(super) unsafe fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
                 as u8;
 
         unsafe {
-            // SAFETY: ctrl_start + block < ctrl_start + ctrl_len <= out.len().
-            *base_ptr.add(ctrl_start + block) = ctrl;
+            // SAFETY: block < ctrl_len <= out.len().
+            *base_ptr.add(block) = ctrl;
 
             // Shuffle input bytes into packed output order, then store 16 bytes.
             // SAFETY: ENCODE_TABLE_CLASSIC[ctrl] is 16 bytes; ctrl < 256 (u8).
             let enc_mask =
                 _mm_loadu_si128(ENCODE_TABLE_CLASSIC[ctrl as usize].as_ptr() as *const __m128i);
             let packed = _mm_shuffle_epi8(v, enc_mask);
-            // SAFETY: data_start + data_pos + 16 <= data_start + 4*n + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed);
+            // SAFETY: values before this store took at most 4 bytes each and the
+            // store covers 4 values of at most 4 bytes, so it ends at or before
+            // ctrl_len + 4 * n <= out.len().
+            _mm_storeu_si128(base_ptr.add(ctrl_len + data_pos) as *mut __m128i, packed);
         }
 
         data_pos += DATA_LEN[ctrl as usize] as usize;
         block += 1;
     }
 
-    unsafe {
-        // SAFETY: elements [data_start, data_start + data_pos) were written above.
-        out.set_len(data_start + data_pos);
-    }
-
-    // Scalar tail for n % 4 remaining values.
-    // The ctrl bytes are already allocated and zeroed; we only need to set bits and push data.
-    for j in simd_n..n {
-        let v = values[j];
-        let (tag, count): (u8, usize) = if v <= 0xFF {
-            (0, 1)
-        } else if v <= 0xFFFF {
-            (1, 2)
-        } else if v <= 0xFF_FFFF {
-            (2, 3)
-        } else {
-            (3, 4)
-        };
-        // SAFETY: ctrl_start + j/4 < ctrl_start + ctrl_len <= out.len().
-        out[ctrl_start + j / 4] |= tag << ((j % 4) * 2);
-        out.extend_from_slice(&v.to_le_bytes()[..count]);
-    }
+    super::scalar::encode_tail_classic(values, simd_n, out, ctrl_len, data_pos)
 }
 
 /// Encode `values` into U32Variant0124 format using SSSE3 `PSHUFB`.
@@ -141,25 +110,18 @@ pub(super) unsafe fn encode_into_classic(values: &[u32], out: &mut Vec<u8>) {
 /// corresponding encode table and data-length table.
 ///
 /// # Safety
-/// The executing CPU must support SSSE3.
+/// The executing CPU must support SSSE3. `out.len()` must be at least
+/// `ctrl_len + 4 * values.len()`.
 #[allow(dead_code)]
 #[target_feature(enable = "ssse3")]
-pub(super) unsafe fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
+pub(super) unsafe fn encode_to_slice_0124(values: &[u32], out: &mut [u8]) -> usize {
     let n = values.len();
-    if n == 0 {
-        return;
-    }
-
     let ctrl_len = n.div_ceil(4);
-    let ctrl_start = out.len();
-
-    // Reserve ctrl bytes + worst-case data (4 bytes/value) + 16-byte SIMD overrun guard.
-    out.reserve(ctrl_len + 4 * n + 16);
-    // Zero-initialize ctrl bytes so the scalar tail can OR into them safely.
-    out.resize(ctrl_start + ctrl_len, 0u8);
+    debug_assert!(out.len() >= ctrl_len + 4 * n);
+    // Zero the ctrl bytes so the scalar tail can OR into them.
+    out[..ctrl_len].fill(0);
 
     let simd_n = (n / 4) * 4;
-    let data_start = ctrl_start + ctrl_len;
     let base_ptr = out.as_mut_ptr();
     let mut data_pos = 0usize;
 
@@ -201,45 +163,24 @@ pub(super) unsafe fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
                 as u8;
 
         unsafe {
-            // SAFETY: ctrl_start + block < ctrl_start + ctrl_len <= out.len().
-            *base_ptr.add(ctrl_start + block) = ctrl;
+            // SAFETY: block < ctrl_len <= out.len().
+            *base_ptr.add(block) = ctrl;
 
             // SAFETY: ENCODE_TABLE_0124[ctrl] is 16 bytes; ctrl < 256 (u8).
             let enc_mask =
                 _mm_loadu_si128(ENCODE_TABLE_0124[ctrl as usize].as_ptr() as *const __m128i);
             let packed = _mm_shuffle_epi8(v, enc_mask);
-            // SAFETY: data_start + data_pos + 16 <= data_start + 4*n + 16 <= capacity.
-            _mm_storeu_si128(base_ptr.add(data_start + data_pos) as *mut __m128i, packed);
+            // SAFETY: values before this store took at most 4 bytes each and the
+            // store covers 4 values of at most 4 bytes, so it ends at or before
+            // ctrl_len + 4 * n <= out.len().
+            _mm_storeu_si128(base_ptr.add(ctrl_len + data_pos) as *mut __m128i, packed);
         }
 
         data_pos += DATA_LEN_0124[ctrl as usize] as usize;
         block += 1;
     }
 
-    unsafe {
-        // SAFETY: elements [data_start, data_start + data_pos) were written above.
-        out.set_len(data_start + data_pos);
-    }
-
-    // Scalar tail for n % 4 remaining values.
-    // The ctrl bytes are already allocated and zeroed; we only need to set bits and push data.
-    for j in simd_n..n {
-        let v = values[j];
-        let (tag, count): (u8, usize) = if v == 0 {
-            (0, 0)
-        } else if v <= 0xFF {
-            (1, 1)
-        } else if v <= 0xFFFF {
-            (2, 2)
-        } else {
-            (3, 4)
-        };
-        // SAFETY: ctrl_start + j/4 < ctrl_start + ctrl_len <= out.len().
-        out[ctrl_start + j / 4] |= tag << ((j % 4) * 2);
-        if count > 0 {
-            out.extend_from_slice(&v.to_le_bytes()[..count]);
-        }
-    }
+    super::scalar::encode_tail_0124(values, simd_n, out, ctrl_len, data_pos)
 }
 
 /// Decode `n` u32 values from a U32Classic-encoded buffer using SSSE3 `PSHUFB`.
@@ -252,11 +193,11 @@ pub(super) unsafe fn encode_into_0124(values: &[u32], out: &mut Vec<u8>) {
 /// The executing CPU must support SSSE3.
 #[allow(dead_code)]
 #[target_feature(enable = "ssse3")]
-pub(super) unsafe fn decode_into_classic(
+pub(super) unsafe fn decode_to_slice_classic(
     data: &[u8],
-    n: usize,
-    out: &mut Vec<u32>,
+    out: &mut [u32],
 ) -> Result<(), DecodeError> {
+    let n = out.len();
     if n == 0 {
         return Ok(());
     }
@@ -271,8 +212,7 @@ pub(super) unsafe fn decode_into_classic(
     let ctrl = &data[..ctrl_len];
     let data_bytes = &data[ctrl_len..];
 
-    out.reserve(n);
-    let base = out.len();
+    let out_ptr = out.as_mut_ptr();
 
     let mut ctrl_pos = 0usize;
     let mut data_pos = 0usize;
@@ -297,20 +237,14 @@ pub(super) unsafe fn decode_into_classic(
         };
 
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n, so
-            // base + decoded + 4 <= base + n <= out.capacity().
-            let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
+            // SAFETY: decoded + 4 <= n = out.len().
+            let out_ptr = out_ptr.add(decoded) as *mut __m128i;
             _mm_storeu_si128(out_ptr, result);
         }
 
         data_pos += DATA_LEN[cb as usize] as usize;
         ctrl_pos += 1;
         decoded += 4;
-    }
-
-    unsafe {
-        // SAFETY: every element in [base, base + decoded) was written above.
-        out.set_len(base + decoded);
     }
 
     // Padded tail: for well-formed input, guard fires (rem < 16) with complete
@@ -322,9 +256,7 @@ pub(super) unsafe fn decode_into_classic(
         let mut padded = [0u8; 32];
         let rem = data_bytes.len() - data_pos;
         if rem > padded.len() {
-            return Err(DecodeError::DataTruncated {
-                index: base + decoded,
-            });
+            return Err(DecodeError::DataTruncated { index: decoded });
         }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
@@ -333,9 +265,7 @@ pub(super) unsafe fn decode_into_classic(
             let cb = ctrl[ctrl_pos];
             let consumed = DATA_LEN[cb as usize] as usize;
             if padded_pos + consumed > rem || padded_pos + 16 > padded.len() {
-                return Err(DecodeError::DataTruncated {
-                    index: base + decoded,
-                });
+                return Err(DecodeError::DataTruncated { index: decoded });
             }
             // SAFETY: padded_pos + 16 <= padded.len() checked above.
             let result = unsafe {
@@ -344,17 +274,14 @@ pub(super) unsafe fn decode_into_classic(
                 _mm_shuffle_epi8(chunk, mask)
             };
             unsafe {
-                // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
-                let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
+                // SAFETY: decoded + 4 <= n = out.len().
+                let out_ptr = out_ptr.add(decoded) as *mut __m128i;
                 _mm_storeu_si128(out_ptr, result);
             }
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;
             decoded += 4;
-        }
-        unsafe {
-            out.set_len(base + decoded);
         }
     }
 
@@ -363,8 +290,8 @@ pub(super) unsafe fn decode_into_classic(
         super::scalar::decode_classic_from_raw(
             &ctrl[ctrl_pos..],
             &data_bytes[data_pos..],
-            n - decoded,
-            out,
+            &mut out[decoded..],
+            decoded,
         )?;
     }
 
@@ -380,11 +307,8 @@ pub(super) unsafe fn decode_into_classic(
 /// The executing CPU must support SSSE3.
 #[allow(dead_code)]
 #[target_feature(enable = "ssse3")]
-pub(super) unsafe fn decode_into_0124(
-    data: &[u8],
-    n: usize,
-    out: &mut Vec<u32>,
-) -> Result<(), DecodeError> {
+pub(super) unsafe fn decode_to_slice_0124(data: &[u8], out: &mut [u32]) -> Result<(), DecodeError> {
+    let n = out.len();
     if n == 0 {
         return Ok(());
     }
@@ -399,8 +323,7 @@ pub(super) unsafe fn decode_into_0124(
     let ctrl = &data[..ctrl_len];
     let data_bytes = &data[ctrl_len..];
 
-    out.reserve(n);
-    let base = out.len();
+    let out_ptr = out.as_mut_ptr();
 
     let mut ctrl_pos = 0usize;
     let mut data_pos = 0usize;
@@ -423,19 +346,14 @@ pub(super) unsafe fn decode_into_0124(
         };
 
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
-            let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
+            // SAFETY: decoded + 4 <= n = out.len().
+            let out_ptr = out_ptr.add(decoded) as *mut __m128i;
             _mm_storeu_si128(out_ptr, result);
         }
 
         data_pos += DATA_LEN_0124[cb as usize] as usize;
         ctrl_pos += 1;
         decoded += 4;
-    }
-
-    unsafe {
-        // SAFETY: every element in [base, base + decoded) was written above.
-        out.set_len(base + decoded);
     }
 
     // Padded tail: for well-formed input, guard fires (rem < 16) with complete
@@ -447,9 +365,7 @@ pub(super) unsafe fn decode_into_0124(
         let mut padded = [0u8; 32];
         let rem = data_bytes.len() - data_pos;
         if rem > padded.len() {
-            return Err(DecodeError::DataTruncated {
-                index: base + decoded,
-            });
+            return Err(DecodeError::DataTruncated { index: decoded });
         }
         padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
         let mut padded_pos = 0usize;
@@ -458,9 +374,7 @@ pub(super) unsafe fn decode_into_0124(
             let cb = ctrl[ctrl_pos];
             let consumed = DATA_LEN_0124[cb as usize] as usize;
             if padded_pos + consumed > rem || padded_pos + 16 > padded.len() {
-                return Err(DecodeError::DataTruncated {
-                    index: base + decoded,
-                });
+                return Err(DecodeError::DataTruncated { index: decoded });
             }
             // SAFETY: padded_pos + 16 <= padded.len() checked above.
             let result = unsafe {
@@ -469,17 +383,14 @@ pub(super) unsafe fn decode_into_0124(
                 _mm_shuffle_epi8(chunk, mask)
             };
             unsafe {
-                // SAFETY: out.reserve(n) ensures capacity; decoded + 4 <= n.
-                let out_ptr = out.as_mut_ptr().add(base + decoded) as *mut __m128i;
+                // SAFETY: decoded + 4 <= n = out.len().
+                let out_ptr = out_ptr.add(decoded) as *mut __m128i;
                 _mm_storeu_si128(out_ptr, result);
             }
             padded_pos += consumed;
             data_pos += consumed;
             ctrl_pos += 1;
             decoded += 4;
-        }
-        unsafe {
-            out.set_len(base + decoded);
         }
     }
 
@@ -488,8 +399,8 @@ pub(super) unsafe fn decode_into_0124(
         super::scalar::decode_0124_from_raw(
             &ctrl[ctrl_pos..],
             &data_bytes[data_pos..],
-            n - decoded,
-            out,
+            &mut out[decoded..],
+            decoded,
         )?;
     }
 

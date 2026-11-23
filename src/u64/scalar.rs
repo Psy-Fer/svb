@@ -1,34 +1,50 @@
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(feature = "std")]
-use std::vec::Vec;
-
 use crate::error::DecodeError;
 
-// ── shared helpers ────────────────────────────────────────────────────────────
+// The encode functions below take an `out` slice of at least
+// `ctrl_len + W * values.len()` bytes, where W is the widest value (4 for
+// Coder1234, 8 for Coder1248); the caller checks this. They panic on a shorter
+// slice.
 
-#[inline]
-fn get_tag(ctrl: &[u8], i: usize) -> u8 {
-    (ctrl[i / 4] >> ((i % 4) * 2)) & 0x03
+/// Return the control stream length for `n` values, or an error if `data` is
+/// shorter than that.
+fn check_ctrl_len(data: &[u8], n: usize) -> Result<usize, DecodeError> {
+    let ctrl_len = n.div_ceil(4);
+    if data.len() < ctrl_len {
+        return Err(DecodeError::ControlStreamTooShort {
+            need: ctrl_len,
+            have: data.len(),
+        });
+    }
+    Ok(ctrl_len)
 }
 
 // ── U64Coder1234 ──────────────────────────────────────────────────────────────
 // tag → byte width: tag + 1  (0→1, 1→2, 2→3, 3→4)
 // Same tag/width table as U32Classic but element type is u64.
-// Precondition: all values must fit in u32 (≤ 0xFFFF_FFFF).
-// Violating this is a precondition error; debug_assert fires in debug builds,
-// release builds silently truncate to the low 4 bytes.
+// Values above u32::MAX are truncated to their low 4 bytes (documented on
+// U64Coder1234).
 
-pub(super) fn encode_into_1234(values: &[u64], out: &mut Vec<u8>) {
-    let n = values.len();
-    if n == 0 {
-        return;
-    }
-    let ctrl_len = n.div_ceil(4);
-    let ctrl_start = out.len();
-    out.resize(ctrl_start + ctrl_len, 0u8);
+/// Encode `values` into `out` and return the number of bytes written.
+pub(super) fn encode_to_slice_1234(values: &[u64], out: &mut [u8]) -> usize {
+    let ctrl_len = values.len().div_ceil(4);
+    out[..ctrl_len].fill(0);
+    encode_tail_1234(values, 0, out, ctrl_len, 0)
+}
 
-    for (i, &v) in values.iter().enumerate() {
+/// Encode `values[start..]`, continuing an encode a SIMD path has started.
+///
+/// `start` must be a multiple of 4, and `data_pos` is the number of data bytes
+/// already written after the `ctrl_len` control bytes. Control bytes from
+/// `start / 4` onwards must be zero. Returns the total bytes written.
+pub(super) fn encode_tail_1234(
+    values: &[u64],
+    start: usize,
+    out: &mut [u8],
+    ctrl_len: usize,
+    mut data_pos: usize,
+) -> usize {
+    let (ctrl, data) = out.split_at_mut(ctrl_len);
+    for (i, &v) in values.iter().enumerate().skip(start) {
         let (tag, count): (u8, usize) = if v <= 0xFF {
             (0, 1)
         } else if v <= 0xFFFF {
@@ -38,93 +54,45 @@ pub(super) fn encode_into_1234(values: &[u64], out: &mut Vec<u8>) {
         } else {
             (3, 4)
         };
-        out[ctrl_start + i / 4] |= tag << ((i % 4) * 2);
+        ctrl[i / 4] |= tag << ((i % 4) * 2);
         // Cast to u32 before taking LE bytes so we always get exactly 4 bytes.
-        out.extend_from_slice(&(v as u32).to_le_bytes()[..count]);
+        data[data_pos..data_pos + count].copy_from_slice(&(v as u32).to_le_bytes()[..count]);
+        data_pos += count;
     }
+    ctrl_len + data_pos
 }
 
-/// Decode `n` U64Coder1234 values from pre-split `ctrl` and `data` byte slices.
-///
-/// Used by SIMD decode paths to handle the scalar tail.
+/// Decode `out.len()` U64Coder1234 values from pre-split `ctrl` and `data`
+/// byte slices. Used by the SIMD decode paths for their scalar tail.
+/// `first_index` is the index of `out[0]` in the whole output, used in error
+/// reports.
 pub(super) fn decode_1234_from_raw(
     ctrl: &[u8],
     data: &[u8],
-    n: usize,
-    out: &mut Vec<u64>,
+    out: &mut [u64],
+    first_index: usize,
 ) -> Result<(), DecodeError> {
-    out.reserve(n);
     let mut pos = 0usize;
-    for i in 0..n {
+    for (i, o) in out.iter_mut().enumerate() {
         let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
         let count = (tag + 1) as usize;
         if pos + count > data.len() {
-            return Err(DecodeError::DataTruncated { index: i });
+            return Err(DecodeError::DataTruncated {
+                index: first_index + i,
+            });
         }
         let mut bytes = [0u8; 4];
         bytes[..count].copy_from_slice(&data[pos..pos + count]);
-        out.push(u32::from_le_bytes(bytes) as u64);
+        *o = u32::from_le_bytes(bytes) as u64;
         pos += count;
     }
     Ok(())
 }
 
-/// Decode `n` U64Coder1248 values from pre-split `ctrl` and `data` byte slices.
-///
-/// Used by SIMD decode paths to handle the scalar tail.
-pub(super) fn decode_1248_from_raw(
-    ctrl: &[u8],
-    data: &[u8],
-    n: usize,
-    out: &mut Vec<u64>,
-) -> Result<(), DecodeError> {
-    out.reserve(n);
-    let mut pos = 0usize;
-    for i in 0..n {
-        let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
-        let count = WIDTHS_1248[tag as usize];
-        if pos + count > data.len() {
-            return Err(DecodeError::DataTruncated { index: i });
-        }
-        let mut bytes = [0u8; 8];
-        bytes[..count].copy_from_slice(&data[pos..pos + count]);
-        out.push(u64::from_le_bytes(bytes));
-        pos += count;
-    }
-    Ok(())
-}
-
-pub(super) fn decode_into_1234(
-    data: &[u8],
-    n: usize,
-    out: &mut Vec<u64>,
-) -> Result<(), DecodeError> {
-    if n == 0 {
-        return Ok(());
-    }
-    let ctrl_len = n.div_ceil(4);
-    if data.len() < ctrl_len {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: ctrl_len,
-            have: data.len(),
-        });
-    }
-    let ctrl = &data[..ctrl_len];
-    let mut pos = ctrl_len;
-    out.reserve(n);
-
-    for i in 0..n {
-        let tag = get_tag(ctrl, i);
-        let count = (tag + 1) as usize;
-        if pos + count > data.len() {
-            return Err(DecodeError::DataTruncated { index: i });
-        }
-        let mut bytes = [0u8; 4];
-        bytes[..count].copy_from_slice(&data[pos..pos + count]);
-        out.push(u32::from_le_bytes(bytes) as u64);
-        pos += count;
-    }
-    Ok(())
+/// Decode `out.len()` U64Coder1234 values from `data`.
+pub(super) fn decode_to_slice_1234(data: &[u8], out: &mut [u64]) -> Result<(), DecodeError> {
+    let ctrl_len = check_ctrl_len(data, out.len())?;
+    decode_1234_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)
 }
 
 #[allow(dead_code)]
@@ -150,16 +118,24 @@ pub(super) fn encoded_data_len_1234(ctrl: &[u8], n: usize) -> usize {
 
 const WIDTHS_1248: [usize; 4] = [1, 2, 4, 8];
 
-pub(super) fn encode_into_1248(values: &[u64], out: &mut Vec<u8>) {
-    let n = values.len();
-    if n == 0 {
-        return;
-    }
-    let ctrl_len = n.div_ceil(4);
-    let ctrl_start = out.len();
-    out.resize(ctrl_start + ctrl_len, 0u8);
+/// Encode `values` into `out` and return the number of bytes written.
+pub(super) fn encode_to_slice_1248(values: &[u64], out: &mut [u8]) -> usize {
+    let ctrl_len = values.len().div_ceil(4);
+    out[..ctrl_len].fill(0);
+    encode_tail_1248(values, 0, out, ctrl_len, 0)
+}
 
-    for (i, &v) in values.iter().enumerate() {
+/// Encode `values[start..]`, continuing an encode a SIMD path has started.
+/// Same contract as [`encode_tail_1234`].
+pub(super) fn encode_tail_1248(
+    values: &[u64],
+    start: usize,
+    out: &mut [u8],
+    ctrl_len: usize,
+    mut data_pos: usize,
+) -> usize {
+    let (ctrl, data) = out.split_at_mut(ctrl_len);
+    for (i, &v) in values.iter().enumerate().skip(start) {
         let (tag, count): (u8, usize) = if v <= 0xFF {
             (0, 1)
         } else if v <= 0xFFFF {
@@ -169,42 +145,42 @@ pub(super) fn encode_into_1248(values: &[u64], out: &mut Vec<u8>) {
         } else {
             (3, 8)
         };
-        out[ctrl_start + i / 4] |= tag << ((i % 4) * 2);
-        out.extend_from_slice(&v.to_le_bytes()[..count]);
+        ctrl[i / 4] |= tag << ((i % 4) * 2);
+        data[data_pos..data_pos + count].copy_from_slice(&v.to_le_bytes()[..count]);
+        data_pos += count;
     }
+    ctrl_len + data_pos
 }
 
-pub(super) fn decode_into_1248(
+/// Decode `out.len()` U64Coder1248 values from pre-split `ctrl` and `data`
+/// byte slices. Same contract as [`decode_1234_from_raw`].
+pub(super) fn decode_1248_from_raw(
+    ctrl: &[u8],
     data: &[u8],
-    n: usize,
-    out: &mut Vec<u64>,
+    out: &mut [u64],
+    first_index: usize,
 ) -> Result<(), DecodeError> {
-    if n == 0 {
-        return Ok(());
-    }
-    let ctrl_len = n.div_ceil(4);
-    if data.len() < ctrl_len {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: ctrl_len,
-            have: data.len(),
-        });
-    }
-    let ctrl = &data[..ctrl_len];
-    let mut pos = ctrl_len;
-    out.reserve(n);
-
-    for i in 0..n {
-        let tag = get_tag(ctrl, i);
+    let mut pos = 0usize;
+    for (i, o) in out.iter_mut().enumerate() {
+        let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
         let count = WIDTHS_1248[tag as usize];
         if pos + count > data.len() {
-            return Err(DecodeError::DataTruncated { index: i });
+            return Err(DecodeError::DataTruncated {
+                index: first_index + i,
+            });
         }
         let mut bytes = [0u8; 8];
         bytes[..count].copy_from_slice(&data[pos..pos + count]);
-        out.push(u64::from_le_bytes(bytes));
+        *o = u64::from_le_bytes(bytes);
         pos += count;
     }
     Ok(())
+}
+
+/// Decode `out.len()` U64Coder1248 values from `data`.
+pub(super) fn decode_to_slice_1248(data: &[u8], out: &mut [u64]) -> Result<(), DecodeError> {
+    let ctrl_len = check_ctrl_len(data, out.len())?;
+    decode_1248_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)
 }
 
 #[allow(dead_code)]
@@ -229,26 +205,28 @@ pub(super) fn encoded_data_len_1248(ctrl: &[u8], n: usize) -> usize {
 mod tests {
     use super::*;
     #[cfg(not(feature = "std"))]
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
 
     fn enc_1234(v: &[u64]) -> Vec<u8> {
-        let mut out = Vec::new();
-        encode_into_1234(v, &mut out);
+        let mut out = vec![0u8; v.len().div_ceil(4) + 4 * v.len()];
+        let len = encode_to_slice_1234(v, &mut out);
+        out.truncate(len);
         out
     }
     fn dec_1234(d: &[u8], n: usize) -> Result<Vec<u64>, DecodeError> {
-        let mut out = Vec::new();
-        decode_into_1234(d, n, &mut out)?;
+        let mut out = vec![0u64; n];
+        decode_to_slice_1234(d, &mut out)?;
         Ok(out)
     }
     fn enc_1248(v: &[u64]) -> Vec<u8> {
-        let mut out = Vec::new();
-        encode_into_1248(v, &mut out);
+        let mut out = vec![0u8; v.len().div_ceil(4) + 8 * v.len()];
+        let len = encode_to_slice_1248(v, &mut out);
+        out.truncate(len);
         out
     }
     fn dec_1248(d: &[u8], n: usize) -> Result<Vec<u64>, DecodeError> {
-        let mut out = Vec::new();
-        decode_into_1248(d, n, &mut out)?;
+        let mut out = vec![0u64; n];
+        decode_to_slice_1248(d, &mut out)?;
         Ok(out)
     }
 

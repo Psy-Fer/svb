@@ -9,18 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Slice API for `Svb16` (issue #4): `max_encoded_len`, `encode_to_slice` and `decode_to_slice` encode into and decode from caller-supplied slices, so the output can live in any storage type. The `Vec` methods are now wrappers around them.
+- Slice API for every codec (issue #4): `max_encoded_len`, `encode_to_slice` and `decode_to_slice` on `Svb16`, `U32Classic`, `U32Variant0124`, `U64Coder1234` and `U64Coder1248` encode into and decode from caller-supplied slices, so the output can live in any storage type. The `Vec` methods are now wrappers around them.
 - `EncodeError::OutputTooSmall`, returned by `encode_to_slice` when the output slice is shorter than `max_encoded_len`.
 
 ### Changed
 
-- `Svb16::decode_into` now leaves `out` at its original length on error. Previously it kept any values decoded before the error.
-- `Svb16`'s `Vec` methods zero-fill the output before the kernel writes into it, which costs about 4-5 ns per call (15-20% at 128 values, 2-3% at 8192). The slice functions have no such cost. See the "Slice API" section of `docs/src/performance.md`.
-- The SIMD `Svb16` encoders no longer reserve 16 bytes of padding. Their stores never go past `ctrl_len + 2 * n`, and a canary test checks this.
+- `decode_into` on every codec now leaves `out` at its original length on error. Previously it kept any values decoded before the error.
+- The `Vec` methods zero-fill the output before the codec writes into it, which costs about 4-5 ns per call for `Svb16` (15-20% at 128 values, 2-3% at 8192). The slice functions have no such cost. See the "Slice API" section of `docs/src/performance.md`.
+- The SIMD encoders no longer reserve 16 bytes of padding. Their stores never go past `max_encoded_len`, and a canary test checks this for every encode kernel.
 
 ### Fixed
 
-- `DecodeError::DataTruncated { index }` from the SSSE3, AVX2 and NEON `Svb16` decoders now reports the index in the whole output when the error happens in the scalar tail. Previously it reported the index within the tail.
+- `DecodeError::DataTruncated { index }` from the SSSE3, AVX2 and NEON decoders of every codec now reports the index in the whole output when the error happens in the scalar tail. Previously it reported the index within the tail.
 
 ## [0.3.1] - 2026-09-02
 

@@ -30,11 +30,11 @@
 //! Data bytes follow in the same order as the values, with no padding between them.
 
 #[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
-use crate::error::DecodeError;
+use crate::error::{DecodeError, EncodeError};
 
 mod scalar;
 
@@ -49,22 +49,20 @@ mod sse2;
 
 // ── U32Classic ────────────────────────────────────────────────────────────────
 
-impl_dispatch_encode!(
-    dispatch_encode_classic,
-    u32,
-    avx2::encode_into_classic,
-    sse2::encode_into_classic,
-    neon::encode_into_classic,
-    scalar::encode_into_classic
-);
-impl_dispatch_decode!(
-    dispatch_decode_classic,
-    u32,
-    avx2::decode_into_classic,
-    sse2::decode_into_classic,
-    neon::decode_into_classic,
-    scalar::decode_into_classic
-);
+impl_dispatch! {
+    fn dispatch_encode_classic(values: &[u32], out: &mut [u8]) -> usize;
+    avx2::encode_to_slice_classic,
+    sse2::encode_to_slice_classic,
+    neon::encode_to_slice_classic,
+    scalar::encode_to_slice_classic
+}
+impl_dispatch! {
+    fn dispatch_decode_classic(data: &[u8], out: &mut [u32]) -> Result<(), DecodeError>;
+    avx2::decode_to_slice_classic,
+    sse2::decode_to_slice_classic,
+    neon::decode_to_slice_classic,
+    scalar::decode_to_slice_classic
+}
 
 /// StreamVByte codec for `u32` values using 2-bit tags encoding 1, 2, 3, or 4 data bytes per value.
 ///
@@ -95,7 +93,7 @@ impl U32Classic {
     /// ```
     pub fn encode(&self, values: &[u32]) -> Vec<u8> {
         let mut out = Vec::new();
-        dispatch_encode_classic(values, &mut out);
+        self.encode_into(values, &mut out);
         out
     }
 
@@ -110,7 +108,55 @@ impl U32Classic {
     /// U32Classic.encode_into(&[3u32, 4], &mut buf);
     /// ```
     pub fn encode_into(&self, values: &[u32], out: &mut Vec<u8>) {
-        dispatch_encode_classic(values, out);
+        let start = out.len();
+        out.resize(start + self.max_encoded_len(values.len()), 0);
+        let written = dispatch_encode_classic(values, &mut out[start..]);
+        out.truncate(start + written);
+    }
+
+    /// Worst-case encoded size in bytes for `n` values: `ceil(n / 4)` control
+    /// bytes plus 4 data bytes per value.
+    ///
+    /// Use this to size the buffer for [`encode_to_slice`](Self::encode_to_slice).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Classic;
+    /// assert_eq!(U32Classic.max_encoded_len(0), 0);
+    /// assert_eq!(U32Classic.max_encoded_len(5), 2 + 4 * 5);
+    /// ```
+    pub const fn max_encoded_len(&self, n: usize) -> usize {
+        n.div_ceil(4).saturating_add(n.saturating_mul(4))
+    }
+
+    /// Encode `values` into the start of `out` and return the number of bytes
+    /// written.
+    ///
+    /// `out` must be at least [`max_encoded_len(values.len())`](Self::max_encoded_len)
+    /// bytes long, otherwise [`EncodeError::OutputTooSmall`] is returned and
+    /// `out` is not modified. The check is against the worst case, so a
+    /// shorter slice is rejected even if the actual encoded bytes would have
+    /// fitted. Bytes in `out` after the returned length may be overwritten.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Classic;
+    /// let values = [0u32, 255, 256, 65536];
+    /// let mut buf = [0u8; 64];
+    /// let len = U32Classic.encode_to_slice(&values, &mut buf).unwrap();
+    /// assert_eq!(&buf[..len], U32Classic.encode(&values));
+    /// ```
+    pub fn encode_to_slice(&self, values: &[u32], out: &mut [u8]) -> Result<usize, EncodeError> {
+        let need = self.max_encoded_len(values.len());
+        if out.len() < need {
+            return Err(EncodeError::OutputTooSmall {
+                need,
+                have: out.len(),
+            });
+        }
+        Ok(dispatch_encode_classic(values, out))
     }
 
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u32>`.
@@ -133,8 +179,8 @@ impl U32Classic {
     /// assert_eq!(U32Classic.decode(&bytes, 3).unwrap(), [1u32, 65536, u32::MAX]);
     /// ```
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
-        let mut out = Vec::with_capacity(n);
-        dispatch_decode_classic(data, n, &mut out)?;
+        let mut out = vec![0u32; n];
+        dispatch_decode_classic(data, &mut out)?;
         Ok(out)
     }
 
@@ -142,7 +188,8 @@ impl U32Classic {
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
-    /// produces incorrect output or a [`DecodeError`].
+    /// produces incorrect output or a [`DecodeError`]. On error `out` is left
+    /// at its original length.
     ///
     /// # Warning
     ///
@@ -164,28 +211,54 @@ impl U32Classic {
         n: usize,
         out: &mut Vec<u32>,
     ) -> Result<(), DecodeError> {
-        dispatch_decode_classic(data, n, out)
+        let start = out.len();
+        out.resize(start + n, 0);
+        let res = dispatch_decode_classic(data, &mut out[start..]);
+        if res.is_err() {
+            out.truncate(start);
+        }
+        res
+    }
+
+    /// Decode exactly `out.len()` values from `data` into `out`.
+    ///
+    /// `out.len()` must equal the number of values that were originally
+    /// encoded; a wrong length produces incorrect output or a [`DecodeError`].
+    /// On error the contents of `out` are unspecified. As with
+    /// [`decode`](Self::decode), the data must have been encoded by the same
+    /// codec variant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Classic;
+    /// let values = [0u32, 255, 256, 65536];
+    /// let bytes = U32Classic.encode(&values);
+    /// let mut out = [0u32; 4];
+    /// U32Classic.decode_to_slice(&bytes, &mut out).unwrap();
+    /// assert_eq!(out, values);
+    /// ```
+    pub fn decode_to_slice(&self, data: &[u8], out: &mut [u32]) -> Result<(), DecodeError> {
+        dispatch_decode_classic(data, out)
     }
 }
 
 // ── U32Variant0124 ────────────────────────────────────────────────────────────
 
-impl_dispatch_encode!(
-    dispatch_encode_0124,
-    u32,
-    avx2::encode_into_0124,
-    sse2::encode_into_0124,
-    neon::encode_into_0124,
-    scalar::encode_into_0124
-);
-impl_dispatch_decode!(
-    dispatch_decode_0124,
-    u32,
-    avx2::decode_into_0124,
-    sse2::decode_into_0124,
-    neon::decode_into_0124,
-    scalar::decode_into_0124
-);
+impl_dispatch! {
+    fn dispatch_encode_0124(values: &[u32], out: &mut [u8]) -> usize;
+    avx2::encode_to_slice_0124,
+    sse2::encode_to_slice_0124,
+    neon::encode_to_slice_0124,
+    scalar::encode_to_slice_0124
+}
+impl_dispatch! {
+    fn dispatch_decode_0124(data: &[u8], out: &mut [u32]) -> Result<(), DecodeError>;
+    avx2::decode_to_slice_0124,
+    sse2::decode_to_slice_0124,
+    neon::decode_to_slice_0124,
+    scalar::decode_to_slice_0124
+}
 
 /// StreamVByte codec for `u32` values using 2-bit tags encoding 0, 1, 2, or 4 data bytes per value.
 ///
@@ -217,7 +290,7 @@ impl U32Variant0124 {
     /// ```
     pub fn encode(&self, values: &[u32]) -> Vec<u8> {
         let mut out = Vec::new();
-        dispatch_encode_0124(values, &mut out);
+        self.encode_into(values, &mut out);
         out
     }
 
@@ -232,7 +305,55 @@ impl U32Variant0124 {
     /// U32Variant0124.encode_into(&[0u32, 2], &mut buf);
     /// ```
     pub fn encode_into(&self, values: &[u32], out: &mut Vec<u8>) {
-        dispatch_encode_0124(values, out);
+        let start = out.len();
+        out.resize(start + self.max_encoded_len(values.len()), 0);
+        let written = dispatch_encode_0124(values, &mut out[start..]);
+        out.truncate(start + written);
+    }
+
+    /// Worst-case encoded size in bytes for `n` values: `ceil(n / 4)` control
+    /// bytes plus 4 data bytes per value.
+    ///
+    /// Use this to size the buffer for [`encode_to_slice`](Self::encode_to_slice).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Variant0124;
+    /// assert_eq!(U32Variant0124.max_encoded_len(0), 0);
+    /// assert_eq!(U32Variant0124.max_encoded_len(5), 2 + 4 * 5);
+    /// ```
+    pub const fn max_encoded_len(&self, n: usize) -> usize {
+        n.div_ceil(4).saturating_add(n.saturating_mul(4))
+    }
+
+    /// Encode `values` into the start of `out` and return the number of bytes
+    /// written.
+    ///
+    /// `out` must be at least [`max_encoded_len(values.len())`](Self::max_encoded_len)
+    /// bytes long, otherwise [`EncodeError::OutputTooSmall`] is returned and
+    /// `out` is not modified. The check is against the worst case, so a
+    /// shorter slice is rejected even if the actual encoded bytes would have
+    /// fitted. Bytes in `out` after the returned length may be overwritten.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Variant0124;
+    /// let values = [0u32, 0, 1, 65536];
+    /// let mut buf = [0u8; 64];
+    /// let len = U32Variant0124.encode_to_slice(&values, &mut buf).unwrap();
+    /// assert_eq!(&buf[..len], U32Variant0124.encode(&values));
+    /// ```
+    pub fn encode_to_slice(&self, values: &[u32], out: &mut [u8]) -> Result<usize, EncodeError> {
+        let need = self.max_encoded_len(values.len());
+        if out.len() < need {
+            return Err(EncodeError::OutputTooSmall {
+                need,
+                have: out.len(),
+            });
+        }
+        Ok(dispatch_encode_0124(values, out))
     }
 
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u32>`.
@@ -255,8 +376,8 @@ impl U32Variant0124 {
     /// assert_eq!(U32Variant0124.decode(&bytes, 3).unwrap(), [0u32, 1, 65536]);
     /// ```
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
-        let mut out = Vec::with_capacity(n);
-        dispatch_decode_0124(data, n, &mut out)?;
+        let mut out = vec![0u32; n];
+        dispatch_decode_0124(data, &mut out)?;
         Ok(out)
     }
 
@@ -264,7 +385,8 @@ impl U32Variant0124 {
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
-    /// produces incorrect output or a [`DecodeError`].
+    /// produces incorrect output or a [`DecodeError`]. On error `out` is left
+    /// at its original length.
     ///
     /// # Warning
     ///
@@ -286,7 +408,35 @@ impl U32Variant0124 {
         n: usize,
         out: &mut Vec<u32>,
     ) -> Result<(), DecodeError> {
-        dispatch_decode_0124(data, n, out)
+        let start = out.len();
+        out.resize(start + n, 0);
+        let res = dispatch_decode_0124(data, &mut out[start..]);
+        if res.is_err() {
+            out.truncate(start);
+        }
+        res
+    }
+
+    /// Decode exactly `out.len()` values from `data` into `out`.
+    ///
+    /// `out.len()` must equal the number of values that were originally
+    /// encoded; a wrong length produces incorrect output or a [`DecodeError`].
+    /// On error the contents of `out` are unspecified. As with
+    /// [`decode`](Self::decode), the data must have been encoded by the same
+    /// codec variant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u32::U32Variant0124;
+    /// let values = [0u32, 0, 1, 65536];
+    /// let bytes = U32Variant0124.encode(&values);
+    /// let mut out = [0u32; 4];
+    /// U32Variant0124.decode_to_slice(&bytes, &mut out).unwrap();
+    /// assert_eq!(out, values);
+    /// ```
+    pub fn decode_to_slice(&self, data: &[u8], out: &mut [u32]) -> Result<(), DecodeError> {
+        dispatch_decode_0124(data, out)
     }
 }
 
@@ -299,6 +449,7 @@ mod cross_path {
         // To add a new test case, add it once here; both variants are covered.
         macro_rules! impl_decode_tests {
             (
+                max_len      = $max_len:expr,
                 scalar_enc   = $scalar_enc:path,
                 ssse3_dec    = $ssse3_dec:path,
                 avx2_dec     = $avx2_dec:path,
@@ -314,29 +465,27 @@ mod cross_path {
                 single_vals  = [$($sv:expr),+] $(,)?
             ) => {
                 #[cfg(not(feature = "std"))]
-                use alloc::vec::Vec;
+                use alloc::{vec, vec::Vec};
                 #[cfg(feature = "std")]
                 use std::vec::Vec;
                 fn encode(values: &[u32]) -> Vec<u8> {
-                    let mut out = Vec::new();
-                    $scalar_enc(values, &mut out);
-                    out
+                    crate::test_util::encode_checked(values, ($max_len)(values.len()), $scalar_enc)
                 }
                 fn scalar_decode(data: &[u8], n: usize) -> Vec<u32> {
-                    let mut out = Vec::new();
-                    $scalar_dec(data, n, &mut out).unwrap();
+                    let mut out = vec![0; n];
+                    $scalar_dec(data, &mut out).unwrap();
                     out
                 }
                 fn ssse3_decode(data: &[u8], n: usize) -> Option<Vec<u32>> {
                     if !is_x86_feature_detected!("ssse3") { return None; }
-                    let mut out = Vec::new();
-                    unsafe { $ssse3_dec(data, n, &mut out).unwrap() };
+                    let mut out = vec![0; n];
+                    unsafe { $ssse3_dec(data, &mut out).unwrap() };
                     Some(out)
                 }
                 fn avx2_decode(data: &[u8], n: usize) -> Option<Vec<u32>> {
                     if !is_x86_feature_detected!("avx2") { return None; }
-                    let mut out = Vec::new();
-                    unsafe { $avx2_dec(data, n, &mut out).unwrap() };
+                    let mut out = vec![0; n];
+                    unsafe { $avx2_dec(data, &mut out).unwrap() };
                     Some(out)
                 }
                 fn check(values: &[u32]) {
@@ -413,16 +562,45 @@ mod cross_path {
                     check(&[]);
                     for &v in &[$($sv),+] { check(&[v]); }
                 }
+
+                // A truncation in the scalar tail must report the index in the
+                // whole output, not the index within the tail. n % 4 != 0 puts
+                // the truncated last value in the scalar remainder.
+                #[test]
+                fn tail_error_index_is_absolute() {
+                    use crate::error::DecodeError;
+                    let widest = *[$($sv),+].last().unwrap();
+                    for n in [13usize, 22, 37] {
+                        let values = vec![widest; n];
+                        let mut enc = encode(&values);
+                        enc.pop(); // last value loses its top byte
+                        let check = |name: &str, r: Result<(), DecodeError>| match r {
+                            Err(DecodeError::DataTruncated { index }) => {
+                                assert_eq!(index, n - 1, "{name} n={n}")
+                            }
+                            other => panic!("{name} n={n}: expected DataTruncated, got {other:?}"),
+                        };
+                        let mut out = vec![0; n];
+                        check("scalar", $scalar_dec(&enc, &mut out));
+                        if is_x86_feature_detected!("ssse3") {
+                            check("ssse3", unsafe { $ssse3_dec(&enc, &mut out) });
+                        }
+                        if is_x86_feature_detected!("avx2") {
+                            check("avx2", unsafe { $avx2_dec(&enc, &mut out) });
+                        }
+                    }
+                }
             };
         }
 
         mod classic {
             use super::super::super::{avx2, scalar, sse2};
             impl_decode_tests!(
-                scalar_enc   = scalar::encode_into_classic,
-                ssse3_dec    = sse2::decode_into_classic,
-                avx2_dec     = avx2::decode_into_classic,
-                scalar_dec   = scalar::decode_into_classic,
+                max_len      = |n: usize| crate::u32::U32Classic.max_encoded_len(n),
+                scalar_enc   = scalar::encode_to_slice_classic,
+                ssse3_dec    = sse2::decode_to_slice_classic,
+                avx2_dec     = avx2::decode_to_slice_classic,
+                scalar_dec   = scalar::decode_to_slice_classic,
                 val_arms     = |i| {
                     0 => i,
                     1 => 256 + i,
@@ -448,10 +626,11 @@ mod cross_path {
         mod variant0124 {
             use super::super::super::{avx2, scalar, sse2};
             impl_decode_tests!(
-                scalar_enc   = scalar::encode_into_0124,
-                ssse3_dec    = sse2::decode_into_0124,
-                avx2_dec     = avx2::decode_into_0124,
-                scalar_dec   = scalar::decode_into_0124,
+                max_len      = |n: usize| crate::u32::U32Variant0124.max_encoded_len(n),
+                scalar_enc   = scalar::encode_to_slice_0124,
+                ssse3_dec    = sse2::decode_to_slice_0124,
+                avx2_dec     = avx2::decode_to_slice_0124,
+                scalar_dec   = scalar::decode_to_slice_0124,
                 val_arms     = |i| {
                     0 => 0,
                     1 => i + 1,
@@ -485,6 +664,7 @@ mod cross_path {
         // Generates encode cross-path tests for one u32 codec variant.
         macro_rules! impl_encode_tests {
             (
+                max_len      = $max_len:expr,
                 scalar_enc  = $scalar_enc:path,
                 ssse3_enc   = $ssse3_enc:path,
                 avx2_enc    = $avx2_enc:path,
@@ -495,25 +675,19 @@ mod cross_path {
                 single_vals = [$($sv:expr),+] $(,)?
             ) => {
                 #[cfg(not(feature = "std"))]
-                use alloc::vec::Vec;
+                use alloc::{vec, vec::Vec};
                 #[cfg(feature = "std")]
                 use std::vec::Vec;
                 fn scalar_enc_fn(v: &[u32]) -> Vec<u8> {
-                    let mut out = Vec::new();
-                    $scalar_enc(v, &mut out);
-                    out
+                    crate::test_util::encode_checked(v, ($max_len)(v.len()), $scalar_enc)
                 }
                 fn ssse3_enc_fn(v: &[u32]) -> Option<Vec<u8>> {
                     if !is_x86_feature_detected!("ssse3") { return None; }
-                    let mut out = Vec::new();
-                    unsafe { $ssse3_enc(v, &mut out) };
-                    Some(out)
+                    Some(crate::test_util::encode_checked(v, ($max_len)(v.len()), |v, o| unsafe { $ssse3_enc(v, o) }))
                 }
                 fn avx2_enc_fn(v: &[u32]) -> Option<Vec<u8>> {
                     if !is_x86_feature_detected!("avx2") { return None; }
-                    let mut out = Vec::new();
-                    unsafe { $avx2_enc(v, &mut out) };
-                    Some(out)
+                    Some(crate::test_util::encode_checked(v, ($max_len)(v.len()), |v, o| unsafe { $avx2_enc(v, o) }))
                 }
                 fn check(values: &[u32]) {
                     let expected = scalar_enc_fn(values);
@@ -573,9 +747,10 @@ mod cross_path {
         mod classic {
             use super::super::super::{avx2, scalar, sse2};
             impl_encode_tests!(
-                scalar_enc  = scalar::encode_into_classic,
-                ssse3_enc   = sse2::encode_into_classic,
-                avx2_enc    = avx2::encode_into_classic,
+                max_len      = |n: usize| crate::u32::U32Classic.max_encoded_len(n),
+                scalar_enc  = scalar::encode_to_slice_classic,
+                ssse3_enc   = sse2::encode_to_slice_classic,
+                avx2_enc    = avx2::encode_to_slice_classic,
                 val_arms    = |i| {
                     0 => i,
                     1 => 256 + i,
@@ -597,9 +772,10 @@ mod cross_path {
         mod variant0124 {
             use super::super::super::{avx2, scalar, sse2};
             impl_encode_tests!(
-                scalar_enc  = scalar::encode_into_0124,
-                ssse3_enc   = sse2::encode_into_0124,
-                avx2_enc    = avx2::encode_into_0124,
+                max_len      = |n: usize| crate::u32::U32Variant0124.max_encoded_len(n),
+                scalar_enc  = scalar::encode_to_slice_0124,
+                ssse3_enc   = sse2::encode_to_slice_0124,
+                avx2_enc    = avx2::encode_to_slice_0124,
                 val_arms    = |i| {
                     0 => 0,
                     1 => i + 1,
@@ -625,6 +801,7 @@ mod cross_path {
         // Generates NEON encode+decode cross-path tests for one u32 codec variant.
         macro_rules! impl_neon_tests {
             (
+                max_len      = $max_len:expr,
                 scalar_enc  = $scalar_enc:path,
                 neon_enc    = $neon_enc:path,
                 scalar_dec  = $scalar_dec:path,
@@ -635,27 +812,23 @@ mod cross_path {
                 single_vals = [$($sv:expr),+] $(,)?
             ) => {
                 #[cfg(not(feature = "std"))]
-                use alloc::vec::Vec;
+                use alloc::{vec, vec::Vec};
                 #[cfg(feature = "std")]
                 use std::vec::Vec;
                 fn scalar_enc_fn(v: &[u32]) -> Vec<u8> {
-                    let mut out = Vec::new();
-                    $scalar_enc(v, &mut out);
-                    out
+                    crate::test_util::encode_checked(v, ($max_len)(v.len()), $scalar_enc)
                 }
                 fn neon_enc_fn(v: &[u32]) -> Vec<u8> {
-                    let mut out = Vec::new();
-                    unsafe { $neon_enc(v, &mut out) };
-                    out
+                    crate::test_util::encode_checked(v, ($max_len)(v.len()), |v, o| unsafe { $neon_enc(v, o) })
                 }
                 fn scalar_dec_fn(d: &[u8], n: usize) -> Vec<u32> {
-                    let mut out = Vec::new();
-                    $scalar_dec(d, n, &mut out).unwrap();
+                    let mut out = vec![0; n];
+                    $scalar_dec(d, &mut out).unwrap();
                     out
                 }
                 fn neon_dec_fn(d: &[u8], n: usize) -> Vec<u32> {
-                    let mut out = Vec::new();
-                    unsafe { $neon_dec(d, n, &mut out).unwrap() };
+                    let mut out = vec![0; n];
+                    unsafe { $neon_dec(d, &mut out).unwrap() };
                     out
                 }
                 fn check(values: &[u32]) {
@@ -702,16 +875,42 @@ mod cross_path {
                     check(&[]);
                     for &v in &[$($sv),+] { check(&[v]); }
                 }
+
+                // A truncation in the scalar tail must report the index in the
+                // whole output, not the index within the tail.
+                #[test]
+                fn tail_error_index_is_absolute() {
+                    use crate::error::DecodeError;
+                    let widest = *[$($sv),+].last().unwrap();
+                    for n in [13usize, 22, 37] {
+                        let values = vec![widest; n];
+                        let mut enc = scalar_enc_fn(&values);
+                        enc.pop(); // last value loses its top byte
+                        let mut out = vec![0; n];
+                        for (name, r) in [
+                            ("scalar", $scalar_dec(&enc, &mut out)),
+                            ("neon", unsafe { $neon_dec(&enc, &mut out) }),
+                        ] {
+                            match r {
+                                Err(DecodeError::DataTruncated { index }) => {
+                                    assert_eq!(index, n - 1, "{name} n={n}")
+                                }
+                                other => panic!("{name} n={n}: expected DataTruncated, got {other:?}"),
+                            }
+                        }
+                    }
+                }
             };
         }
 
         mod classic {
             use super::super::super::{neon, scalar};
             impl_neon_tests!(
-                scalar_enc  = scalar::encode_into_classic,
-                neon_enc    = neon::encode_into_classic,
-                scalar_dec  = scalar::decode_into_classic,
-                neon_dec    = neon::decode_into_classic,
+                max_len      = |n: usize| crate::u32::U32Classic.max_encoded_len(n),
+                scalar_enc  = scalar::encode_to_slice_classic,
+                neon_enc    = neon::encode_to_slice_classic,
+                scalar_dec  = scalar::decode_to_slice_classic,
+                neon_dec    = neon::decode_to_slice_classic,
                 val_arms    = |i| {
                     0 => i,
                     1 => 256 + i,
@@ -732,10 +931,11 @@ mod cross_path {
         mod variant0124 {
             use super::super::super::{neon, scalar};
             impl_neon_tests!(
-                scalar_enc  = scalar::encode_into_0124,
-                neon_enc    = neon::encode_into_0124,
-                scalar_dec  = scalar::decode_into_0124,
-                neon_dec    = neon::decode_into_0124,
+                max_len      = |n: usize| crate::u32::U32Variant0124.max_encoded_len(n),
+                scalar_enc  = scalar::encode_to_slice_0124,
+                neon_enc    = neon::encode_to_slice_0124,
+                scalar_dec  = scalar::decode_to_slice_0124,
+                neon_dec    = neon::decode_to_slice_0124,
                 val_arms    = |i| {
                     0 => 0,
                     1 => i + 1,
