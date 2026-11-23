@@ -55,3 +55,41 @@ impl fmt::Display for DecodeError {
 }
 
 impl Error for DecodeError {}
+
+/// Errors that can occur when encoding into a caller-supplied byte slice.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::{u16::Svb16, EncodeError};
+/// let mut out = [0u8; 2];
+/// match Svb16.encode_to_slice(&[1u16, 2, 3], &mut out) {
+///     Err(EncodeError::OutputTooSmall { need, have }) => {
+///         assert_eq!(need, Svb16.max_encoded_len(3));
+///         assert_eq!(have, 2);
+///     }
+///     _ => panic!("expected OutputTooSmall"),
+/// }
+/// ```
+#[derive(Debug)]
+pub enum EncodeError {
+    /// The output slice is shorter than the worst-case encoded size.
+    ///
+    /// `need` is the worst-case size for the input (see the codec's
+    /// `max_encoded_len`); `have` is the length of the output slice. The check
+    /// is made before encoding starts, so a slice that would have fitted the
+    /// actual encoded bytes is still rejected if it is below `need`.
+    OutputTooSmall { need: usize, have: usize },
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutputTooSmall { need, have } => {
+                write!(f, "output buffer too small: need {need} bytes, have {have}")
+            }
+        }
+    }
+}
+
+impl Error for EncodeError {}

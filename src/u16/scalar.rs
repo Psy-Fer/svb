@@ -1,30 +1,44 @@
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(feature = "std")]
-use std::vec::Vec;
-
 use crate::error::DecodeError;
 
-pub(super) fn encode_into(values: &[u16], out: &mut Vec<u8>) {
-    let n = values.len();
-    if n == 0 {
-        return;
-    }
-    let ctrl_len = n.div_ceil(8);
-    let ctrl_start = out.len();
-    out.resize(ctrl_start + ctrl_len, 0u8);
-
-    for (i, &v) in values.iter().enumerate() {
-        if v <= 0xFF {
-            out.push(v as u8);
-        } else {
-            out[ctrl_start + i / 8] |= 1 << (i % 8);
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-    }
+/// Encode `values` into `out` and return the number of bytes written.
+///
+/// `out` must hold at least `ctrl_len + 2 * values.len()` bytes; the caller
+/// checks this. Panics on a shorter slice.
+pub(super) fn encode_to_slice(values: &[u16], out: &mut [u8]) -> usize {
+    let ctrl_len = values.len().div_ceil(8);
+    out[..ctrl_len].fill(0);
+    encode_tail(values, 0, out, ctrl_len, 0)
 }
 
-pub(super) fn decode_into(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<(), DecodeError> {
+/// Encode `values[start..]`, continuing an encode a SIMD path has started.
+///
+/// `start` must be a multiple of 8, and `data_pos` is the number of data bytes
+/// already written after the `ctrl_len` control bytes. Control bytes from
+/// `start / 8` onwards must be zero. Returns the total bytes written.
+pub(super) fn encode_tail(
+    values: &[u16],
+    start: usize,
+    out: &mut [u8],
+    ctrl_len: usize,
+    mut data_pos: usize,
+) -> usize {
+    let (ctrl, data) = out.split_at_mut(ctrl_len);
+    for (j, &v) in values.iter().enumerate().skip(start) {
+        if v <= 0xFF {
+            data[data_pos] = v as u8;
+            data_pos += 1;
+        } else {
+            ctrl[j / 8] |= 1 << (j % 8);
+            data[data_pos..data_pos + 2].copy_from_slice(&v.to_le_bytes());
+            data_pos += 2;
+        }
+    }
+    ctrl_len + data_pos
+}
+
+/// Decode `out.len()` values from `data`.
+pub(super) fn decode_to_slice(data: &[u8], out: &mut [u16]) -> Result<(), DecodeError> {
+    let n = out.len();
     if n == 0 {
         return Ok(());
     }
@@ -35,32 +49,36 @@ pub(super) fn decode_into(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<(
             have: data.len(),
         });
     }
-    decode_from_raw(&data[..ctrl_len], &data[ctrl_len..], n, out)
+    decode_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)
 }
 
-/// Decode `n` values from pre-split `ctrl` and `data` byte slices.
-/// Called by SIMD paths for their scalar tail.
+/// Decode `out.len()` values from pre-split `ctrl` and `data` byte slices.
+/// Called by SIMD paths for their scalar tail. `first_index` is the index of
+/// `out[0]` in the whole output, used in error reports.
 pub(super) fn decode_from_raw(
     ctrl: &[u8],
     data: &[u8],
-    n: usize,
-    out: &mut Vec<u16>,
+    out: &mut [u16],
+    first_index: usize,
 ) -> Result<(), DecodeError> {
-    out.reserve(n);
     let mut pos = 0usize;
-    for i in 0..n {
+    for (i, o) in out.iter_mut().enumerate() {
         let bit = (ctrl[i / 8] >> (i % 8)) & 1;
         if bit == 0 {
             if pos >= data.len() {
-                return Err(DecodeError::DataTruncated { index: i });
+                return Err(DecodeError::DataTruncated {
+                    index: first_index + i,
+                });
             }
-            out.push(data[pos] as u16);
+            *o = data[pos] as u16;
             pos += 1;
         } else {
             if pos + 2 > data.len() {
-                return Err(DecodeError::DataTruncated { index: i });
+                return Err(DecodeError::DataTruncated {
+                    index: first_index + i,
+                });
             }
-            out.push(u16::from_le_bytes([data[pos], data[pos + 1]]));
+            *o = u16::from_le_bytes([data[pos], data[pos + 1]]);
             pos += 2;
         }
     }
@@ -86,17 +104,18 @@ pub(super) fn encoded_data_len(ctrl: &[u8], n: usize) -> usize {
 mod tests {
     use super::*;
     #[cfg(not(feature = "std"))]
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
 
     fn encode(values: &[u16]) -> Vec<u8> {
-        let mut out = Vec::new();
-        encode_into(values, &mut out);
+        let mut out = vec![0u8; values.len().div_ceil(8) + 2 * values.len()];
+        let len = encode_to_slice(values, &mut out);
+        out.truncate(len);
         out
     }
 
     fn decode(data: &[u8], n: usize) -> Result<Vec<u16>, DecodeError> {
-        let mut out = Vec::new();
-        decode_into(data, n, &mut out)?;
+        let mut out = vec![0u16; n];
+        decode_to_slice(data, &mut out)?;
         Ok(out)
     }
 

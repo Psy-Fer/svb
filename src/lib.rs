@@ -37,7 +37,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 pub mod error;
-pub use error::DecodeError;
+pub use error::{DecodeError, EncodeError};
 
 #[cfg(feature = "alloc")]
 pub mod delta;
@@ -160,6 +160,63 @@ macro_rules! impl_dispatch_decode {
                 }
             }
             $scalar_fn(data, n, out)
+        }
+    };
+}
+
+// Same 5-way dispatch as above, for any signature. Used by the slice kernels.
+//
+// Usage:
+//   impl_dispatch! { fn name(a: A, b: B) -> R; avx2_fn, sse2_fn, neon_fn, scalar_fn }
+//
+// Call it with braces: rustfmt reformats parenthesised calls and breaks the `;`.
+#[cfg(feature = "alloc")]
+macro_rules! impl_dispatch {
+    (fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;
+     $avx2_fn:path, $sse2_fn:path, $neon_fn:path, $scalar_fn:path) => {
+        fn $name($($arg: $ty),*) -> $ret {
+            #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
+            {
+                // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
+                return unsafe { $avx2_fn($($arg),*) };
+            }
+            #[cfg(all(
+                feature = "simd-ssse3",
+                not(feature = "simd-avx2"),
+                target_arch = "x86_64"
+            ))]
+            {
+                // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime.
+                return unsafe { $sse2_fn($($arg),*) };
+            }
+            #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
+            {
+                // SAFETY: NEON is mandatory on AArch64.
+                return unsafe { $neon_fn($($arg),*) };
+            }
+            #[cfg(all(
+                feature = "simd-auto",
+                not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon"))
+            ))]
+            {
+                #[cfg(all(feature = "std", target_arch = "x86_64"))]
+                {
+                    if is_x86_feature_detected!("avx2") {
+                        // SAFETY: AVX2 confirmed at runtime.
+                        return unsafe { $avx2_fn($($arg),*) };
+                    }
+                    if is_x86_feature_detected!("ssse3") {
+                        // SAFETY: SSSE3 confirmed at runtime.
+                        return unsafe { $sse2_fn($($arg),*) };
+                    }
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    // SAFETY: NEON is mandatory on AArch64.
+                    return unsafe { $neon_fn($($arg),*) };
+                }
+            }
+            $scalar_fn($($arg),*)
         }
     };
 }

@@ -16,11 +16,11 @@
 //! Data bytes follow in the same order as the values, with no padding between them.
 
 #[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
-use crate::error::DecodeError;
+use crate::error::{DecodeError, EncodeError};
 
 mod scalar;
 
@@ -39,22 +39,20 @@ mod sse2;
 
 // ── dispatch ──────────────────────────────────────────────────────────────────
 
-impl_dispatch_encode!(
-    dispatch_encode,
-    u16,
-    avx2::encode_into,
-    sse2::encode_into,
-    neon::encode_into,
-    scalar::encode_into
-);
-impl_dispatch_decode!(
-    dispatch_decode,
-    u16,
-    avx2::decode_into,
-    sse2::decode_into,
-    neon::decode_into,
-    scalar::decode_into
-);
+impl_dispatch! {
+    fn dispatch_encode(values: &[u16], out: &mut [u8]) -> usize;
+    avx2::encode_to_slice,
+    sse2::encode_to_slice,
+    neon::encode_to_slice,
+    scalar::encode_to_slice
+}
+impl_dispatch! {
+    fn dispatch_decode(data: &[u8], out: &mut [u16]) -> Result<(), DecodeError>;
+    avx2::decode_to_slice,
+    sse2::decode_to_slice,
+    neon::decode_to_slice,
+    scalar::decode_to_slice
+}
 
 // ── public API ────────────────────────────────────────────────────────────────
 
@@ -86,7 +84,7 @@ impl Svb16 {
     /// ```
     pub fn encode(&self, values: &[u16]) -> Vec<u8> {
         let mut out = Vec::new();
-        dispatch_encode(values, &mut out);
+        self.encode_into(values, &mut out);
         out
     }
 
@@ -101,7 +99,55 @@ impl Svb16 {
     /// Svb16.encode_into(&[3u16, 4], &mut buf);
     /// ```
     pub fn encode_into(&self, values: &[u16], out: &mut Vec<u8>) {
-        dispatch_encode(values, out);
+        let start = out.len();
+        out.resize(start + self.max_encoded_len(values.len()), 0);
+        let written = dispatch_encode(values, &mut out[start..]);
+        out.truncate(start + written);
+    }
+
+    /// Worst-case encoded size in bytes for `n` values: `ceil(n / 8)` control
+    /// bytes plus 2 data bytes per value.
+    ///
+    /// Use this to size the buffer for [`encode_to_slice`](Self::encode_to_slice).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u16::Svb16;
+    /// assert_eq!(Svb16.max_encoded_len(0), 0);
+    /// assert_eq!(Svb16.max_encoded_len(9), 2 + 18);
+    /// ```
+    pub const fn max_encoded_len(&self, n: usize) -> usize {
+        n.div_ceil(8).saturating_add(n.saturating_mul(2))
+    }
+
+    /// Encode `values` into the start of `out` and return the number of bytes
+    /// written.
+    ///
+    /// `out` must be at least [`max_encoded_len(values.len())`](Self::max_encoded_len)
+    /// bytes long, otherwise [`EncodeError::OutputTooSmall`] is returned and
+    /// `out` is not modified. The check is against the worst case, so a
+    /// shorter slice is rejected even if the actual encoded bytes would have
+    /// fitted. Bytes in `out` after the returned length may be overwritten.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u16::Svb16;
+    /// let values = [0u16, 255, 256, 1000];
+    /// let mut buf = [0u8; 64];
+    /// let len = Svb16.encode_to_slice(&values, &mut buf).unwrap();
+    /// assert_eq!(&buf[..len], Svb16.encode(&values));
+    /// ```
+    pub fn encode_to_slice(&self, values: &[u16], out: &mut [u8]) -> Result<usize, EncodeError> {
+        let need = self.max_encoded_len(values.len());
+        if out.len() < need {
+            return Err(EncodeError::OutputTooSmall {
+                need,
+                have: out.len(),
+            });
+        }
+        Ok(dispatch_encode(values, out))
     }
 
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u16>`.
@@ -118,8 +164,8 @@ impl Svb16 {
     /// assert_eq!(Svb16.decode(&bytes, 2).unwrap(), [10u16, 300]);
     /// ```
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u16>, DecodeError> {
-        let mut out = Vec::with_capacity(n);
-        dispatch_decode(data, n, &mut out)?;
+        let mut out = vec![0u16; n];
+        dispatch_decode(data, &mut out)?;
         Ok(out)
     }
 
@@ -127,7 +173,8 @@ impl Svb16 {
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
-    /// produces incorrect output or a [`DecodeError`].
+    /// produces incorrect output or a [`DecodeError`]. On error `out` is left
+    /// at its original length.
     ///
     /// # Examples
     ///
@@ -144,7 +191,32 @@ impl Svb16 {
         n: usize,
         out: &mut Vec<u16>,
     ) -> Result<(), DecodeError> {
-        dispatch_decode(data, n, out)
+        let start = out.len();
+        out.resize(start + n, 0);
+        let res = dispatch_decode(data, &mut out[start..]);
+        if res.is_err() {
+            out.truncate(start);
+        }
+        res
+    }
+
+    /// Decode exactly `out.len()` values from `data` into `out`.
+    ///
+    /// `out.len()` must equal the number of values that were originally
+    /// encoded; a wrong length produces incorrect output or a [`DecodeError`].
+    /// On error the contents of `out` are unspecified.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use svb::u16::Svb16;
+    /// let bytes = Svb16.encode(&[10u16, 300]);
+    /// let mut out = [0u16; 2];
+    /// Svb16.decode_to_slice(&bytes, &mut out).unwrap();
+    /// assert_eq!(out, [10u16, 300]);
+    /// ```
+    pub fn decode_to_slice(&self, data: &[u8], out: &mut [u16]) -> Result<(), DecodeError> {
+        dispatch_decode(data, out)
     }
 }
 
@@ -157,16 +229,38 @@ impl Svb16 {
 #[cfg(test)]
 mod cross_path {
     #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
     #[cfg(feature = "std")]
     use std::vec::Vec;
 
     use super::scalar;
 
     fn decode_scalar(data: &[u8], n: usize) -> Vec<u16> {
-        let mut out = Vec::new();
-        scalar::decode_into(data, n, &mut out).unwrap();
+        let mut out = vec![0u16; n];
+        scalar::decode_to_slice(data, &mut out).unwrap();
         out
+    }
+
+    fn encode_scalar(values: &[u16]) -> Vec<u8> {
+        encode_with(values, scalar::encode_to_slice)
+    }
+
+    /// Run an encode kernel on a slice of exactly `max_encoded_len` bytes,
+    /// followed by canary bytes, and check the kernel did not write past the
+    /// end of its slice.
+    fn encode_with(values: &[u16], f: impl FnOnce(&[u16], &mut [u8]) -> usize) -> Vec<u8> {
+        const CANARY: u8 = 0xA5;
+        let max = super::Svb16.max_encoded_len(values.len());
+        let mut buf = vec![CANARY; max + 64];
+        let written = f(values, &mut buf[..max]);
+        assert!(written <= max);
+        assert!(
+            buf[max..].iter().all(|&b| b == CANARY),
+            "encode wrote past max_encoded_len, n={}",
+            values.len()
+        );
+        buf.truncate(written);
+        buf
     }
 
     // ── x86_64 ───────────────────────────────────────────────────────────────
@@ -180,17 +274,15 @@ mod cross_path {
         // ── helpers ──────────────────────────────────────────────────────────
 
         fn encode(values: &[u16]) -> Vec<u8> {
-            let mut v = Vec::new();
-            scalar::encode_into(values, &mut v);
-            v
+            encode_scalar(values)
         }
 
         fn ssse3_decode(data: &[u8], n: usize) -> Option<Vec<u16>> {
             if !is_x86_feature_detected!("ssse3") {
                 return None;
             }
-            let mut out = Vec::new();
-            unsafe { sse2::decode_into(data, n, &mut out).unwrap() };
+            let mut out = vec![0u16; n];
+            unsafe { sse2::decode_to_slice(data, &mut out).unwrap() };
             Some(out)
         }
 
@@ -198,8 +290,8 @@ mod cross_path {
             if !is_x86_feature_detected!("avx2") {
                 return None;
             }
-            let mut out = Vec::new();
-            unsafe { avx2::decode_into(data, n, &mut out).unwrap() };
+            let mut out = vec![0u16; n];
+            unsafe { avx2::decode_to_slice(data, &mut out).unwrap() };
             Some(out)
         }
 
@@ -221,9 +313,11 @@ mod cross_path {
             if !is_x86_feature_detected!("ssse3") {
                 return None;
             }
-            let mut out = Vec::new();
-            unsafe { sse2::encode_into(values, &mut out) };
-            Some(out)
+            // SAFETY: CPU support checked above; encode_with passes a slice of
+            // max_encoded_len bytes.
+            Some(encode_with(values, |v, o| unsafe {
+                sse2::encode_to_slice(v, o)
+            }))
         }
 
         fn check_encode(values: &[u16]) {
@@ -250,9 +344,11 @@ mod cross_path {
             if !is_x86_feature_detected!("avx2") {
                 return None;
             }
-            let mut out = Vec::new();
-            unsafe { avx2::encode_into(values, &mut out) };
-            Some(out)
+            // SAFETY: CPU support checked above; encode_with passes a slice of
+            // max_encoded_len bytes.
+            Some(encode_with(values, |v, o| unsafe {
+                avx2::encode_to_slice(v, o)
+            }))
         }
 
         // ── POD5 parity (real-world data) ─────────────────────────────────
@@ -435,6 +531,32 @@ mod cross_path {
             check_all(&[u16::MAX]);
         }
 
+        // A truncation in the scalar tail must report the index in the whole
+        // output, not the index within the tail.
+        #[test]
+        fn tail_error_index_is_absolute() {
+            use crate::error::DecodeError;
+            for n in [20usize, 36, 41] {
+                let values: Vec<u16> = (0..n as u16).map(|i| i * 300).collect();
+                let mut enc = encode(&values);
+                enc.pop(); // last value loses its high byte
+                let check = |name: &str, r: Result<(), DecodeError>| match r {
+                    Err(DecodeError::DataTruncated { index }) => {
+                        assert_eq!(index, n - 1, "{name} n={n}")
+                    }
+                    other => panic!("{name} n={n}: expected DataTruncated, got {other:?}"),
+                };
+                let mut out = vec![0u16; n];
+                check("scalar", scalar::decode_to_slice(&enc, &mut out));
+                if is_x86_feature_detected!("ssse3") {
+                    check("ssse3", unsafe { sse2::decode_to_slice(&enc, &mut out) });
+                }
+                if is_x86_feature_detected!("avx2") {
+                    check("avx2", unsafe { avx2::decode_to_slice(&enc, &mut out) });
+                }
+            }
+        }
+
         // ── SSSE3 encode cross-path tests ─────────────────────────────────
         //
         // All tests compare SSSE3 encode output byte-for-byte against scalar.
@@ -582,21 +704,43 @@ mod cross_path {
         use alloc::vec;
 
         fn encode(values: &[u16]) -> Vec<u8> {
-            let mut v = Vec::new();
-            scalar::encode_into(values, &mut v);
-            v
+            encode_scalar(values)
         }
 
         fn neon_decode(data: &[u8], n: usize) -> Vec<u16> {
-            let mut out = Vec::new();
-            unsafe { neon::decode_into(data, n, &mut out).unwrap() };
+            let mut out = vec![0u16; n];
+            unsafe { neon::decode_to_slice(data, &mut out).unwrap() };
             out
         }
 
         fn neon_encode(values: &[u16]) -> Vec<u8> {
-            let mut out = Vec::new();
-            unsafe { neon::encode_into(values, &mut out) };
-            out
+            // SAFETY: NEON is mandatory on AArch64; encode_with passes a slice
+            // of max_encoded_len bytes.
+            encode_with(values, |v, o| unsafe { neon::encode_to_slice(v, o) })
+        }
+
+        // A truncation in the scalar tail must report the index in the whole
+        // output, not the index within the tail.
+        #[test]
+        fn tail_error_index_is_absolute() {
+            use crate::error::DecodeError;
+            for n in [20usize, 36, 41] {
+                let values: Vec<u16> = (0..n as u16).map(|i| i * 300).collect();
+                let mut enc = encode(&values);
+                enc.pop(); // last value loses its high byte
+                let mut out = vec![0u16; n];
+                for (name, r) in [
+                    ("scalar", scalar::decode_to_slice(&enc, &mut out)),
+                    ("neon", unsafe { neon::decode_to_slice(&enc, &mut out) }),
+                ] {
+                    match r {
+                        Err(DecodeError::DataTruncated { index }) => {
+                            assert_eq!(index, n - 1, "{name} n={n}")
+                        }
+                        other => panic!("{name} n={n}: expected DataTruncated, got {other:?}"),
+                    }
+                }
+            }
         }
 
         fn check(values: &[u16]) {
