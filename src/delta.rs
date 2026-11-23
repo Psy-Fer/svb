@@ -7,7 +7,9 @@
 //!
 //! The functions in this module accept any type that implements [`Delta`].
 //! Call [`encode`] / [`decode`] for standalone sequences, or the
-//! `_with_initial` / `_into` variants for streaming use.
+//! `_with_initial` / `_into` variants for streaming use. The `_to_slice`
+//! functions write into a caller-supplied slice, and [`decode_in_place`]
+//! decodes a slice of deltas where it is.
 
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::vec::Vec;
@@ -36,25 +38,21 @@ pub trait Delta: private::Sealed + Copy + Default {
     fn __sub(self, rhs: Self) -> Self;
     #[doc(hidden)]
     fn __add(self, rhs: Self) -> Self;
-    // Overridable decode dispatch; default is scalar.
+    // Decodes whole SIMD blocks of `n` values from `src` into `dst` and returns
+    // the running sum and how many values it decoded; the caller decodes the
+    // rest. The default has no SIMD path and decodes nothing.
+    //
+    // Safety: `src` must be valid for reading and `dst` for writing `n` values.
+    // They may be equal (in-place decode) but must not otherwise overlap.
     #[doc(hidden)]
-    fn __decode_into(initial: Self, deltas: &[Self], out: &mut Vec<Self>) {
-        let mut acc = initial;
-        for &d in deltas {
-            acc = acc.__add(d);
-            out.push(acc);
-        }
-    }
-}
-
-// ── Scalar fallback helpers ───────────────────────────────────────────────────
-
-#[allow(dead_code)]
-fn decode_scalar<T: Copy + Delta>(initial: T, deltas: &[T], out: &mut Vec<T>) {
-    let mut acc = initial;
-    for &d in deltas {
-        acc = acc.__add(d);
-        out.push(acc);
+    unsafe fn __decode_blocks(
+        initial: Self,
+        src: *const Self,
+        dst: *mut Self,
+        n: usize,
+    ) -> (Self, usize) {
+        let _ = (src, dst, n);
+        (initial, 0)
     }
 }
 
@@ -68,24 +66,38 @@ impl Delta for i16 {
     fn __add(self, rhs: Self) -> Self {
         self.wrapping_add(rhs)
     }
-    fn __decode_into(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
-        decode_into_i16(initial, deltas, out);
+    unsafe fn __decode_blocks(
+        initial: i16,
+        src: *const i16,
+        dst: *mut i16,
+        n: usize,
+    ) -> (i16, usize) {
+        // SAFETY: the caller upholds the pointer contract of `__decode_blocks`.
+        unsafe { decode_blocks_i16(initial, src, dst, n) }
     }
 }
 
-fn decode_into_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
+// Picks the SIMD kernel for i16. Same contract as `Delta::__decode_blocks`.
+unsafe fn decode_blocks_i16(
+    initial: i16,
+    src: *const i16,
+    dst: *mut i16,
+    n: usize,
+) -> (i16, usize) {
+    // Exactly one of the cfg arms below is compiled, and it sets `result`.
+    let result: (i16, usize);
     #[cfg(all(
         any(feature = "simd-avx2", feature = "simd-ssse3"),
         target_arch = "x86_64"
     ))]
     {
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_sse2_i16(initial, deltas, out) };
+        result = unsafe { decode_sse2_i16(initial, src, dst, n) };
     }
     #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_i16(initial, deltas, out) };
+        result = unsafe { decode_neon_i16(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -94,7 +106,7 @@ fn decode_into_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
     ))]
     {
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_sse2_i16(initial, deltas, out) };
+        result = unsafe { decode_sse2_i16(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -103,7 +115,7 @@ fn decode_into_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
     ))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_i16(initial, deltas, out) };
+        result = unsafe { decode_neon_i16(initial, src, dst, n) };
     }
     // Scalar fallback: only compiled when no SIMD path covers this target.
     #[cfg(not(any(
@@ -118,7 +130,11 @@ fn decode_into_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
             any(target_arch = "x86_64", target_arch = "aarch64")
         )
     )))]
-    decode_scalar(initial, deltas, out);
+    {
+        let _ = (src, dst, n);
+        result = (initial, 0);
+    }
+    result
 }
 
 // ── u16 ──────────────────────────────────────────────────────────────────────
@@ -131,24 +147,38 @@ impl Delta for u16 {
     fn __add(self, rhs: Self) -> Self {
         self.wrapping_add(rhs)
     }
-    fn __decode_into(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
-        decode_into_u16(initial, deltas, out);
+    unsafe fn __decode_blocks(
+        initial: u16,
+        src: *const u16,
+        dst: *mut u16,
+        n: usize,
+    ) -> (u16, usize) {
+        // SAFETY: the caller upholds the pointer contract of `__decode_blocks`.
+        unsafe { decode_blocks_u16(initial, src, dst, n) }
     }
 }
 
-fn decode_into_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
+// Picks the SIMD kernel for u16. Same contract as `Delta::__decode_blocks`.
+unsafe fn decode_blocks_u16(
+    initial: u16,
+    src: *const u16,
+    dst: *mut u16,
+    n: usize,
+) -> (u16, usize) {
+    // Exactly one of the cfg arms below is compiled, and it sets `result`.
+    let result: (u16, usize);
     #[cfg(all(
         any(feature = "simd-avx2", feature = "simd-ssse3"),
         target_arch = "x86_64"
     ))]
     {
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_sse2_u16(initial, deltas, out) };
+        result = unsafe { decode_sse2_u16(initial, src, dst, n) };
     }
     #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_u16(initial, deltas, out) };
+        result = unsafe { decode_neon_u16(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -157,7 +187,7 @@ fn decode_into_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
     ))]
     {
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_sse2_u16(initial, deltas, out) };
+        result = unsafe { decode_sse2_u16(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -166,7 +196,7 @@ fn decode_into_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
     ))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_u16(initial, deltas, out) };
+        result = unsafe { decode_neon_u16(initial, src, dst, n) };
     }
     // Scalar fallback: only compiled when no SIMD path covers this target.
     #[cfg(not(any(
@@ -181,7 +211,11 @@ fn decode_into_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
             any(target_arch = "x86_64", target_arch = "aarch64")
         )
     )))]
-    decode_scalar(initial, deltas, out);
+    {
+        let _ = (src, dst, n);
+        result = (initial, 0);
+    }
+    result
 }
 
 // ── i32 ──────────────────────────────────────────────────────────────────────
@@ -194,16 +228,30 @@ impl Delta for i32 {
     fn __add(self, rhs: Self) -> Self {
         self.wrapping_add(rhs)
     }
-    fn __decode_into(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
-        decode_into_i32(initial, deltas, out);
+    unsafe fn __decode_blocks(
+        initial: i32,
+        src: *const i32,
+        dst: *mut i32,
+        n: usize,
+    ) -> (i32, usize) {
+        // SAFETY: the caller upholds the pointer contract of `__decode_blocks`.
+        unsafe { decode_blocks_i32(initial, src, dst, n) }
     }
 }
 
-fn decode_into_i32(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
+// Picks the SIMD kernel for i32. Same contract as `Delta::__decode_blocks`.
+unsafe fn decode_blocks_i32(
+    initial: i32,
+    src: *const i32,
+    dst: *mut i32,
+    n: usize,
+) -> (i32, usize) {
+    // Exactly one of the cfg arms below is compiled, and it sets `result`.
+    let result: (i32, usize);
     #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
     {
         // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
-        unsafe { decode_avx2_i32(initial, deltas, out) };
+        result = unsafe { decode_avx2_i32(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-ssse3",
@@ -212,12 +260,12 @@ fn decode_into_i32(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
     ))]
     {
         // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime; SSSE3 implies SSE2.
-        unsafe { decode_sse2_i32(initial, deltas, out) };
+        result = unsafe { decode_sse2_i32(initial, src, dst, n) };
     }
     #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_i32(initial, deltas, out) };
+        result = unsafe { decode_neon_i32(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -228,10 +276,10 @@ fn decode_into_i32(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
     {
         if is_x86_feature_detected!("avx2") {
             // SAFETY: AVX2 confirmed at runtime.
-            unsafe { decode_avx2_i32(initial, deltas, out) };
+            result = unsafe { decode_avx2_i32(initial, src, dst, n) };
         } else {
             // SAFETY: SSE2 is always available on x86_64.
-            unsafe { decode_sse2_i32(initial, deltas, out) };
+            result = unsafe { decode_sse2_i32(initial, src, dst, n) };
         }
     }
     #[cfg(all(
@@ -241,7 +289,7 @@ fn decode_into_i32(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
     ))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_i32(initial, deltas, out) };
+        result = unsafe { decode_neon_i32(initial, src, dst, n) };
     }
     // Scalar fallback: only compiled when no SIMD path covers this target.
     #[cfg(not(any(
@@ -264,7 +312,11 @@ fn decode_into_i32(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
             target_arch = "aarch64"
         )
     )))]
-    decode_scalar(initial, deltas, out);
+    {
+        let _ = (src, dst, n);
+        result = (initial, 0);
+    }
+    result
 }
 
 // ── u32 ──────────────────────────────────────────────────────────────────────
@@ -277,16 +329,30 @@ impl Delta for u32 {
     fn __add(self, rhs: Self) -> Self {
         self.wrapping_add(rhs)
     }
-    fn __decode_into(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
-        decode_into_u32(initial, deltas, out);
+    unsafe fn __decode_blocks(
+        initial: u32,
+        src: *const u32,
+        dst: *mut u32,
+        n: usize,
+    ) -> (u32, usize) {
+        // SAFETY: the caller upholds the pointer contract of `__decode_blocks`.
+        unsafe { decode_blocks_u32(initial, src, dst, n) }
     }
 }
 
-fn decode_into_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
+// Picks the SIMD kernel for u32. Same contract as `Delta::__decode_blocks`.
+unsafe fn decode_blocks_u32(
+    initial: u32,
+    src: *const u32,
+    dst: *mut u32,
+    n: usize,
+) -> (u32, usize) {
+    // Exactly one of the cfg arms below is compiled, and it sets `result`.
+    let result: (u32, usize);
     #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
     {
         // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
-        unsafe { decode_avx2_u32(initial, deltas, out) };
+        result = unsafe { decode_avx2_u32(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-ssse3",
@@ -295,12 +361,12 @@ fn decode_into_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
     ))]
     {
         // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime; SSSE3 implies SSE2.
-        unsafe { decode_sse2_u32(initial, deltas, out) };
+        result = unsafe { decode_sse2_u32(initial, src, dst, n) };
     }
     #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_u32(initial, deltas, out) };
+        result = unsafe { decode_neon_u32(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -311,10 +377,10 @@ fn decode_into_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
     {
         if is_x86_feature_detected!("avx2") {
             // SAFETY: AVX2 confirmed at runtime.
-            unsafe { decode_avx2_u32(initial, deltas, out) };
+            result = unsafe { decode_avx2_u32(initial, src, dst, n) };
         } else {
             // SAFETY: SSE2 is always available on x86_64.
-            unsafe { decode_sse2_u32(initial, deltas, out) };
+            result = unsafe { decode_sse2_u32(initial, src, dst, n) };
         }
     }
     #[cfg(all(
@@ -324,7 +390,7 @@ fn decode_into_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
     ))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_u32(initial, deltas, out) };
+        result = unsafe { decode_neon_u32(initial, src, dst, n) };
     }
     // Scalar fallback: only compiled when no SIMD path covers this target.
     #[cfg(not(any(
@@ -347,7 +413,11 @@ fn decode_into_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
             target_arch = "aarch64"
         )
     )))]
-    decode_scalar(initial, deltas, out);
+    {
+        let _ = (src, dst, n);
+        result = (initial, 0);
+    }
+    result
 }
 
 // ── i64 ──────────────────────────────────────────────────────────────────────
@@ -360,16 +430,30 @@ impl Delta for i64 {
     fn __add(self, rhs: Self) -> Self {
         self.wrapping_add(rhs)
     }
-    fn __decode_into(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
-        decode_into_i64(initial, deltas, out);
+    unsafe fn __decode_blocks(
+        initial: i64,
+        src: *const i64,
+        dst: *mut i64,
+        n: usize,
+    ) -> (i64, usize) {
+        // SAFETY: the caller upholds the pointer contract of `__decode_blocks`.
+        unsafe { decode_blocks_i64(initial, src, dst, n) }
     }
 }
 
-fn decode_into_i64(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
+// Picks the SIMD kernel for i64. Same contract as `Delta::__decode_blocks`.
+unsafe fn decode_blocks_i64(
+    initial: i64,
+    src: *const i64,
+    dst: *mut i64,
+    n: usize,
+) -> (i64, usize) {
+    // Exactly one of the cfg arms below is compiled, and it sets `result`.
+    let result: (i64, usize);
     #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
     {
         // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
-        unsafe { decode_avx2_i64(initial, deltas, out) };
+        result = unsafe { decode_avx2_i64(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-ssse3",
@@ -378,12 +462,12 @@ fn decode_into_i64(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
     ))]
     {
         // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime; SSSE3 implies SSE2.
-        unsafe { decode_sse2_i64(initial, deltas, out) };
+        result = unsafe { decode_sse2_i64(initial, src, dst, n) };
     }
     #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_i64(initial, deltas, out) };
+        result = unsafe { decode_neon_i64(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -394,10 +478,10 @@ fn decode_into_i64(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
     {
         if is_x86_feature_detected!("avx2") {
             // SAFETY: AVX2 confirmed at runtime.
-            unsafe { decode_avx2_i64(initial, deltas, out) };
+            result = unsafe { decode_avx2_i64(initial, src, dst, n) };
         } else {
             // SAFETY: SSE2 is always available on x86_64.
-            unsafe { decode_sse2_i64(initial, deltas, out) };
+            result = unsafe { decode_sse2_i64(initial, src, dst, n) };
         }
     }
     #[cfg(all(
@@ -407,7 +491,7 @@ fn decode_into_i64(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
     ))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_i64(initial, deltas, out) };
+        result = unsafe { decode_neon_i64(initial, src, dst, n) };
     }
     // Scalar fallback: only compiled when no SIMD path covers this target.
     #[cfg(not(any(
@@ -430,7 +514,11 @@ fn decode_into_i64(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
             target_arch = "aarch64"
         )
     )))]
-    decode_scalar(initial, deltas, out);
+    {
+        let _ = (src, dst, n);
+        result = (initial, 0);
+    }
+    result
 }
 
 // ── u64 ──────────────────────────────────────────────────────────────────────
@@ -443,16 +531,30 @@ impl Delta for u64 {
     fn __add(self, rhs: Self) -> Self {
         self.wrapping_add(rhs)
     }
-    fn __decode_into(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
-        decode_into_u64(initial, deltas, out);
+    unsafe fn __decode_blocks(
+        initial: u64,
+        src: *const u64,
+        dst: *mut u64,
+        n: usize,
+    ) -> (u64, usize) {
+        // SAFETY: the caller upholds the pointer contract of `__decode_blocks`.
+        unsafe { decode_blocks_u64(initial, src, dst, n) }
     }
 }
 
-fn decode_into_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
+// Picks the SIMD kernel for u64. Same contract as `Delta::__decode_blocks`.
+unsafe fn decode_blocks_u64(
+    initial: u64,
+    src: *const u64,
+    dst: *mut u64,
+    n: usize,
+) -> (u64, usize) {
+    // Exactly one of the cfg arms below is compiled, and it sets `result`.
+    let result: (u64, usize);
     #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
     {
         // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
-        unsafe { decode_avx2_u64(initial, deltas, out) };
+        result = unsafe { decode_avx2_u64(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-ssse3",
@@ -461,12 +563,12 @@ fn decode_into_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
     ))]
     {
         // SAFETY: simd-ssse3 feature declares SSSE3 is available at runtime; SSSE3 implies SSE2.
-        unsafe { decode_sse2_u64(initial, deltas, out) };
+        result = unsafe { decode_sse2_u64(initial, src, dst, n) };
     }
     #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_u64(initial, deltas, out) };
+        result = unsafe { decode_neon_u64(initial, src, dst, n) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -477,10 +579,10 @@ fn decode_into_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
     {
         if is_x86_feature_detected!("avx2") {
             // SAFETY: AVX2 confirmed at runtime.
-            unsafe { decode_avx2_u64(initial, deltas, out) };
+            result = unsafe { decode_avx2_u64(initial, src, dst, n) };
         } else {
             // SAFETY: SSE2 is always available on x86_64.
-            unsafe { decode_sse2_u64(initial, deltas, out) };
+            result = unsafe { decode_sse2_u64(initial, src, dst, n) };
         }
     }
     #[cfg(all(
@@ -490,7 +592,7 @@ fn decode_into_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
     ))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_u64(initial, deltas, out) };
+        result = unsafe { decode_neon_u64(initial, src, dst, n) };
     }
     // Scalar fallback: only compiled when no SIMD path covers this target.
     #[cfg(not(any(
@@ -513,7 +615,11 @@ fn decode_into_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
             target_arch = "aarch64"
         )
     )))]
-    decode_scalar(initial, deltas, out);
+    {
+        let _ = (src, dst, n);
+        result = (initial, 0);
+    }
+    result
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -602,8 +708,8 @@ pub fn decode<T: Delta>(deltas: &[T]) -> Vec<T> {
 /// assert_eq!(s2, [14, 20]);
 /// ```
 pub fn decode_with_initial<T: Delta>(initial: T, deltas: &[T]) -> Vec<T> {
-    let mut out = Vec::with_capacity(deltas.len());
-    T::__decode_into(initial, deltas, &mut out);
+    let mut out = deltas.to_vec();
+    decode_with_initial_in_place(initial, &mut out);
     out
 }
 
@@ -618,7 +724,7 @@ pub fn decode_with_initial<T: Delta>(initial: T, deltas: &[T]) -> Vec<T> {
 /// assert_eq!(out, [99, 10, 11, 13]);
 /// ```
 pub fn decode_into<T: Delta>(deltas: &[T], out: &mut Vec<T>) {
-    T::__decode_into(T::default(), deltas, out);
+    decode_with_initial_into(T::default(), deltas, out);
 }
 
 /// Delta-decode `deltas` starting from `initial`, appending the result to `out`.
@@ -635,7 +741,99 @@ pub fn decode_into<T: Delta>(deltas: &[T], out: &mut Vec<T>) {
 /// assert_eq!(out, [7, 10]); // 5+2=7, 7+3=10
 /// ```
 pub fn decode_with_initial_into<T: Delta>(initial: T, deltas: &[T], out: &mut Vec<T>) {
-    T::__decode_into(initial, deltas, out);
+    let start = out.len();
+    out.extend_from_slice(deltas);
+    decode_with_initial_in_place(initial, &mut out[start..]);
+}
+
+/// Delta-decode `deltas` into `out`, which must be the same length, using
+/// `T::default()` as the initial accumulator.
+///
+/// # Panics
+///
+/// Panics if `out.len() != deltas.len()`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let mut out = [0i16; 3];
+/// delta::decode_to_slice(&[10i16, 1, 2], &mut out);
+/// assert_eq!(out, [10, 11, 13]);
+/// ```
+pub fn decode_to_slice<T: Delta>(deltas: &[T], out: &mut [T]) {
+    decode_with_initial_to_slice(T::default(), deltas, out);
+}
+
+/// Delta-decode `deltas` into `out`, which must be the same length, starting
+/// the prefix sum from `initial`.
+///
+/// # Panics
+///
+/// Panics if `out.len() != deltas.len()`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let mut out = [0i16; 2];
+/// delta::decode_with_initial_to_slice(5i16, &[2i16, 3], &mut out);
+/// assert_eq!(out, [7, 10]);
+/// ```
+pub fn decode_with_initial_to_slice<T: Delta>(initial: T, deltas: &[T], out: &mut [T]) {
+    assert!(
+        out.len() == deltas.len(),
+        "delta::decode_to_slice: out has {} elements, deltas has {}",
+        out.len(),
+        deltas.len()
+    );
+    let n = deltas.len();
+    // SAFETY: `deltas` is valid for reading n values and `out` for writing n
+    // values, and they are separate borrows so they do not overlap.
+    let (mut acc, done) =
+        unsafe { T::__decode_blocks(initial, deltas.as_ptr(), out.as_mut_ptr(), n) };
+    for (o, &d) in out[done..].iter_mut().zip(&deltas[done..]) {
+        acc = acc.__add(d);
+        *o = acc;
+    }
+}
+
+/// Delta-decode `values` in place, using `T::default()` as the initial
+/// accumulator. On entry `values` holds deltas; on return it holds the decoded
+/// values.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let mut values = [10i16, 1, 2];
+/// delta::decode_in_place(&mut values);
+/// assert_eq!(values, [10, 11, 13]);
+/// ```
+pub fn decode_in_place<T: Delta>(values: &mut [T]) {
+    decode_with_initial_in_place(T::default(), values);
+}
+
+/// Delta-decode `values` in place, starting the prefix sum from `initial`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let mut values = [2i16, 3];
+/// delta::decode_with_initial_in_place(5i16, &mut values);
+/// assert_eq!(values, [7, 10]);
+/// ```
+pub fn decode_with_initial_in_place<T: Delta>(initial: T, values: &mut [T]) {
+    let n = values.len();
+    let p = values.as_mut_ptr();
+    // SAFETY: `p` is valid for reading and writing n values. Passing the same
+    // pointer as source and destination is allowed by `__decode_blocks`.
+    let (mut acc, done) = unsafe { T::__decode_blocks(initial, p, p, n) };
+    for v in &mut values[done..] {
+        acc = acc.__add(*v);
+        *v = acc;
+    }
 }
 
 /// Compute the midpoint carry for use with [`decode_2chain_into`].
@@ -672,18 +870,41 @@ pub fn mid_carry(initial: i16, deltas: &[i16]) -> i16 {
 /// With `K` sub-chunks, store `K-1` carry values and decode all sub-chunks
 /// independently — enabling linear multi-core scaling.
 pub fn decode_2chain_into(initial: i16, deltas: &[i16], mid_carry: i16, out: &mut Vec<i16>) {
-    let n = deltas.len();
-    let mid = n / 2;
+    let start = out.len();
+    out.resize(start + deltas.len(), 0);
+    decode_2chain_to_slice(initial, deltas, mid_carry, &mut out[start..]);
+}
+
+/// Decode a delta-encoded `i16` slice using two independent sub-streams,
+/// writing into `out`, which must be the same length as `deltas`.
+///
+/// Same as [`decode_2chain_into`] otherwise.
+///
+/// # Panics
+///
+/// Panics if `out.len() != deltas.len()`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let deltas = [10i16, 1, 2, 3, 4];
+/// let carry = delta::mid_carry(0, &deltas);
+/// let mut out = [0i16; 5];
+/// delta::decode_2chain_to_slice(0, &deltas, carry, &mut out);
+/// assert_eq!(out, [10, 11, 13, 16, 20]);
+/// ```
+pub fn decode_2chain_to_slice(initial: i16, deltas: &[i16], mid_carry: i16, out: &mut [i16]) {
+    assert!(
+        out.len() == deltas.len(),
+        "delta::decode_2chain_to_slice: out has {} elements, deltas has {}",
+        out.len(),
+        deltas.len()
+    );
+    let mid = deltas.len() / 2;
     let (deltas_a, deltas_b) = deltas.split_at(mid);
-    out.reserve(n);
-    let base = out.len();
-    // SAFETY: reserve(n) above ensures capacity for n more elements.
-    unsafe { out.set_len(base + n) };
-    let out_a = unsafe { out.as_mut_ptr().add(base) };
-    let out_b = unsafe { out.as_mut_ptr().add(base + mid) };
+    let (out_a, out_b) = out.split_at_mut(mid);
     decode_2chain_i16(initial, deltas_a, mid_carry, deltas_b, out_a, out_b);
-    // Odd trailing element (when n is odd, deltas_b has one fewer element than deltas_a)
-    // Already handled inside decode_2chain_i16 via scalar tails.
 }
 
 /// Decode a delta-encoded `i16` slice using two independent sub-streams,
@@ -722,28 +943,98 @@ pub fn encode_with_initial_into<T: Delta>(initial: T, samples: &[T], out: &mut V
     );
 }
 
+/// Delta-encode `samples` into `out`, which must be the same length, using
+/// `T::default()` as the value before the first element.
+///
+/// # Panics
+///
+/// Panics if `out.len() != samples.len()`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let mut out = [0i16; 3];
+/// delta::encode_to_slice(&[10i16, 11, 13], &mut out);
+/// assert_eq!(out, [10, 1, 2]);
+/// ```
+pub fn encode_to_slice<T: Delta>(samples: &[T], out: &mut [T]) {
+    encode_with_initial_to_slice(T::default(), samples, out);
+}
+
+/// Delta-encode `samples` into `out`, which must be the same length, treating
+/// `initial` as the value before the first element.
+///
+/// # Panics
+///
+/// Panics if `out.len() != samples.len()`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::delta;
+/// let mut out = [0i16; 2];
+/// delta::encode_with_initial_to_slice(5i16, &[7, 10], &mut out);
+/// assert_eq!(out, [2, 3]);
+/// ```
+pub fn encode_with_initial_to_slice<T: Delta>(initial: T, samples: &[T], out: &mut [T]) {
+    assert!(
+        out.len() == samples.len(),
+        "delta::encode_to_slice: out has {} elements, samples has {}",
+        out.len(),
+        samples.len()
+    );
+    let Some((&first, rest)) = samples.split_first() else {
+        return;
+    };
+    out[0] = first.__sub(initial);
+    for ((o, &curr), &prev) in out[1..].iter_mut().zip(rest).zip(samples) {
+        *o = curr.__sub(prev);
+    }
+}
+
 // ── 2-chain interleaved delta decode ─────────────────────────────────────────
 
+// `out_a` and `out_b` must be at least as long as `deltas_a` and `deltas_b`.
 fn decode_2chain_i16(
     initial_a: i16,
     deltas_a: &[i16],
     initial_b: i16,
     deltas_b: &[i16],
-    out_a: *mut i16,
-    out_b: *mut i16,
+    out_a: &mut [i16],
+    out_b: &mut [i16],
 ) {
+    assert!(out_a.len() >= deltas_a.len() && out_b.len() >= deltas_b.len());
     #[cfg(all(
         any(feature = "simd-avx2", feature = "simd-ssse3"),
         target_arch = "x86_64"
     ))]
     {
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_2chain_sse2_i16(initial_a, deltas_a, initial_b, deltas_b, out_a, out_b) };
+        unsafe {
+            decode_2chain_sse2_i16(
+                initial_a,
+                deltas_a,
+                initial_b,
+                deltas_b,
+                out_a.as_mut_ptr(),
+                out_b.as_mut_ptr(),
+            )
+        };
     }
     #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_2chain_neon_i16(initial_a, deltas_a, initial_b, deltas_b, out_a, out_b) };
+        unsafe {
+            decode_2chain_neon_i16(
+                initial_a,
+                deltas_a,
+                initial_b,
+                deltas_b,
+                out_a.as_mut_ptr(),
+                out_b.as_mut_ptr(),
+            )
+        };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -752,7 +1043,16 @@ fn decode_2chain_i16(
     ))]
     {
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_2chain_sse2_i16(initial_a, deltas_a, initial_b, deltas_b, out_a, out_b) };
+        unsafe {
+            decode_2chain_sse2_i16(
+                initial_a,
+                deltas_a,
+                initial_b,
+                deltas_b,
+                out_a.as_mut_ptr(),
+                out_b.as_mut_ptr(),
+            )
+        };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -761,7 +1061,16 @@ fn decode_2chain_i16(
     ))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_2chain_neon_i16(initial_a, deltas_a, initial_b, deltas_b, out_a, out_b) };
+        unsafe {
+            decode_2chain_neon_i16(
+                initial_a,
+                deltas_a,
+                initial_b,
+                deltas_b,
+                out_a.as_mut_ptr(),
+                out_b.as_mut_ptr(),
+            )
+        };
     }
     // Scalar fallback: only compiled when no SIMD path covers this target.
     #[cfg(not(any(
@@ -785,20 +1094,18 @@ fn decode_2chain_scalar_i16(
     deltas_a: &[i16],
     initial_b: i16,
     deltas_b: &[i16],
-    out_a: *mut i16,
-    out_b: *mut i16,
+    out_a: &mut [i16],
+    out_b: &mut [i16],
 ) {
     let mut acc = initial_a;
-    for (i, &d) in deltas_a.iter().enumerate() {
+    for (o, &d) in out_a.iter_mut().zip(deltas_a) {
         acc = acc.wrapping_add(d);
-        // SAFETY: caller allocates out_a for deltas_a.len() elements.
-        unsafe { *out_a.add(i) = acc };
+        *o = acc;
     }
     acc = initial_b;
-    for (i, &d) in deltas_b.iter().enumerate() {
+    for (o, &d) in out_b.iter_mut().zip(deltas_b) {
         acc = acc.wrapping_add(d);
-        // SAFETY: caller allocates out_b for deltas_b.len() elements.
-        unsafe { *out_b.add(i) = acc };
+        *o = acc;
     }
 }
 
@@ -916,6 +1223,18 @@ unsafe fn decode_2chain_neon_i16(
     }
 }
 
+// ── SIMD kernels ──────────────────────────────────────────────────────────────
+//
+// Every kernel decodes whole blocks only and returns the running sum and the
+// number of values it decoded; the caller decodes the rest in scalar code.
+// Kernels read `src` and write `dst` through raw pointers so one buffer can be
+// passed as both (in-place decode). Each block is loaded before it is stored,
+// and later loads only read later positions, so an in-place decode never reads
+// a value it has already overwritten.
+//
+// Safety (all kernels): `src` must be valid for reading and `dst` for writing
+// `n` values. They may be equal but must not otherwise overlap.
+
 // ── SSE2 implementations (x86_64) ─────────────────────────────────────────────
 
 // SSE2 prefix-sum delta decode: 8 i16 values per iteration.
@@ -928,12 +1247,9 @@ unsafe fn decode_2chain_neon_i16(
 // element 7 (the cumulative sum of all 8 deltas + acc) as the new accumulator.
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_sse2_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
+unsafe fn decode_sse2_i16(initial: i16, src: *const i16, dst: *mut i16, n: usize) -> (i16, usize) {
     use core::arch::x86_64::*;
 
-    let n = deltas.len();
-    out.reserve(n);
-    let base = out.len();
     let simd_n = (n / 8) * 8;
 
     let mut acc = initial;
@@ -941,8 +1257,8 @@ unsafe fn decode_sse2_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
 
     while i < simd_n {
         let result = unsafe {
-            // SAFETY: i + 8 <= simd_n <= n; deltas slice bounds are valid.
-            let v = _mm_loadu_si128(deltas.as_ptr().add(i) as *const __m128i);
+            // SAFETY: i + 8 <= simd_n <= n, so src is valid for this block.
+            let v = _mm_loadu_si128(src.add(i) as *const __m128i);
             // Three-step prefix-sum scan (all wrapping i16 arithmetic).
             let v = _mm_add_epi16(v, _mm_slli_si128(v, 2));
             let v = _mm_add_epi16(v, _mm_slli_si128(v, 4));
@@ -951,24 +1267,15 @@ unsafe fn decode_sse2_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
             _mm_add_epi16(v, _mm_set1_epi16(acc))
         };
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 8 <= base + n.
-            let out_ptr = out.as_mut_ptr().add(base + i) as *mut __m128i;
+            // SAFETY: i + 8 <= n, so dst is valid for this block.
+            let out_ptr = dst.add(i) as *mut __m128i;
             _mm_storeu_si128(out_ptr, result);
             // Element 7 is the prefix sum of all 8 deltas + acc = new accumulator.
             acc = _mm_extract_epi16(result, 7) as i16;
         }
         i += 8;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
-    // Scalar tail for n % 8 remaining values.
-    for &d in &deltas[simd_n..] {
-        acc = acc.wrapping_add(d);
-        out.push(acc);
-    }
+    (acc, simd_n)
 }
 
 // SSE2 prefix-sum delta decode for i32: 4 values per iteration.
@@ -979,7 +1286,7 @@ unsafe fn decode_sse2_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
 // Then add acc broadcast, extract element 3 as new acc (SSE2-only via shuffle).
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_sse2_i32_inner(initial: i32, deltas: *const i32, n: usize, out: *mut i32) -> i32 {
+unsafe fn decode_sse2_i32(initial: i32, src: *const i32, dst: *mut i32, n: usize) -> (i32, usize) {
     use core::arch::x86_64::*;
 
     let simd_n = (n / 4) * 4;
@@ -989,7 +1296,7 @@ unsafe fn decode_sse2_i32_inner(initial: i32, deltas: *const i32, n: usize, out:
     while i < simd_n {
         let v = unsafe {
             // SAFETY: caller ensures i + 4 <= n and pointers are valid.
-            _mm_loadu_si128(deltas.add(i) as *const __m128i)
+            _mm_loadu_si128(src.add(i) as *const __m128i)
         };
         // Two-step prefix-sum (wrapping i32 = wrapping u32 at the bit level).
         let v = unsafe { _mm_add_epi32(v, _mm_slli_si128(v, 4)) };
@@ -998,7 +1305,7 @@ unsafe fn decode_sse2_i32_inner(initial: i32, deltas: *const i32, n: usize, out:
         let result = unsafe { _mm_add_epi32(v, _mm_set1_epi32(acc)) };
         unsafe {
             // SAFETY: out pointer valid for i + 4 elements.
-            _mm_storeu_si128(out.add(i) as *mut __m128i, result);
+            _mm_storeu_si128(dst.add(i) as *mut __m128i, result);
             // Extract element 3 as new accumulator (SSE2-only; avoids SSE4.1
             // _mm_extract_epi32). Shuffle broadcasts element 3 to all positions,
             // then cvtsi128_si32 reads the low 32 bits.
@@ -1006,53 +1313,29 @@ unsafe fn decode_sse2_i32_inner(initial: i32, deltas: *const i32, n: usize, out:
         }
         i += 4;
     }
-    acc
+    (acc, simd_n)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_sse2_i32(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
-    let n = deltas.len();
-    out.reserve(n);
-    let base = out.len();
-    let simd_n = (n / 4) * 4;
-
-    // SAFETY: pointers derived from valid slices/vecs; capacity reserved above.
-    let acc =
-        unsafe { decode_sse2_i32_inner(initial, deltas.as_ptr(), n, out.as_mut_ptr().add(base)) };
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were written by decode_sse2_i32_inner.
-        out.set_len(base + simd_n);
-    }
-
-    let mut acc = acc;
-    for &d in &deltas[simd_n..] {
-        acc = acc.wrapping_add(d);
-        out.push(acc);
-    }
+unsafe fn decode_sse2_u32(initial: u32, src: *const u32, dst: *mut u32, n: usize) -> (u32, usize) {
+    // Wrapping add is identical for i32 and u32 at the bit level, and the two
+    // types have the same size and alignment.
+    // SAFETY: same pointers and length as this function's own contract.
+    let (acc, done) =
+        unsafe { decode_sse2_i32(initial as i32, src as *const i32, dst as *mut i32, n) };
+    (acc as u32, done)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_sse2_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
-    // Wrapping add is identical for i32 and u32 at the bit level.
-    // SAFETY: u32 and i32 have the same size/alignment; wrapping arithmetic is identical.
-    // We cast the output Vec pointer to reuse the i32 implementation without copying data.
-    let deltas_i32 =
-        unsafe { core::slice::from_raw_parts(deltas.as_ptr() as *const i32, deltas.len()) };
-    let out_i32 = unsafe { &mut *(out as *mut Vec<u32> as *mut Vec<i32>) };
-    unsafe { decode_sse2_i32(initial as i32, deltas_i32, out_i32) };
-}
-
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-unsafe fn decode_sse2_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
-    // Wrapping add is identical for i16 and u16 at the bit level.
-    // SAFETY: u16 and i16 have the same size/alignment; wrapping arithmetic is identical.
-    let deltas_i16 =
-        unsafe { core::slice::from_raw_parts(deltas.as_ptr() as *const i16, deltas.len()) };
-    let out_i16 = unsafe { &mut *(out as *mut Vec<u16> as *mut Vec<i16>) };
-    unsafe { decode_sse2_i16(initial as i16, deltas_i16, out_i16) };
+unsafe fn decode_sse2_u16(initial: u16, src: *const u16, dst: *mut u16, n: usize) -> (u16, usize) {
+    // Wrapping add is identical for i16 and u16 at the bit level, and the two
+    // types have the same size and alignment.
+    // SAFETY: same pointers and length as this function's own contract.
+    let (acc, done) =
+        unsafe { decode_sse2_i16(initial as i16, src as *const i16, dst as *mut i16, n) };
+    (acc as u16, done)
 }
 
 // SSE2 prefix-sum delta decode for i64: 2 values per iteration.
@@ -1062,7 +1345,7 @@ unsafe fn decode_sse2_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
 // Then add acc broadcast, extract element 1 (high 64 bits) as new acc.
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_sse2_i64_inner(initial: i64, deltas: *const i64, n: usize, out: *mut i64) -> i64 {
+unsafe fn decode_sse2_i64(initial: i64, src: *const i64, dst: *mut i64, n: usize) -> (i64, usize) {
     use core::arch::x86_64::*;
 
     let simd_n = (n / 2) * 2;
@@ -1072,7 +1355,7 @@ unsafe fn decode_sse2_i64_inner(initial: i64, deltas: *const i64, n: usize, out:
     while i < simd_n {
         let v = unsafe {
             // SAFETY: caller ensures i + 2 <= n and pointers are valid.
-            _mm_loadu_si128(deltas.add(i) as *const __m128i)
+            _mm_loadu_si128(src.add(i) as *const __m128i)
         };
         // One-step prefix-sum (wrapping i64 arithmetic).
         let v = unsafe { _mm_add_epi64(v, _mm_slli_si128(v, 8)) };
@@ -1080,47 +1363,24 @@ unsafe fn decode_sse2_i64_inner(initial: i64, deltas: *const i64, n: usize, out:
         let result = unsafe { _mm_add_epi64(v, _mm_set1_epi64x(acc)) };
         unsafe {
             // SAFETY: out pointer valid for i + 2 elements.
-            _mm_storeu_si128(out.add(i) as *mut __m128i, result);
+            _mm_storeu_si128(dst.add(i) as *mut __m128i, result);
             // Extract element 1 (high 64 bits) as new accumulator.
             acc = _mm_cvtsi128_si64(_mm_unpackhi_epi64(result, result));
         }
         i += 2;
     }
-    acc
+    (acc, simd_n)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_sse2_i64(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
-    let n = deltas.len();
-    out.reserve(n);
-    let base = out.len();
-    let simd_n = (n / 2) * 2;
-
-    // SAFETY: pointers derived from valid slices/vecs; capacity reserved above.
-    let acc =
-        unsafe { decode_sse2_i64_inner(initial, deltas.as_ptr(), n, out.as_mut_ptr().add(base)) };
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were written by decode_sse2_i64_inner.
-        out.set_len(base + simd_n);
-    }
-
-    let mut acc = acc;
-    for &d in &deltas[simd_n..] {
-        acc = acc.wrapping_add(d);
-        out.push(acc);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-unsafe fn decode_sse2_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
-    // Wrapping add is identical for i64 and u64 at the bit level.
-    // SAFETY: u64 and i64 have the same size/alignment; wrapping arithmetic is identical.
-    let deltas_i64 =
-        unsafe { core::slice::from_raw_parts(deltas.as_ptr() as *const i64, deltas.len()) };
-    let out_i64 = unsafe { &mut *(out as *mut Vec<u64> as *mut Vec<i64>) };
-    unsafe { decode_sse2_i64(initial as i64, deltas_i64, out_i64) };
+unsafe fn decode_sse2_u64(initial: u64, src: *const u64, dst: *mut u64, n: usize) -> (u64, usize) {
+    // Wrapping add is identical for i64 and u64 at the bit level, and the two
+    // types have the same size and alignment.
+    // SAFETY: same pointers and length as this function's own contract.
+    let (acc, done) =
+        unsafe { decode_sse2_i64(initial as i64, src as *const i64, dst as *mut i64, n) };
+    (acc as u64, done)
 }
 
 // ── AVX2 implementations (x86_64) ─────────────────────────────────────────────
@@ -1135,7 +1395,7 @@ unsafe fn decode_sse2_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
 //   4. Extract hi-lane element 3 as new acc.
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_avx2_i32_inner(initial: i32, deltas: *const i32, n: usize, out: *mut i32) -> i32 {
+unsafe fn decode_avx2_i32(initial: i32, src: *const i32, dst: *mut i32, n: usize) -> (i32, usize) {
     use core::arch::x86_64::*;
 
     let simd_n = (n / 8) * 8;
@@ -1145,7 +1405,7 @@ unsafe fn decode_avx2_i32_inner(initial: i32, deltas: *const i32, n: usize, out:
     while i < simd_n {
         let v = unsafe {
             // SAFETY: caller ensures i + 8 <= n and pointers are valid.
-            _mm256_loadu_si256(deltas.add(i) as *const __m256i)
+            _mm256_loadu_si256(src.add(i) as *const __m256i)
         };
 
         // Step 1: intra-lane prefix sums (each 128-bit lane independently).
@@ -1166,7 +1426,7 @@ unsafe fn decode_avx2_i32_inner(initial: i32, deltas: *const i32, n: usize, out:
 
         unsafe {
             // SAFETY: out pointer valid for i + 8 elements.
-            _mm256_storeu_si256(out.add(i) as *mut __m256i, result);
+            _mm256_storeu_si256(dst.add(i) as *mut __m256i, result);
             // Extract hi lane element 3 as new accumulator.
             // _mm256_extracti128_si256(result, 1) gets the hi 128-bit lane.
             // Shuffle broadcasts element 3; cvtsi128_si32 reads low 32 bits.
@@ -1175,62 +1435,21 @@ unsafe fn decode_avx2_i32_inner(initial: i32, deltas: *const i32, n: usize, out:
         }
         i += 8;
     }
-    acc
+    // Finish the remaining whole blocks of 4 with SSE2.
+    // SAFETY: simd_n <= n, so the last n - simd_n values are in bounds.
+    let (acc, done) = unsafe { decode_sse2_i32(acc, src.add(simd_n), dst.add(simd_n), n - simd_n) };
+    (acc, simd_n + done)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_avx2_i32(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
-    let n = deltas.len();
-    out.reserve(n);
-    let base = out.len();
-    let simd_n = (n / 8) * 8;
-
-    // SAFETY: pointers derived from valid slices/vecs; capacity reserved above.
-    let acc =
-        unsafe { decode_avx2_i32_inner(initial, deltas.as_ptr(), n, out.as_mut_ptr().add(base)) };
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were written by decode_avx2_i32_inner.
-        out.set_len(base + simd_n);
-    }
-
-    // Process remaining with SSE2 then scalar tail.
-    let rem = &deltas[simd_n..];
-    let sse2_n = (rem.len() / 4) * 4;
-    let acc = if sse2_n > 0 {
-        // SAFETY: pointers derived from valid slices/vecs; capacity reserved above.
-        let a = unsafe {
-            decode_sse2_i32_inner(
-                acc,
-                rem.as_ptr(),
-                rem.len(),
-                out.as_mut_ptr().add(base + simd_n),
-            )
-        };
-        unsafe {
-            // SAFETY: elements written by decode_sse2_i32_inner.
-            out.set_len(base + simd_n + sse2_n);
-        }
-        a
-    } else {
-        acc
-    };
-
-    let mut acc = acc;
-    for &d in &rem[sse2_n..] {
-        acc = acc.wrapping_add(d);
-        out.push(acc);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-unsafe fn decode_avx2_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
-    // SAFETY: u32 and i32 have the same size/alignment; wrapping arithmetic is identical.
-    let deltas_i32 =
-        unsafe { core::slice::from_raw_parts(deltas.as_ptr() as *const i32, deltas.len()) };
-    let out_i32 = unsafe { &mut *(out as *mut Vec<u32> as *mut Vec<i32>) };
-    unsafe { decode_avx2_i32(initial as i32, deltas_i32, out_i32) };
+unsafe fn decode_avx2_u32(initial: u32, src: *const u32, dst: *mut u32, n: usize) -> (u32, usize) {
+    // Wrapping add is identical for i32 and u32 at the bit level, and the two
+    // types have the same size and alignment.
+    // SAFETY: same pointers and length as this function's own contract.
+    let (acc, done) =
+        unsafe { decode_avx2_i32(initial as i32, src as *const i32, dst as *mut i32, n) };
+    (acc as u32, done)
 }
 
 // AVX2 prefix-sum delta decode for i64/u64: 4 values per iteration.
@@ -1241,7 +1460,7 @@ unsafe fn decode_avx2_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
 //   3. Add acc, extract new acc from hi lane element 1.
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_avx2_i64_inner(initial: i64, deltas: *const i64, n: usize, out: *mut i64) -> i64 {
+unsafe fn decode_avx2_i64(initial: i64, src: *const i64, dst: *mut i64, n: usize) -> (i64, usize) {
     use core::arch::x86_64::*;
 
     let simd_n = (n / 4) * 4;
@@ -1251,7 +1470,7 @@ unsafe fn decode_avx2_i64_inner(initial: i64, deltas: *const i64, n: usize, out:
     while i < simd_n {
         let v = unsafe {
             // SAFETY: caller ensures i + 4 <= n and pointers are valid.
-            _mm256_loadu_si256(deltas.add(i) as *const __m256i)
+            _mm256_loadu_si256(src.add(i) as *const __m256i)
         };
 
         // Step 1: intra-lane prefix sum (1 step for 2 elements/lane).
@@ -1269,69 +1488,28 @@ unsafe fn decode_avx2_i64_inner(initial: i64, deltas: *const i64, n: usize, out:
 
         unsafe {
             // SAFETY: out pointer valid for i + 4 elements.
-            _mm256_storeu_si256(out.add(i) as *mut __m256i, result);
+            _mm256_storeu_si256(dst.add(i) as *mut __m256i, result);
             // Extract hi lane element 1 as new accumulator.
             let hi128 = _mm256_extracti128_si256(result, 1);
             acc = _mm_cvtsi128_si64(_mm_unpackhi_epi64(hi128, hi128));
         }
         i += 4;
     }
-    acc
+    // Finish the remaining whole blocks of 2 with SSE2.
+    // SAFETY: simd_n <= n, so the last n - simd_n values are in bounds.
+    let (acc, done) = unsafe { decode_sse2_i64(acc, src.add(simd_n), dst.add(simd_n), n - simd_n) };
+    (acc, simd_n + done)
 }
 
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_avx2_i64(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
-    let n = deltas.len();
-    out.reserve(n);
-    let base = out.len();
-    let simd_n = (n / 4) * 4;
-
-    // SAFETY: pointers derived from valid slices/vecs; capacity reserved above.
-    let acc =
-        unsafe { decode_avx2_i64_inner(initial, deltas.as_ptr(), n, out.as_mut_ptr().add(base)) };
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were written by decode_avx2_i64_inner.
-        out.set_len(base + simd_n);
-    }
-
-    // Process remaining with SSE2 then scalar tail.
-    let rem = &deltas[simd_n..];
-    let sse2_n = (rem.len() / 2) * 2;
-    let acc = if sse2_n > 0 {
-        // SAFETY: pointers derived from valid slices/vecs; capacity reserved above.
-        let a = unsafe {
-            decode_sse2_i64_inner(
-                acc,
-                rem.as_ptr(),
-                rem.len(),
-                out.as_mut_ptr().add(base + simd_n),
-            )
-        };
-        unsafe {
-            // SAFETY: elements written by decode_sse2_i64_inner.
-            out.set_len(base + simd_n + sse2_n);
-        }
-        a
-    } else {
-        acc
-    };
-
-    let mut acc = acc;
-    for &d in &rem[sse2_n..] {
-        acc = acc.wrapping_add(d);
-        out.push(acc);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-unsafe fn decode_avx2_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
-    // SAFETY: u64 and i64 have the same size/alignment; wrapping arithmetic is identical.
-    let deltas_i64 =
-        unsafe { core::slice::from_raw_parts(deltas.as_ptr() as *const i64, deltas.len()) };
-    let out_i64 = unsafe { &mut *(out as *mut Vec<u64> as *mut Vec<i64>) };
-    unsafe { decode_avx2_i64(initial as i64, deltas_i64, out_i64) };
+unsafe fn decode_avx2_u64(initial: u64, src: *const u64, dst: *mut u64, n: usize) -> (u64, usize) {
+    // Wrapping add is identical for i64 and u64 at the bit level, and the two
+    // types have the same size and alignment.
+    // SAFETY: same pointers and length as this function's own contract.
+    let (acc, done) =
+        unsafe { decode_avx2_i64(initial as i64, src as *const i64, dst as *mut i64, n) };
+    (acc as u64, done)
 }
 
 // ── NEON implementations (aarch64) ────────────────────────────────────────────
@@ -1344,12 +1522,9 @@ unsafe fn decode_avx2_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
 //   vextq_s16(zero, v, 4) → [0, 0, 0, 0, v[0], v[1], v[2], v[3]] (shift left 4)
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
-unsafe fn decode_neon_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
+unsafe fn decode_neon_i16(initial: i16, src: *const i16, dst: *mut i16, n: usize) -> (i16, usize) {
     use core::arch::aarch64::*;
 
-    let n = deltas.len();
-    out.reserve(n);
-    let base = out.len();
     let simd_n = (n / 8) * 8;
 
     let mut acc = initial;
@@ -1357,8 +1532,8 @@ unsafe fn decode_neon_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
 
     while i < simd_n {
         let v = unsafe {
-            // SAFETY: i + 8 <= simd_n <= n; deltas slice bounds are valid.
-            vld1q_s16(deltas.as_ptr().add(i))
+            // SAFETY: i + 8 <= simd_n <= n, so src is valid for this block.
+            vld1q_s16(src.add(i))
         };
         let zero = unsafe { vdupq_n_s16(0) };
 
@@ -1373,34 +1548,25 @@ unsafe fn decode_neon_i16(initial: i16, deltas: &[i16], out: &mut Vec<i16>) {
         let result = unsafe { vaddq_s16(v, vdupq_n_s16(acc)) };
 
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 8 <= base + n.
-            vst1q_s16(out.as_mut_ptr().add(base + i), result);
+            // SAFETY: i + 8 <= n, so dst is valid for this block.
+            vst1q_s16(dst.add(i), result);
             // Element 7 is the prefix sum of all 8 deltas + acc = new accumulator.
             acc = vgetq_lane_s16(result, 7);
         }
         i += 8;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
-    // Scalar tail for n % 8 remaining values.
-    for &d in &deltas[simd_n..] {
-        acc = acc.wrapping_add(d);
-        out.push(acc);
-    }
+    (acc, simd_n)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
-unsafe fn decode_neon_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
-    // Wrapping add is identical for i16 and u16 at the bit level.
-    // SAFETY: u16 and i16 have the same size/alignment; wrapping arithmetic is identical.
-    let deltas_i16 =
-        unsafe { core::slice::from_raw_parts(deltas.as_ptr() as *const i16, deltas.len()) };
-    let out_i16 = unsafe { &mut *(out as *mut Vec<u16> as *mut Vec<i16>) };
-    unsafe { decode_neon_i16(initial as i16, deltas_i16, out_i16) };
+unsafe fn decode_neon_u16(initial: u16, src: *const u16, dst: *mut u16, n: usize) -> (u16, usize) {
+    // Wrapping add is identical for i16 and u16 at the bit level, and the two
+    // types have the same size and alignment.
+    // SAFETY: same pointers and length as this function's own contract.
+    let (acc, done) =
+        unsafe { decode_neon_i16(initial as i16, src as *const i16, dst as *mut i16, n) };
+    (acc as u16, done)
 }
 
 // NEON prefix-sum delta decode for i32: 4 values per iteration.
@@ -1410,12 +1576,9 @@ unsafe fn decode_neon_u16(initial: u16, deltas: &[u16], out: &mut Vec<u16>) {
 //   vextq_s32(zero, v, 2) → [0, 0, v[0], v[1]]       (shift left 2 elements)
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
-unsafe fn decode_neon_i32(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
+unsafe fn decode_neon_i32(initial: i32, src: *const i32, dst: *mut i32, n: usize) -> (i32, usize) {
     use core::arch::aarch64::*;
 
-    let n = deltas.len();
-    out.reserve(n);
-    let base = out.len();
     let simd_n = (n / 4) * 4;
 
     let mut acc = initial;
@@ -1423,8 +1586,8 @@ unsafe fn decode_neon_i32(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
 
     while i < simd_n {
         let v = unsafe {
-            // SAFETY: i + 4 <= simd_n <= n; deltas slice bounds are valid.
-            vld1q_s32(deltas.as_ptr().add(i))
+            // SAFETY: i + 4 <= simd_n <= n, so src is valid for this block.
+            vld1q_s32(src.add(i))
         };
         let zero = unsafe { vdupq_n_s32(0) };
 
@@ -1436,32 +1599,21 @@ unsafe fn decode_neon_i32(initial: i32, deltas: &[i32], out: &mut Vec<i32>) {
         let result = unsafe { vaddq_s32(v, vdupq_n_s32(acc)) };
 
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 4 <= base + n.
-            vst1q_s32(out.as_mut_ptr().add(base + i), result);
+            // SAFETY: i + 4 <= n, so dst is valid for this block.
+            vst1q_s32(dst.add(i), result);
             acc = vgetq_lane_s32(result, 3);
         }
         i += 4;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
-    for &d in &deltas[simd_n..] {
-        acc = acc.wrapping_add(d);
-        out.push(acc);
-    }
+    (acc, simd_n)
 }
 
 // NEON prefix-sum delta decode for u32: 4 values per iteration.
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
-unsafe fn decode_neon_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
+unsafe fn decode_neon_u32(initial: u32, src: *const u32, dst: *mut u32, n: usize) -> (u32, usize) {
     use core::arch::aarch64::*;
 
-    let n = deltas.len();
-    out.reserve(n);
-    let base = out.len();
     let simd_n = (n / 4) * 4;
 
     let mut acc = initial;
@@ -1469,8 +1621,8 @@ unsafe fn decode_neon_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
 
     while i < simd_n {
         let v = unsafe {
-            // SAFETY: i + 4 <= simd_n <= n; deltas slice bounds are valid.
-            vld1q_u32(deltas.as_ptr().add(i))
+            // SAFETY: i + 4 <= simd_n <= n, so src is valid for this block.
+            vld1q_u32(src.add(i))
         };
         let zero = unsafe { vdupq_n_u32(0) };
 
@@ -1482,21 +1634,13 @@ unsafe fn decode_neon_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
         let result = unsafe { vaddq_u32(v, vdupq_n_u32(acc)) };
 
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 4 <= base + n.
-            vst1q_u32(out.as_mut_ptr().add(base + i), result);
+            // SAFETY: i + 4 <= n, so dst is valid for this block.
+            vst1q_u32(dst.add(i), result);
             acc = vgetq_lane_u32(result, 3);
         }
         i += 4;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
-    for &d in &deltas[simd_n..] {
-        acc = acc.wrapping_add(d);
-        out.push(acc);
-    }
+    (acc, simd_n)
 }
 
 // NEON prefix-sum delta decode for i64: 2 values per iteration.
@@ -1505,12 +1649,9 @@ unsafe fn decode_neon_u32(initial: u32, deltas: &[u32], out: &mut Vec<u32>) {
 //   vextq_s64(zero, v, 1) → [0, v[0]]   (shift left 1 element)
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
-unsafe fn decode_neon_i64(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
+unsafe fn decode_neon_i64(initial: i64, src: *const i64, dst: *mut i64, n: usize) -> (i64, usize) {
     use core::arch::aarch64::*;
 
-    let n = deltas.len();
-    out.reserve(n);
-    let base = out.len();
     let simd_n = (n / 2) * 2;
 
     let mut acc = initial;
@@ -1518,8 +1659,8 @@ unsafe fn decode_neon_i64(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
 
     while i < simd_n {
         let v = unsafe {
-            // SAFETY: i + 2 <= simd_n <= n; deltas slice bounds are valid.
-            vld1q_s64(deltas.as_ptr().add(i))
+            // SAFETY: i + 2 <= simd_n <= n, so src is valid for this block.
+            vld1q_s64(src.add(i))
         };
         let zero = unsafe { vdupq_n_s64(0) };
 
@@ -1530,32 +1671,21 @@ unsafe fn decode_neon_i64(initial: i64, deltas: &[i64], out: &mut Vec<i64>) {
         let result = unsafe { vaddq_s64(v, vdupq_n_s64(acc)) };
 
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 2 <= base + n.
-            vst1q_s64(out.as_mut_ptr().add(base + i), result);
+            // SAFETY: i + 2 <= n, so dst is valid for this block.
+            vst1q_s64(dst.add(i), result);
             acc = vgetq_lane_s64(result, 1);
         }
         i += 2;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
-    for &d in &deltas[simd_n..] {
-        acc = acc.wrapping_add(d);
-        out.push(acc);
-    }
+    (acc, simd_n)
 }
 
 // NEON prefix-sum delta decode for u64: 2 values per iteration.
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
-unsafe fn decode_neon_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
+unsafe fn decode_neon_u64(initial: u64, src: *const u64, dst: *mut u64, n: usize) -> (u64, usize) {
     use core::arch::aarch64::*;
 
-    let n = deltas.len();
-    out.reserve(n);
-    let base = out.len();
     let simd_n = (n / 2) * 2;
 
     let mut acc = initial;
@@ -1563,8 +1693,8 @@ unsafe fn decode_neon_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
 
     while i < simd_n {
         let v = unsafe {
-            // SAFETY: i + 2 <= simd_n <= n; deltas slice bounds are valid.
-            vld1q_u64(deltas.as_ptr().add(i))
+            // SAFETY: i + 2 <= simd_n <= n, so src is valid for this block.
+            vld1q_u64(src.add(i))
         };
         let zero = unsafe { vdupq_n_u64(0) };
 
@@ -1575,21 +1705,13 @@ unsafe fn decode_neon_u64(initial: u64, deltas: &[u64], out: &mut Vec<u64>) {
         let result = unsafe { vaddq_u64(v, vdupq_n_u64(acc)) };
 
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 2 <= base + n.
-            vst1q_u64(out.as_mut_ptr().add(base + i), result);
+            // SAFETY: i + 2 <= n, so dst is valid for this block.
+            vst1q_u64(dst.add(i), result);
             acc = vgetq_lane_u64(result, 1);
         }
         i += 2;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
-    for &d in &deltas[simd_n..] {
-        acc = acc.wrapping_add(d);
-        out.push(acc);
-    }
+    (acc, simd_n)
 }
 
 #[cfg(test)]
@@ -1599,6 +1721,36 @@ mod tests {
     use alloc::vec;
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
+
+    // Runs a block kernel twice, once into a separate buffer and once in place,
+    // finishes the tail in scalar code and returns the result. Fails if the two
+    // runs differ or if the kernel left a whole block of `block` values undone.
+    #[allow(dead_code)]
+    fn run_kernel<T: Delta + PartialEq + core::fmt::Debug>(
+        initial: T,
+        deltas: &[T],
+        block: usize,
+        kernel: impl Fn(T, *const T, *mut T, usize) -> (T, usize),
+    ) -> Vec<T> {
+        let n = deltas.len();
+        let finish = |mut acc: T, done: usize, out: &mut [T]| {
+            for (o, &d) in out[done..].iter_mut().zip(&deltas[done..]) {
+                acc = acc.__add(d);
+                *o = acc;
+            }
+        };
+        let mut out = vec![T::default(); n];
+        let (acc, done) = kernel(initial, deltas.as_ptr(), out.as_mut_ptr(), n);
+        assert_eq!(done, n / block * block, "kernel left whole blocks undone");
+        finish(acc, done, &mut out);
+
+        let mut in_place = deltas.to_vec();
+        let p = in_place.as_mut_ptr();
+        let (acc, done) = kernel(initial, p, p, n);
+        finish(acc, done, &mut in_place);
+        assert_eq!(in_place, out, "in-place run differs");
+        out
+    }
 
     // ── i16 cross-path tests (SSE2 vs scalar) ────────────────────────────────
 
@@ -1613,9 +1765,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_sse2_i16(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 8, |i, s, d, n| unsafe {
+            decode_sse2_i16(i, s, d, n)
+        });
         (scalar_out, simd_out)
     }
 
@@ -1751,9 +1904,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_sse2_i32(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 4, |i, s, d, n| unsafe {
+            decode_sse2_i32(i, s, d, n)
+        });
         (scalar_out, simd_out)
     }
 
@@ -1840,9 +1994,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_sse2_u32(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 4, |i, s, d, n| unsafe {
+            decode_sse2_u32(i, s, d, n)
+        });
         (scalar_out, simd_out)
     }
 
@@ -1894,9 +2049,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_sse2_i64(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 2, |i, s, d, n| unsafe {
+            decode_sse2_i64(i, s, d, n)
+        });
         (scalar_out, simd_out)
     }
 
@@ -1970,9 +2126,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_sse2_u64(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 2, |i, s, d, n| unsafe {
+            decode_sse2_u64(i, s, d, n)
+        });
         (scalar_out, simd_out)
     }
 
@@ -2028,9 +2185,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: AVX2 confirmed by is_x86_feature_detected! above.
-        unsafe { decode_avx2_i32(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 4, |i, s, d, n| unsafe {
+            decode_avx2_i32(i, s, d, n)
+        });
         Some((scalar_out, simd_out))
     }
 
@@ -2118,9 +2276,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: AVX2 confirmed by is_x86_feature_detected! above.
-        unsafe { decode_avx2_u32(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 4, |i, s, d, n| unsafe {
+            decode_avx2_u32(i, s, d, n)
+        });
         Some((scalar_out, simd_out))
     }
 
@@ -2167,9 +2326,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: AVX2 confirmed by is_x86_feature_detected! above.
-        unsafe { decode_avx2_i64(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 2, |i, s, d, n| unsafe {
+            decode_avx2_i64(i, s, d, n)
+        });
         Some((scalar_out, simd_out))
     }
 
@@ -2242,9 +2402,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: AVX2 confirmed by is_x86_feature_detected! above.
-        unsafe { decode_avx2_u64(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 2, |i, s, d, n| unsafe {
+            decode_avx2_u64(i, s, d, n)
+        });
         Some((scalar_out, simd_out))
     }
 
@@ -2286,9 +2447,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_i16(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 8, |i, s, d, n| unsafe {
+            decode_neon_i16(i, s, d, n)
+        });
         (scalar_out, simd_out)
     }
 
@@ -2344,9 +2506,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_i32(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 4, |i, s, d, n| unsafe {
+            decode_neon_i32(i, s, d, n)
+        });
         (scalar_out, simd_out)
     }
 
@@ -2392,9 +2555,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_u32(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 4, |i, s, d, n| unsafe {
+            decode_neon_u32(i, s, d, n)
+        });
         (scalar_out, simd_out)
     }
 
@@ -2432,9 +2596,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_i64(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 2, |i, s, d, n| unsafe {
+            decode_neon_i64(i, s, d, n)
+        });
         (scalar_out, simd_out)
     }
 
@@ -2478,9 +2643,10 @@ mod tests {
             acc = acc.wrapping_add(d);
             scalar_out.push(acc);
         }
-        let mut simd_out = Vec::new();
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_neon_u64(initial, deltas, &mut simd_out) };
+        let simd_out = run_kernel(initial, deltas, 2, |i, s, d, n| unsafe {
+            decode_neon_u64(i, s, d, n)
+        });
         (scalar_out, simd_out)
     }
 
@@ -2761,5 +2927,127 @@ mod tests {
         assert_eq!(mid_carry(0, &deltas), 6);
         // with non-zero initial: 10+1+2+3 = 16
         assert_eq!(mid_carry(10, &deltas), 16);
+    }
+
+    // ── slice API ─────────────────────────────────────────────────────────────
+
+    // Checks every slice function against a plain scalar prefix sum for one
+    // type. Lengths 0..=40 cover every tail after the 2-, 4- and 8-wide blocks.
+    fn check_slice_api<T: Delta + PartialEq + core::fmt::Debug>(
+        make: impl Fn(usize) -> T,
+        initial: T,
+    ) {
+        for n in 0..=40usize {
+            let deltas: Vec<T> = (0..n).map(&make).collect();
+            let mut expected = Vec::with_capacity(n);
+            let mut acc = initial;
+            for &d in &deltas {
+                acc = acc.__add(d);
+                expected.push(acc);
+            }
+
+            let mut out = vec![T::default(); n];
+            decode_with_initial_to_slice(initial, &deltas, &mut out);
+            assert_eq!(out, expected, "to_slice n={n}");
+
+            let mut values = deltas.clone();
+            decode_with_initial_in_place(initial, &mut values);
+            assert_eq!(values, expected, "in_place n={n}");
+
+            assert_eq!(decode_with_initial(initial, &deltas), expected, "vec n={n}");
+
+            let mut appended = vec![T::default(); 3];
+            decode_with_initial_into(initial, &deltas, &mut appended);
+            assert_eq!(appended[..3], [T::default(); 3], "into prefix n={n}");
+            assert_eq!(appended[3..], expected[..], "into n={n}");
+
+            let mut enc = vec![T::default(); n];
+            encode_with_initial_to_slice(initial, &expected, &mut enc);
+            assert_eq!(enc, deltas, "encode_to_slice n={n}");
+        }
+    }
+
+    #[test]
+    fn slice_api_i16() {
+        check_slice_api(|i| (i as i16).wrapping_mul(-4093), -300);
+    }
+
+    #[test]
+    fn slice_api_u16() {
+        check_slice_api(|i| (i as u16).wrapping_mul(40_961), 7);
+    }
+
+    #[test]
+    fn slice_api_i32() {
+        check_slice_api(|i| (i as i32).wrapping_mul(-1_000_003), i32::MAX - 5);
+    }
+
+    #[test]
+    fn slice_api_u32() {
+        check_slice_api(|i| (i as u32).wrapping_mul(2_654_435_761), 9);
+    }
+
+    #[test]
+    fn slice_api_i64() {
+        check_slice_api(|i| (i as i64).wrapping_mul(-6_364_136_223_846_793), 1 << 40);
+    }
+
+    #[test]
+    fn slice_api_u64() {
+        check_slice_api(|i| (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15), u64::MAX);
+    }
+
+    #[test]
+    fn default_initial_slice_functions() {
+        let deltas = [10i32, -1, 4, 0, 7, -20, 3, 3, 1];
+        let expected = decode(&deltas);
+        let mut out = [0i32; 9];
+        decode_to_slice(&deltas, &mut out);
+        assert_eq!(out, expected[..]);
+        let mut values = deltas;
+        decode_in_place(&mut values);
+        assert_eq!(values, expected[..]);
+        let mut enc = [0i32; 9];
+        encode_to_slice(&expected, &mut enc);
+        assert_eq!(enc, deltas);
+    }
+
+    #[test]
+    fn decode_2chain_to_slice_matches_decode() {
+        for n in 0..=40usize {
+            let deltas: Vec<i16> = (0..n).map(|i| (i as i16).wrapping_mul(-311)).collect();
+            let carry = mid_carry(-9, &deltas);
+            let mut out = vec![0i16; n];
+            decode_2chain_to_slice(-9, &deltas, carry, &mut out);
+            assert_eq!(out, decode_with_initial(-9, &deltas), "n={n}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "out has 2 elements, deltas has 3")]
+    fn decode_to_slice_length_mismatch_panics() {
+        let mut out = [0i16; 2];
+        decode_to_slice(&[1i16, 2, 3], &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "out has 4 elements, deltas has 3")]
+    fn decode_to_slice_longer_out_panics() {
+        let mut out = [0i16; 4];
+        decode_to_slice(&[1i16, 2, 3], &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "out has 4 elements, samples has 3")]
+    fn encode_to_slice_length_mismatch_panics() {
+        let mut out = [0i16; 4];
+        encode_to_slice(&[1i16, 2, 3], &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "out has 2 elements, deltas has 3")]
+    fn decode_2chain_to_slice_length_mismatch_panics() {
+        let mut out = [0i16; 2];
+        decode_2chain_to_slice(0, &[1i16, 2, 3], 1, &mut out);
     }
 }

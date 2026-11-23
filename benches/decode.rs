@@ -192,6 +192,51 @@ fn bench_zigzag_decode_u16(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_delta_zigzag_slices(c: &mut Criterion) {
+    let mut g = c.benchmark_group("delta/decode_i16_to_slice");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let deltas = delta::encode(&vbz_i16_samples(n));
+        let mut out = vec![0i16; n];
+        g.bench_with_input(BenchmarkId::from_parameter(n), &deltas, |b, d| {
+            b.iter(|| {
+                delta::decode_to_slice(d, &mut out);
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+
+    // The prefix sum takes the same time whatever the values, so the buffer is
+    // decoded again each iteration without being reset.
+    let mut g = c.benchmark_group("delta/decode_i16_in_place");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let mut buf = delta::encode(&vbz_i16_samples(n));
+        g.bench_function(BenchmarkId::from_parameter(n), |b| {
+            b.iter(|| {
+                delta::decode_in_place(&mut buf);
+                black_box(&buf);
+            });
+        });
+    }
+    g.finish();
+
+    let mut g = c.benchmark_group("zigzag/decode_u16_to_slice");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let codes: Vec<u16> = zigzag::encode(&delta::encode(&vbz_i16_samples(n)));
+        let mut out = vec![0i16; n];
+        g.bench_with_input(BenchmarkId::from_parameter(n), &codes, |b, c_| {
+            b.iter(|| {
+                zigzag::decode_to_slice(c_, &mut out);
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+}
+
 // ── SVB16 ─────────────────────────────────────────────────────────────────────
 
 fn bench_svb16_encode(c: &mut Criterion) {
@@ -1151,6 +1196,7 @@ criterion_group!(
     bench_delta_decode_i16_2chain,
     bench_zigzag_encode_i16,
     bench_zigzag_decode_u16,
+    bench_delta_zigzag_slices,
     bench_svb16_encode,
     bench_svb16_decode,
     bench_svb16_encode_to_slice,

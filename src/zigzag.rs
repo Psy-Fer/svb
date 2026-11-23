@@ -6,6 +6,8 @@
 //! codecs that encode smaller unsigned values more compactly.
 //!
 //! The functions in this module accept any type that implements [`Zigzag`].
+//! [`encode_to_slice`] and [`decode_to_slice`] write into a caller-supplied
+//! slice; the other functions return or append to a `Vec`.
 
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::vec::Vec;
@@ -25,14 +27,17 @@ mod private {
 /// Zigzag is most useful after [`crate::delta`] encoding: delta produces
 /// signed differences, and zigzag remaps them to small unsigned values that
 /// StreamVByte can pack tightly.
-pub trait Zigzag: private::Sealed + Sized + Copy {
+pub trait Zigzag: private::Sealed + Sized + Copy + Default {
     type Unsigned: Copy;
     fn encode_one(self) -> Self::Unsigned;
     fn decode_one(encoded: Self::Unsigned) -> Self;
-    // Overridable decode dispatch; default is scalar. i16 overrides with SSE2/NEON.
+    // Decodes whole SIMD blocks from the front of `codes` into `out` and returns
+    // how many values it decoded; the caller decodes the rest. The default has
+    // no SIMD path and decodes nothing. i16 overrides it with SSE2/NEON.
     #[doc(hidden)]
-    fn __decode_into(codes: &[Self::Unsigned], out: &mut Vec<Self>) {
-        out.extend(codes.iter().copied().map(Self::decode_one));
+    fn __decode_blocks(codes: &[Self::Unsigned], out: &mut [Self]) -> usize {
+        let _ = (codes, out);
+        0
     }
     #[doc(hidden)]
     fn __encode_into(samples: &[Self], out: &mut Vec<Self::Unsigned>) {
@@ -49,24 +54,26 @@ impl Zigzag for i16 {
     fn decode_one(n: u16) -> i16 {
         ((n >> 1) as i16) ^ (-((n & 1) as i16))
     }
-    fn __decode_into(codes: &[u16], out: &mut Vec<i16>) {
-        decode_into_i16(codes, out);
+    fn __decode_blocks(codes: &[u16], out: &mut [i16]) -> usize {
+        decode_blocks_i16(codes, out)
     }
 }
 
-fn decode_into_i16(codes: &[u16], out: &mut Vec<i16>) {
+fn decode_blocks_i16(codes: &[u16], out: &mut [i16]) -> usize {
+    // Exactly one of the cfg arms below is compiled, and it sets `n`.
+    let n: usize;
     #[cfg(all(
         any(feature = "simd-avx2", feature = "simd-ssse3"),
         target_arch = "x86_64"
     ))]
     {
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_into_sse2(codes, out) };
+        n = unsafe { decode_blocks_sse2(codes, out) };
     }
     #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_into_neon(codes, out) };
+        n = unsafe { decode_blocks_neon(codes, out) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -75,7 +82,7 @@ fn decode_into_i16(codes: &[u16], out: &mut Vec<i16>) {
     ))]
     {
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_into_sse2(codes, out) };
+        n = unsafe { decode_blocks_sse2(codes, out) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -84,7 +91,7 @@ fn decode_into_i16(codes: &[u16], out: &mut Vec<i16>) {
     ))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_into_neon(codes, out) };
+        n = unsafe { decode_blocks_neon(codes, out) };
     }
     // Scalar fallback: only compiled when no SIMD path covers this target.
     #[cfg(not(any(
@@ -99,7 +106,11 @@ fn decode_into_i16(codes: &[u16], out: &mut Vec<i16>) {
             any(target_arch = "x86_64", target_arch = "aarch64")
         )
     )))]
-    out.extend(codes.iter().copied().map(i16::decode_one));
+    {
+        let _ = (codes, out);
+        n = 0;
+    }
+    n
 }
 
 impl private::Sealed for i32 {}
@@ -163,8 +174,8 @@ pub fn encode_into<T: Zigzag>(samples: &[T], out: &mut Vec<T::Unsigned>) {
 /// assert_eq!(samples, [0, -1, 1, -2]);
 /// ```
 pub fn decode<T: Zigzag>(codes: &[T::Unsigned]) -> Vec<T> {
-    let mut out = Vec::with_capacity(codes.len());
-    T::__decode_into(codes, &mut out);
+    let mut out = Vec::new();
+    decode_into(codes, &mut out);
     out
 }
 
@@ -179,27 +190,82 @@ pub fn decode<T: Zigzag>(codes: &[T::Unsigned]) -> Vec<T> {
 /// assert_eq!(out, [0i16, -1, 1]);
 /// ```
 pub fn decode_into<T: Zigzag>(codes: &[T::Unsigned], out: &mut Vec<T>) {
-    T::__decode_into(codes, out);
+    let start = out.len();
+    out.resize(start + codes.len(), T::default());
+    decode_to_slice(codes, &mut out[start..]);
+}
+
+/// Zigzag-encode `samples` into `out`, which must be the same length.
+///
+/// # Panics
+///
+/// Panics if `out.len() != samples.len()`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::zigzag;
+/// let mut out = [0u16; 4];
+/// zigzag::encode_to_slice(&[0i16, -1, 1, -2], &mut out);
+/// assert_eq!(out, [0, 1, 2, 3]);
+/// ```
+pub fn encode_to_slice<T: Zigzag>(samples: &[T], out: &mut [T::Unsigned]) {
+    assert!(
+        out.len() == samples.len(),
+        "zigzag::encode_to_slice: out has {} elements, samples has {}",
+        out.len(),
+        samples.len()
+    );
+    for (o, &x) in out.iter_mut().zip(samples) {
+        *o = x.encode_one();
+    }
+}
+
+/// Zigzag-decode `codes` into `out`, which must be the same length.
+///
+/// # Panics
+///
+/// Panics if `out.len() != codes.len()`.
+///
+/// # Examples
+///
+/// ```
+/// # use svb::zigzag;
+/// let mut out = [0i16; 4];
+/// zigzag::decode_to_slice(&[0u16, 1, 2, 3], &mut out);
+/// assert_eq!(out, [0, -1, 1, -2]);
+/// ```
+pub fn decode_to_slice<T: Zigzag>(codes: &[T::Unsigned], out: &mut [T]) {
+    assert!(
+        out.len() == codes.len(),
+        "zigzag::decode_to_slice: out has {} elements, codes has {}",
+        out.len(),
+        codes.len()
+    );
+    let done = T::__decode_blocks(codes, out);
+    for (o, &c) in out[done..].iter_mut().zip(&codes[done..]) {
+        *o = T::decode_one(c);
+    }
 }
 
 // SSE2 zigzag decode: 8 u16 values per iteration.
 // SSE2 is baseline on x86_64 so no runtime feature check is needed.
 // The scalar decode_one formula is: shifted = n >> 1; sign = -(n & 1); result = shifted ^ sign.
 // In SIMD, -(n & 1) yields 0x0000 (if bit=0) or 0xFFFF (if bit=1) via _mm_sub_epi16(zero, bit).
+//
+// Decodes whole blocks of 8 and returns how many values it wrote.
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_into_sse2(codes: &[u16], out: &mut Vec<i16>) {
+unsafe fn decode_blocks_sse2(codes: &[u16], out: &mut [i16]) -> usize {
     use core::arch::x86_64::*;
 
-    let n = codes.len();
-    out.reserve(n);
-    let base = out.len();
+    let n = codes.len().min(out.len());
     let simd_n = (n / 8) * 8;
 
     let mut i = 0usize;
     while i < simd_n {
         let result = unsafe {
-            // SAFETY: i + 8 <= simd_n <= n; codes slice bounds are valid.
+            // SAFETY: i + 8 <= simd_n <= n <= codes.len().
             let v = _mm_loadu_si128(codes.as_ptr().add(i) as *const __m128i);
             let one = _mm_set1_epi16(1);
             let zero = _mm_setzero_si128();
@@ -210,19 +276,13 @@ unsafe fn decode_into_sse2(codes: &[u16], out: &mut Vec<i16>) {
             _mm_xor_si128(shifted, sign)
         };
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 8 <= base + n.
-            let out_ptr = out.as_mut_ptr().add(base + i) as *mut __m128i;
+            // SAFETY: i + 8 <= simd_n <= n <= out.len().
+            let out_ptr = out.as_mut_ptr().add(i) as *mut __m128i;
             _mm_storeu_si128(out_ptr, result);
         }
         i += 8;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
-    // Scalar tail for n % 8 remaining values.
-    out.extend(codes[simd_n..].iter().copied().map(i16::decode_one));
+    simd_n
 }
 
 // NEON zigzag decode: 8 u16 values per iteration.
@@ -230,19 +290,18 @@ unsafe fn decode_into_sse2(codes: &[u16], out: &mut Vec<i16>) {
 // Formula: shifted = v >> 1; sign = 0 - (v & 1)  [wrapping: gives 0 or 0xFFFF]
 //          result = shifted XOR sign
 // Operating on uint16x8_t throughout; final store reinterprets as int16x8_t.
+// Decodes whole blocks of 8 and returns how many values it wrote.
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
-unsafe fn decode_into_neon(codes: &[u16], out: &mut Vec<i16>) {
+unsafe fn decode_blocks_neon(codes: &[u16], out: &mut [i16]) -> usize {
     use core::arch::aarch64::*;
 
-    let n = codes.len();
-    out.reserve(n);
-    let base = out.len();
+    let n = codes.len().min(out.len());
     let simd_n = (n / 8) * 8;
 
     let mut i = 0usize;
     while i < simd_n {
-        // SAFETY: i + 8 <= simd_n <= n; codes slice bounds are valid.
+        // SAFETY: i + 8 <= simd_n <= n <= codes.len().
         let v = unsafe { vld1q_u16(codes.as_ptr().add(i)) };
         let one = unsafe { vdupq_n_u16(1) };
         let zero = unsafe { vdupq_n_u16(0) };
@@ -254,22 +313,13 @@ unsafe fn decode_into_neon(codes: &[u16], out: &mut Vec<i16>) {
         let result = unsafe { veorq_u16(shifted, sign) };
 
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 8 <= base + n.
+            // SAFETY: i + 8 <= simd_n <= n <= out.len().
             // vreinterpretq_s16_u16: same bits, reinterpreted as i16.
-            vst1q_s16(
-                out.as_mut_ptr().add(base + i),
-                vreinterpretq_s16_u16(result),
-            );
+            vst1q_s16(out.as_mut_ptr().add(i), vreinterpretq_s16_u16(result));
         }
         i += 8;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
-    // Scalar tail for n % 8 remaining values.
-    out.extend(codes[simd_n..].iter().copied().map(i16::decode_one));
+    simd_n
 }
 
 #[cfg(test)]
@@ -288,9 +338,13 @@ mod tests {
     ))]
     fn decode_both_i16(codes: &[u16]) -> (Vec<i16>, Vec<i16>) {
         let scalar_out: Vec<i16> = codes.iter().copied().map(i16::decode_one).collect();
-        let mut simd_out = Vec::new();
+        let mut simd_out = vec![0i16; codes.len()];
         // SAFETY: SSE2 is always available on x86_64.
-        unsafe { decode_into_sse2(codes, &mut simd_out) };
+        let done = unsafe { decode_blocks_sse2(codes, &mut simd_out) };
+        assert_eq!(done, codes.len() / 8 * 8);
+        for (o, &c) in simd_out[done..].iter_mut().zip(&codes[done..]) {
+            *o = i16::decode_one(c);
+        }
         (scalar_out, simd_out)
     }
 
@@ -403,9 +457,13 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     fn decode_both_i16_neon(codes: &[u16]) -> (Vec<i16>, Vec<i16>) {
         let scalar_out: Vec<i16> = codes.iter().copied().map(i16::decode_one).collect();
-        let mut simd_out = Vec::new();
+        let mut simd_out = vec![0i16; codes.len()];
         // SAFETY: NEON is mandatory on AArch64.
-        unsafe { decode_into_neon(codes, &mut simd_out) };
+        let done = unsafe { decode_blocks_neon(codes, &mut simd_out) };
+        assert_eq!(done, codes.len() / 8 * 8);
+        for (o, &c) in simd_out[done..].iter_mut().zip(&codes[done..]) {
+            *o = i16::decode_one(c);
+        }
         (scalar_out, simd_out)
     }
 
@@ -599,5 +657,61 @@ mod tests {
         let mut out = vec![99u64];
         encode_into(&[0i64, -1, 1], &mut out);
         assert_eq!(out, [99, 0, 1, 2]);
+    }
+
+    // ── slice API ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn to_slice_matches_vec_api_all_tail_lengths() {
+        // 0..=40 covers empty input, every tail length after the 8-wide SIMD
+        // blocks, and several whole blocks.
+        for n in 0..=40usize {
+            let samples: Vec<i16> = (0..n).map(|i| (i as i16).wrapping_mul(4099) ^ -7).collect();
+            let mut codes = vec![0u16; n];
+            encode_to_slice(&samples, &mut codes);
+            assert_eq!(codes, encode(&samples), "encode n={n}");
+            let mut out = vec![0i16; n];
+            decode_to_slice(&codes, &mut out);
+            assert_eq!(out, samples, "decode n={n}");
+        }
+    }
+
+    #[test]
+    fn to_slice_i32_i64() {
+        let s32 = [0i32, -1, 1, i32::MIN, i32::MAX];
+        let mut c32 = [0u32; 5];
+        encode_to_slice(&s32, &mut c32);
+        let mut d32 = [0i32; 5];
+        decode_to_slice(&c32, &mut d32);
+        assert_eq!(d32, s32);
+        let s64 = [0i64, -1, 1, i64::MIN, i64::MAX];
+        let mut c64 = [0u64; 5];
+        encode_to_slice(&s64, &mut c64);
+        let mut d64 = [0i64; 5];
+        decode_to_slice(&c64, &mut d64);
+        assert_eq!(d64, s64);
+    }
+
+    #[test]
+    fn decode_into_appends_after_simd_blocks() {
+        let codes: Vec<u16> = (0..21u16).collect();
+        let mut out = vec![7i16, 8];
+        decode_into(&codes, &mut out);
+        assert_eq!(out[..2], [7, 8]);
+        assert_eq!(out[2..], decode::<i16>(&codes)[..]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out has 3 elements, codes has 4")]
+    fn decode_to_slice_length_mismatch_panics() {
+        let mut out = [0i16; 3];
+        decode_to_slice(&[0u16, 1, 2, 3], &mut out);
+    }
+
+    #[test]
+    #[should_panic(expected = "out has 5 elements, samples has 4")]
+    fn encode_to_slice_length_mismatch_panics() {
+        let mut out = [0u16; 5];
+        encode_to_slice(&[0i16, 1, 2, 3], &mut out);
     }
 }
