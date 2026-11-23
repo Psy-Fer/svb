@@ -419,9 +419,54 @@ Ranges are over the "small" (all 1-byte) and "large" (all 2-byte) inputs.
 - The slice kernels run at the same speed as the 0.3.1 code.
 - The `Vec` wrappers are about 4-5 ns slower per call. That is 15-20% at
   n=128, 2-9% at n=1024 and 2-3% at n=8192.
-- `decode` (which allocates) now uses `vec![0; n]` and is about 12 ns slower at
-  n=128. In criterion the same benchmark went from 41 ns to 80 ns; the reason
-  for the larger gap there is not known.
+- The allocating `decode` builds its output with `Vec::new()` and
+  `resize(n, 0)`. A first version used `vec![0; n]`, which allocates with
+  `calloc`. glibc (2.35 here) serves `calloc` outside its per-thread cache, and
+  in criterion that made `decode` at n=128 about 30-40 ns slower than 0.3.1
+  (`Svb16` 41 to 80 ns, `U32Classic` 47 to 81 ns). `resize` allocates with
+  `malloc` and then fills, which leaves only the zero-fill cost. Clippy's
+  `slow_vector_initialization` lint assumes the opposite, so it is allowed on
+  these functions.
+
+### u32 and u64 codecs
+
+Criterion, same machine, `simd-auto`, pinned to one core, runs of 0.3.1 and
+0.4.0 alternated, median of 3 runs. Changes are 0.4.0 against 0.3.1.
+
+| Benchmark | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| `encode` | +4 to +10% | +2 to +4% | +3 to +10% |
+| `decode_into` (reuse) | -1 to +8% | +7 to +10% | +3 to +6% |
+| `decode` (allocating) | -7 to +12% | -4 to +11% | 0 to +6%, `U64Coder1234` +28% |
+
+The `U64Coder1234` `decode` at n=8192 zero-fills 64 KB before decoding (1.97 to
+2.52 us). `U64Coder1248` fills the same amount but its kernel is slower, and
+there the change was within noise.
+
+The slice functions on the same data, with a reused buffer:
+
+| | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| `U32Classic` `decode_to_slice` | 33.8 ns | 211 ns | 1.57 us |
+| `U32Classic` `encode_to_slice` | 62.8 ns | 444 ns | 3.53 us |
+| `U64Coder1248` `decode_to_slice` | 54.9 ns | 375 ns | 2.91 us |
+| `U64Coder1248` `encode_to_slice` | 85.7 ns | 700 ns | 5.32 us |
+
+Ratio against `streamvbyte64` 0.2.0 (both allocating a new output per call) in
+the same runs, 0.4.0 with the `decode` fix:
+
+| | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| `U32Classic` decode | 2.3x | 2.3x | 2.7x |
+| `U32Classic` encode | 2.2x | 1.8x | 1.8x |
+| `U32Variant0124` decode | 2.4x | 2.3x | 2.7x |
+| `U32Variant0124` encode | 2.2x | 1.8x | 1.8x |
+| `U64Coder1248` decode | 1.5x | 1.5x | 1.5x |
+| `U64Coder1248` encode | 1.9x | 1.6x | 1.6x |
+
+In 0.3.1 the `U64Coder1248` rows were 1.4-1.7x for decode and 1.6-1.9x for
+encode on this machine. These ratios are lower than the GitHub Actions table
+above, which was measured on different hardware.
 
 For the lowest per-call cost on small inputs, use the slice functions with a
 buffer that is reused between calls.

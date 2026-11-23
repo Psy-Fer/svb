@@ -30,7 +30,7 @@
 //! Data bytes follow in the same order as the values, with no padding between them.
 
 #[cfg(not(feature = "std"))]
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
@@ -178,8 +178,12 @@ impl U32Classic {
     /// let bytes = U32Classic.encode(&[1u32, 65536, u32::MAX]);
     /// assert_eq!(U32Classic.decode(&bytes, 3).unwrap(), [1u32, 65536, u32::MAX]);
     /// ```
+    #[allow(clippy::slow_vector_initialization)]
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
-        let mut out = vec![0u32; n];
+        // Not `vec![0; n]`: that allocates with calloc, which measured ~30-40 ns
+        // slower than malloc + fill for small n on glibc.
+        let mut out = Vec::new();
+        out.resize(n, 0);
         dispatch_decode_classic(data, &mut out)?;
         Ok(out)
     }
@@ -375,8 +379,12 @@ impl U32Variant0124 {
     /// let bytes = U32Variant0124.encode(&[0u32, 1, 65536]);
     /// assert_eq!(U32Variant0124.decode(&bytes, 3).unwrap(), [0u32, 1, 65536]);
     /// ```
+    #[allow(clippy::slow_vector_initialization)]
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
-        let mut out = vec![0u32; n];
+        // Not `vec![0; n]`: that allocates with calloc, which measured ~30-40 ns
+        // slower than malloc + fill for small n on glibc.
+        let mut out = Vec::new();
+        out.resize(n, 0);
         dispatch_decode_0124(data, &mut out)?;
         Ok(out)
     }

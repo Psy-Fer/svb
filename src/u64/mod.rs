@@ -33,7 +33,7 @@
 //! Data bytes follow in the same order as the values, with no padding between them.
 
 #[cfg(not(feature = "std"))]
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
@@ -224,8 +224,12 @@ impl U64Coder1234 {
     /// let bytes = U64Coder1234.encode(&[1u64, 256, 65536]);
     /// assert_eq!(U64Coder1234.decode(&bytes, 3).unwrap(), [1u64, 256, 65536]);
     /// ```
+    #[allow(clippy::slow_vector_initialization)]
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u64>, DecodeError> {
-        let mut out = vec![0u64; n];
+        // Not `vec![0; n]`: that allocates with calloc, which measured ~30-40 ns
+        // slower than malloc + fill for small n on glibc.
+        let mut out = Vec::new();
+        out.resize(n, 0);
         dispatch_decode_1234(data, &mut out)?;
         Ok(out)
     }
@@ -421,8 +425,12 @@ impl U64Coder1248 {
     /// let bytes = U64Coder1248.encode(&[1u64, 1 << 32, u64::MAX]);
     /// assert_eq!(U64Coder1248.decode(&bytes, 3).unwrap(), [1u64, 1 << 32, u64::MAX]);
     /// ```
+    #[allow(clippy::slow_vector_initialization)]
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u64>, DecodeError> {
-        let mut out = vec![0u64; n];
+        // Not `vec![0; n]`: that allocates with calloc, which measured ~30-40 ns
+        // slower than malloc + fill for small n on glibc.
+        let mut out = Vec::new();
+        out.resize(n, 0);
         dispatch_decode_1248(data, &mut out)?;
         Ok(out)
     }
