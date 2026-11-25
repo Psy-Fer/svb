@@ -2529,7 +2529,7 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn neon_i32_nonzero_initial() {
-        let deltas: Vec<i32> = (0..40).map(|i| i as i32).collect();
+        let deltas: Vec<i32> = (0..40).collect();
         let (s, v) = decode_both_neon_i32(1000, &deltas);
         assert_eq!(s, v);
     }
@@ -2537,7 +2537,7 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn neon_i32_all_tail_lengths() {
-        let pool: Vec<i32> = (0..8).map(|i| (i * 3 - 10) as i32).collect();
+        let pool: Vec<i32> = (0..8).map(|i| i * 3 - 10).collect();
         for n in 0..=8usize {
             let (s, v) = decode_both_neon_i32(5, &pool[..n]);
             assert_eq!(s, v, "tail n={n}");

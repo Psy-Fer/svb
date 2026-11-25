@@ -496,6 +496,7 @@ fn decode_parts_to_slice(
     #[cfg(all(
         feature = "simd-auto",
         not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
+        feature = "std",
         target_arch = "x86_64"
     ))]
     {
@@ -568,6 +569,8 @@ fn decode_scalar(
     any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
     target_arch = "x86_64"
 ))]
+// Unused under simd-auto without std, which has no runtime detection.
+#[allow(dead_code)]
 static TRUNC_I32_I16: [u8; 16] = [
     0, 1, 4, 5, 8, 9, 12, 13, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
 ];
@@ -576,6 +579,8 @@ static TRUNC_I32_I16: [u8; 16] = [
     any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
     target_arch = "x86_64"
 ))]
+// Unused under simd-auto without std, which has no runtime detection.
+#[allow(dead_code)]
 #[target_feature(enable = "ssse3")]
 unsafe fn decode_ssse3(
     ctrl: &[u8],
@@ -1112,6 +1117,7 @@ mod tests {
 
         #[cfg(all(
             any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
+            feature = "std",
             target_arch = "x86_64"
         ))]
         if std::is_x86_feature_detected!("ssse3") {
@@ -1237,6 +1243,7 @@ mod tests {
 
         #[cfg(all(
             any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
+            feature = "std",
             target_arch = "x86_64"
         ))]
         if !samples.is_empty() && std::is_x86_feature_detected!("ssse3") {
@@ -1247,6 +1254,7 @@ mod tests {
         }
         #[cfg(all(
             any(feature = "simd-avx2", feature = "simd-auto"),
+            feature = "std",
             target_arch = "x86_64"
         ))]
         if !samples.is_empty() && std::is_x86_feature_detected!("avx2") {

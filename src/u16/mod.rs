@@ -848,7 +848,7 @@ mod cross_path {
         #[test]
         fn neon_encode_roundtrip() {
             let values: Vec<u16> = (0..100)
-                .map(|i| if i % 2 == 0 { i as u16 } else { 300 + i })
+                .map(|i| if i % 2 == 0 { i } else { 300 + i })
                 .collect();
             let enc = neon_encode(&values);
             let got = decode_scalar(&enc, values.len());

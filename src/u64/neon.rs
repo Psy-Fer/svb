@@ -22,8 +22,8 @@ use crate::error::DecodeError;
 ///
 /// Processes 4 values per ctrl byte. The low 32 bits of each u64 are extracted
 /// via `vmovn_u64`; tags are computed with `vcgtq_u32` (unsigned). Values
-/// > u32::MAX are silently truncated. Remaining values (n % 4) are handled by
-/// the scalar path.
+/// above `u32::MAX` are silently truncated. Remaining values (n % 4) are
+/// handled by the scalar path.
 ///
 /// # Safety
 /// Must run on AArch64 (NEON is mandatory on that architecture). `out.len()`

@@ -96,6 +96,7 @@ pub(crate) fn decode_parts_to_slice(
     #[cfg(all(
         feature = "simd-auto",
         not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
+        feature = "std",
         target_arch = "x86_64"
     ))]
     {
@@ -165,6 +166,8 @@ fn decode_scalar(
     any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
     target_arch = "x86_64"
 ))]
+// Unused under simd-auto without std, which has no runtime detection.
+#[allow(dead_code)]
 #[target_feature(enable = "ssse3")]
 pub(crate) unsafe fn decode_ssse3(
     ctrl: &[u8],
@@ -455,6 +458,7 @@ pub(crate) fn decode_2chain_into(
     #[cfg(all(
         feature = "simd-auto",
         not(any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-neon")),
+        feature = "std",
         target_arch = "x86_64"
     ))]
     {
@@ -529,6 +533,8 @@ fn decode_scalar_2chain(
     any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
     target_arch = "x86_64"
 ))]
+// Unused under simd-auto without std, which has no runtime detection.
+#[allow(dead_code)]
 #[target_feature(enable = "ssse3")]
 unsafe fn decode_ssse3_2chain(
     ctrl: &[u8],
@@ -990,6 +996,7 @@ mod tests {
 
         #[cfg(all(
             any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
+            feature = "std",
             target_arch = "x86_64"
         ))]
         if std::is_x86_feature_detected!("ssse3") {

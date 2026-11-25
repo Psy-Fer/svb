@@ -62,6 +62,11 @@ jobs:
       - name: Test — no_std + alloc
         run: cargo test --no-default-features --features alloc
 
+      # simd-auto without std has no runtime detection on x86_64 and must fall
+      # back to scalar; on AArch64 it still uses NEON.
+      - name: Test — no_std + alloc + simd-auto
+        run: cargo test --no-default-features --features alloc,simd-auto
+
   # ── lint ─────────────────────────────────────────────────────────────────────
 
   lint:

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Building with `simd-auto` and without `std` (`--no-default-features --features alloc,simd-auto`) failed on x86_64, because the VBZ and SVB-ZD fused decoders called `is_x86_feature_detected!` without checking for `std`. They now fall back to scalar in that configuration, as the other decoders do. CI now tests this configuration.
 - `decode_vbzk`, `decode_vbzk_into` and the parallel VBZ-K decoders panicked on a header whose data offsets pointed past the end of the data or went backwards. The offsets are now checked and these return `DecodeError::DataTruncated`.
 - `DataTruncated` indices from VBZ-K decode are now relative to the whole output instead of the sub-stream.
 - The AVX2 delta decode kernels (used for `i32`, `u32`, `i64` and `u64` under `simd-auto` and `simd-avx2`) were compiled without `#[target_feature(enable = "avx2")]`, so every AVX2 intrinsic was an out-of-line function call. `delta::decode` for `i32` ran at about 5.5 ns per value. With the attribute it is 8-13x faster for `i32` and `i64`. `i16`/`u16` delta, which uses SSE2, and the VBZ, SVB-ZD and ex-zd pipelines were not affected.
