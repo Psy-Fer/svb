@@ -529,6 +529,28 @@ The slice function is within 1-2% of 0.3.1, which is inside the run-to-run
 spread here. The `Vec` wrapper is 3.5-4.5% slower than 0.3.1 because of the
 zero-fill.
 
+### Fused SVB-ZD encode
+
+Standalone timing program, same machine, `simd-auto` (AVX2 kernel), pinned to
+one core, best of 15 timed runs per process, three processes each for 0.3.1
+and 0.4.0 run alternately. Ranges are over the three processes.
+
+| | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| `encode_svbzd_into` (reuse), 0.3.1 | 85.7-85.8 ns | 617-623 ns | 4925-4993 ns |
+| `encode_svbzd_into` (reuse), 0.4.0 | 97.7-99.2 ns | 630-634 ns | 4925-4966 ns |
+| `encode_svbzd_to_slice` | 80.0-82.7 ns | 607-612 ns | 4768-4805 ns |
+
+- The slice function is 2-7% faster than 0.3.1. It skips the `reserve` and
+  `set_len` calls that 0.3.1 made on every call, which may account for some of
+  this; it was not looked into further.
+- The `Vec` wrapper is 14-16% slower at n=128 and within 2% at the larger
+  sizes. The cost is the zero-fill of `svbzd_max_encoded_len(n)` bytes.
+- A first version wrote the control bytes with bounds-checked indexing
+  (`ctrl[block] = cb`). That made the kernel 5-10% slower than 0.3.1 at
+  n=1024 and n=8192, so the kernels write them through a raw pointer, as
+  0.3.1 did.
+
 ## Running benchmarks
 
 ```sh

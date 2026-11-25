@@ -1038,6 +1038,27 @@ fn bench_svbzd_encode(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_svbzd_encode_reuse(c: &mut Criterion) {
+    let mut g = c.benchmark_group("svbzd_encode_reuse");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let samples = vbz_i16_samples(n);
+        let mut v = Vec::new();
+        g.bench_with_input(BenchmarkId::new("into", n), &samples, |b, s| {
+            b.iter(|| {
+                v.clear();
+                svb::encode_svbzd_into(s, &mut v);
+                black_box(&v);
+            });
+        });
+        let mut buf = vec![0u8; svb::svbzd_max_encoded_len(n)];
+        g.bench_with_input(BenchmarkId::new("to_slice", n), &samples, |b, s| {
+            b.iter(|| black_box(svb::encode_svbzd_to_slice(s, &mut buf).unwrap()));
+        });
+    }
+    g.finish();
+}
+
 fn bench_svbzd_decode(c: &mut Criterion) {
     let mut g = c.benchmark_group("svbzd/decode");
     for &n in SIZES {
@@ -1335,6 +1356,7 @@ criterion_group!(
     bench_compare_u64_coder1248_decode,
     bench_vbzk_parallel,
     bench_svbzd_encode,
+    bench_svbzd_encode_reuse,
     bench_svbzd_decode,
     bench_svbzd_fused,
     bench_svbzd_fused_to_slice,

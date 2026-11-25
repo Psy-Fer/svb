@@ -43,6 +43,24 @@ decode_svbzd_into(&buf, samples.len(), &mut out).unwrap();
 assert_eq!(out, samples);
 ```
 
+## Encoding into your own buffer
+
+`encode_svbzd_to_slice` writes into a caller-supplied `&mut [u8]` and returns
+the number of bytes written. The buffer must be at least
+`svbzd_max_encoded_len(n)` bytes (`ceil(n / 4) + 4 * n`), otherwise
+`EncodeError::OutputTooSmall` is returned. Encoded i16 samples never use more
+than 3 data bytes each, but the SIMD encoders store 16 bytes at a time and need
+the 4-byte bound to stay inside the buffer.
+
+```rust
+use svb::{encode_svbzd, encode_svbzd_to_slice, svbzd_max_encoded_len};
+
+let samples = [100i16, 101, 103, 102, 98];
+let mut buf = vec![0u8; svbzd_max_encoded_len(samples.len())];
+let len = encode_svbzd_to_slice(&samples, &mut buf).unwrap();
+assert_eq!(&buf[..len], encode_svbzd(&samples));
+```
+
 ## Fused decode
 
 `decode_svbzd_fused` collapses all three decode stages (U32Classic, unzigzag, undelta) into a single SIMD loop. This avoids intermediate buffers and is the preferred path for high-throughput BLOW5 reads:

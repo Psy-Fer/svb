@@ -1270,6 +1270,50 @@ pub fn encode_svbzd_into(samples: &[i16], out: &mut Vec<u8>) {
     svbzd_fused::encode_into(samples, out);
 }
 
+/// Worst-case SVB-ZD encoded size in bytes for `n` samples: `ceil(n / 4)`
+/// control bytes plus 4 data bytes per sample.
+///
+/// Use this to size the buffer for [`encode_svbzd_to_slice`]. Encoded i16
+/// samples never use more than 3 data bytes each, but the bound is kept the
+/// same as [`U32Classic::max_encoded_len`](crate::u32::U32Classic::max_encoded_len)
+/// because the SIMD encoders rely on it to store 16 bytes at a time.
+///
+/// ```
+/// assert_eq!(svb::svbzd_max_encoded_len(0), 0);
+/// assert_eq!(svb::svbzd_max_encoded_len(5), 2 + 4 * 5);
+/// ```
+#[cfg(feature = "alloc")]
+pub const fn svbzd_max_encoded_len(n: usize) -> usize {
+    svbzd_fused::max_encoded_len(n)
+}
+
+/// Encode `i16` samples to SVB-ZD into the start of `out` and return the
+/// number of bytes written.
+///
+/// `out` must be at least [`svbzd_max_encoded_len(samples.len())`](svbzd_max_encoded_len)
+/// bytes long, otherwise [`EncodeError::OutputTooSmall`] is returned and `out`
+/// is not modified. The check is against the worst case, so a shorter slice is
+/// rejected even if the actual encoded bytes would have fitted. Bytes in `out`
+/// after the returned length may be overwritten.
+///
+/// ```
+/// let samples = [10i16, 11, 12, 11, 9];
+/// let mut buf = [0u8; 32];
+/// let len = svb::encode_svbzd_to_slice(&samples, &mut buf).unwrap();
+/// assert_eq!(&buf[..len], svb::encode_svbzd(&samples));
+/// ```
+#[cfg(feature = "alloc")]
+pub fn encode_svbzd_to_slice(samples: &[i16], out: &mut [u8]) -> Result<usize, EncodeError> {
+    let need = svbzd_max_encoded_len(samples.len());
+    if out.len() < need {
+        return Err(EncodeError::OutputTooSmall {
+            need,
+            have: out.len(),
+        });
+    }
+    Ok(svbzd_fused::encode_to_slice(samples, out))
+}
+
 /// Decode exactly `n` `i16` samples from SVB-ZD bytes (3-pass: U32Classic → zigzag → delta).
 ///
 /// `n` must equal the number of samples originally encoded; a wrong value
@@ -1797,6 +1841,29 @@ mod svbzd_tests {
         decode_svbzd_fused_from_to_slice(&stream_a, 0, half_a).unwrap();
         decode_svbzd_fused_from_to_slice(&stream_b, mid_carry, half_b).unwrap();
         assert_eq!(out, samples);
+    }
+
+    #[test]
+    fn encode_to_slice_matches_vec_encode() {
+        for n in [0usize, 1, 5, 63, 1000] {
+            let samples: Vec<i16> = (0..n).map(|i| (i as i16).wrapping_mul(613)).collect();
+            let mut buf = vec![0xA5u8; svbzd_max_encoded_len(n)];
+            let len = encode_svbzd_to_slice(&samples, &mut buf).unwrap();
+            assert_eq!(&buf[..len], encode_svbzd(&samples), "n={n}");
+        }
+    }
+
+    #[test]
+    fn encode_to_slice_too_small() {
+        let samples = [1i16, 2, 3, 4, 5];
+        let need = svbzd_max_encoded_len(5);
+        let mut buf = vec![0xA5u8; need - 1];
+        let err = encode_svbzd_to_slice(&samples, &mut buf).unwrap_err();
+        assert!(
+            matches!(err, EncodeError::OutputTooSmall { need: 22, have: 21 }),
+            "{err:?}"
+        );
+        assert!(buf.iter().all(|&b| b == 0xA5), "out was modified");
     }
 
     #[test]

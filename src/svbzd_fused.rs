@@ -17,14 +17,31 @@ use std::vec::Vec;
 
 use crate::error::DecodeError;
 
-// ── encode: public entry point ────────────────────────────────────────────────
+// ── encode: public entry points ───────────────────────────────────────────────
+
+/// Worst-case encoded size for `n` samples: `ceil(n / 4)` control bytes plus 4
+/// data bytes per sample, the same as `U32Classic`.
+pub(crate) const fn max_encoded_len(n: usize) -> usize {
+    crate::u32::U32Classic.max_encoded_len(n)
+}
 
 pub fn encode_into(samples: &[i16], out: &mut Vec<u8>) {
+    let start = out.len();
+    out.resize(start + max_encoded_len(samples.len()), 0);
+    let written = encode_to_slice(samples, &mut out[start..]);
+    out.truncate(start + written);
+}
+
+/// Encode `samples` into the start of `out` and return the number of bytes
+/// written. `out` must be at least `max_encoded_len(samples.len())` bytes.
+pub(crate) fn encode_to_slice(samples: &[i16], out: &mut [u8]) -> usize {
+    assert!(out.len() >= max_encoded_len(samples.len()));
     if samples.is_empty() {
-        return;
+        return 0;
     }
     #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
     {
+        // SAFETY: simd-avx2 declares AVX2 available at compile time.
         return unsafe { encode_avx2(samples, out) };
     }
     #[cfg(all(
@@ -33,10 +50,12 @@ pub fn encode_into(samples: &[i16], out: &mut Vec<u8>) {
         target_arch = "x86_64"
     ))]
     {
+        // SAFETY: simd-ssse3 declares SSSE3 available at compile time.
         return unsafe { encode_ssse3(samples, out) };
     }
     #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
     {
+        // SAFETY: NEON is mandatory on AArch64.
         return unsafe { encode_neon(samples, out) };
     }
     #[cfg(all(
@@ -47,36 +66,69 @@ pub fn encode_into(samples: &[i16], out: &mut Vec<u8>) {
         #[cfg(all(feature = "std", target_arch = "x86_64"))]
         {
             if is_x86_feature_detected!("avx2") {
+                // SAFETY: runtime check confirms AVX2.
                 return unsafe { encode_avx2(samples, out) };
             }
             if is_x86_feature_detected!("ssse3") {
+                // SAFETY: runtime check confirms SSSE3.
                 return unsafe { encode_ssse3(samples, out) };
             }
         }
         #[cfg(target_arch = "aarch64")]
         {
+            // SAFETY: NEON is mandatory on AArch64.
             return unsafe { encode_neon(samples, out) };
         }
     }
-    encode_scalar(samples, out);
+    encode_scalar(samples, out)
 }
 
-fn encode_scalar(samples: &[i16], out: &mut Vec<u8>) {
-    #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
-    #[cfg(feature = "std")]
-    use std::vec::Vec;
+fn encode_scalar(samples: &[i16], out: &mut [u8]) -> usize {
+    let ctrl_len = samples.len().div_ceil(4);
+    let (ctrl, data) = out.split_at_mut(ctrl_len);
+    ctrl_len + encode_tail(samples, 0, 0, ctrl, data, 0)
+}
 
-    let mut codes: Vec<u32> = Vec::with_capacity(samples.len());
-    let mut prev: i32 = 0;
-    for &s in samples {
+// Scalar fused zigzag-delta + U32Classic encode of `samples[start..]`, with
+// `prev` the sample before `start` and `data_pos` the data bytes written so
+// far. Used for the whole input by `encode_scalar` and for the last 0-7 values
+// by the SIMD kernels. Clears the control bytes it writes to, since `out` may
+// hold old data. Returns the new `data_pos`.
+fn encode_tail(
+    samples: &[i16],
+    start: usize,
+    mut prev: i32,
+    ctrl: &mut [u8],
+    data: &mut [u8],
+    mut data_pos: usize,
+) -> usize {
+    let n = samples.len();
+    ctrl[start / 4..n.div_ceil(4)].fill(0);
+    for (j, &s) in samples.iter().enumerate().skip(start) {
         let v = s as i32;
         let delta = v.wrapping_sub(prev);
-        codes.push(((delta << 1) ^ (delta >> 31)) as u32);
+        let zz = ((delta << 1) ^ (delta >> 31)) as u32;
         prev = v;
+        let (tag, count): (u8, usize) = if zz <= 0xFF {
+            (0, 1)
+        } else if zz <= 0xFFFF {
+            (1, 2)
+        } else if zz <= 0xFF_FFFF {
+            (2, 3)
+        } else {
+            (3, 4)
+        };
+        ctrl[j / 4] |= tag << ((j % 4) * 2);
+        data[data_pos..data_pos + count].copy_from_slice(&zz.to_le_bytes()[..count]);
+        data_pos += count;
     }
-    crate::u32::U32Classic.encode_into(&codes, out);
+    data_pos
 }
+
+// Overrun bound for the SIMD kernels below: each value takes at most 4 data
+// bytes, so a group of 4 starting at value `i` is stored at `data_pos <= 4 * i`.
+// Its 16-byte store ends at `<= 4 * i + 16 <= 4 * n`, since `i + 4 <= n`, and
+// `data` holds `4 * n` bytes (see `max_encoded_len`).
 
 // ── encode: AVX2 / x86_64 ────────────────────────────────────────────────────
 
@@ -94,20 +146,16 @@ fn encode_scalar(samples: &[i16], out: &mut Vec<u8>) {
     target_arch = "x86_64"
 ))]
 #[target_feature(enable = "avx2")]
-unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
+unsafe fn encode_avx2(samples: &[i16], out: &mut [u8]) -> usize {
     use crate::u32::shuffle::{DATA_LEN, ENCODE_TABLE_CLASSIC};
     use core::arch::x86_64::*;
 
     let n = samples.len();
     let ctrl_len = n.div_ceil(4);
-    let ctrl_start = out.len();
-    // ctrl bytes + worst-case 4 bytes/value + 16-byte SIMD overrun guard.
-    out.reserve(ctrl_len + 4 * n + 16);
-    out.resize(ctrl_start + ctrl_len, 0u8);
+    let (ctrl, data) = out.split_at_mut(ctrl_len);
+    let data_ptr = data.as_mut_ptr();
 
     let simd_n = (n / 8) * 8;
-    let data_start = ctrl_start + ctrl_len;
-    let base_ptr = out.as_mut_ptr();
     let mut data_pos = 0usize;
     let mut prev: i32 = 0;
 
@@ -165,17 +213,17 @@ unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
             | ((raw_hi >> 12) & 0x30)
             | ((raw_hi >> 18) & 0xC0)) as u8;
 
+        // Raw writes: bounds-checked indexing here made the kernel 5-10% slower.
         unsafe {
-            // SAFETY: block and block+1 < ctrl_len; both ctrl bytes written.
-            *base_ptr.add(ctrl_start + block) = c0;
-            *base_ptr.add(ctrl_start + block + 1) = c1b;
-
+            // SAFETY: block = i / 4 and i + 8 <= n, so block + 1 < ctrl_len.
+            *ctrl.as_mut_ptr().add(block) = c0;
+            *ctrl.as_mut_ptr().add(block + 1) = c1b;
             let v_lo = _mm256_castsi256_si128(zigzag);
             let enc_lo =
                 _mm_loadu_si128(ENCODE_TABLE_CLASSIC[c0 as usize].as_ptr() as *const __m128i);
-            // SAFETY: data_start + data_pos + 16 <= capacity.
+            // SAFETY: data_pos + 16 <= data.len(), see the overrun bound above.
             _mm_storeu_si128(
-                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                data_ptr.add(data_pos) as *mut __m128i,
                 _mm_shuffle_epi8(v_lo, enc_lo),
             );
             data_pos += DATA_LEN[c0 as usize] as usize;
@@ -183,8 +231,9 @@ unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
             let v_hi = _mm256_extracti128_si256(zigzag, 1);
             let enc_hi =
                 _mm_loadu_si128(ENCODE_TABLE_CLASSIC[c1b as usize].as_ptr() as *const __m128i);
+            // SAFETY: as above, for the group starting at value i + 4.
             _mm_storeu_si128(
-                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                data_ptr.add(data_pos) as *mut __m128i,
                 _mm_shuffle_epi8(v_hi, enc_hi),
             );
             data_pos += DATA_LEN[c1b as usize] as usize;
@@ -194,27 +243,8 @@ unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
         i += 8;
     }
 
-    // SAFETY: [data_start, data_start + data_pos) written above.
-    unsafe { out.set_len(data_start + data_pos) };
-
-    // Scalar tail: 0-7 remaining values.
-    for j in i..n {
-        let v = samples[j] as i32;
-        let delta = v.wrapping_sub(prev);
-        let zz = ((delta << 1) ^ (delta >> 31)) as u32;
-        prev = v;
-        let (tag, count): (u8, usize) = if zz <= 0xFF {
-            (0, 1)
-        } else if zz <= 0xFFFF {
-            (1, 2)
-        } else if zz <= 0xFF_FFFF {
-            (2, 3)
-        } else {
-            (3, 4)
-        };
-        out[ctrl_start + j / 4] |= tag << ((j % 4) * 2);
-        out.extend_from_slice(&zz.to_le_bytes()[..count]);
-    }
+    // Scalar tail: the remaining values.
+    ctrl_len + encode_tail(samples, i, prev, ctrl, data, data_pos)
 }
 
 // ── encode: SSSE3 / x86_64 ───────────────────────────────────────────────────
@@ -234,19 +264,16 @@ unsafe fn encode_avx2(samples: &[i16], out: &mut Vec<u8>) {
     target_arch = "x86_64"
 ))]
 #[target_feature(enable = "ssse3")]
-unsafe fn encode_ssse3(samples: &[i16], out: &mut Vec<u8>) {
+unsafe fn encode_ssse3(samples: &[i16], out: &mut [u8]) -> usize {
     use crate::u32::shuffle::{DATA_LEN, ENCODE_TABLE_CLASSIC};
     use core::arch::x86_64::*;
 
     let n = samples.len();
     let ctrl_len = n.div_ceil(4);
-    let ctrl_start = out.len();
-    out.reserve(ctrl_len + 4 * n + 16);
-    out.resize(ctrl_start + ctrl_len, 0u8);
+    let (ctrl, data) = out.split_at_mut(ctrl_len);
+    let data_ptr = data.as_mut_ptr();
 
     let simd_n = (n / 4) * 4;
-    let data_start = ctrl_start + ctrl_len;
-    let base_ptr = out.as_mut_ptr();
     let mut data_pos = 0usize;
     let mut prev: i32 = 0;
 
@@ -286,46 +313,28 @@ unsafe fn encode_ssse3(samples: &[i16], out: &mut Vec<u8>) {
             _mm_sub_epi32(zero, c3m),
         );
         let tags = _mm_cvtsi128_si32(_mm_shuffle_epi8(tag_vec, gather_lo)) as u32;
-        let ctrl =
+        let cb =
             ((tags & 0x3) | ((tags >> 6) & 0x0C) | ((tags >> 12) & 0x30) | ((tags >> 18) & 0xC0))
                 as u8;
 
         unsafe {
-            // SAFETY: block < ctrl_len.
-            *base_ptr.add(ctrl_start + block) = ctrl;
-            let enc =
-                _mm_loadu_si128(ENCODE_TABLE_CLASSIC[ctrl as usize].as_ptr() as *const __m128i);
-            // SAFETY: data_start + data_pos + 16 <= capacity.
+            // SAFETY: block = i / 4 and i + 4 <= n, so block < ctrl_len.
+            *ctrl.as_mut_ptr().add(block) = cb;
+            let enc = _mm_loadu_si128(ENCODE_TABLE_CLASSIC[cb as usize].as_ptr() as *const __m128i);
+            // SAFETY: data_pos + 16 <= data.len(), see the overrun bound above.
             _mm_storeu_si128(
-                base_ptr.add(data_start + data_pos) as *mut __m128i,
+                data_ptr.add(data_pos) as *mut __m128i,
                 _mm_shuffle_epi8(zigzag, enc),
             );
         }
 
-        data_pos += DATA_LEN[ctrl as usize] as usize;
+        data_pos += DATA_LEN[cb as usize] as usize;
         block += 1;
         i += 4;
     }
 
-    unsafe { out.set_len(data_start + data_pos) };
-
-    for j in i..n {
-        let v = samples[j] as i32;
-        let delta = v.wrapping_sub(prev);
-        let zz = ((delta << 1) ^ (delta >> 31)) as u32;
-        prev = v;
-        let (tag, count): (u8, usize) = if zz <= 0xFF {
-            (0, 1)
-        } else if zz <= 0xFFFF {
-            (1, 2)
-        } else if zz <= 0xFF_FFFF {
-            (2, 3)
-        } else {
-            (3, 4)
-        };
-        out[ctrl_start + j / 4] |= tag << ((j % 4) * 2);
-        out.extend_from_slice(&zz.to_le_bytes()[..count]);
-    }
+    // Scalar tail: the remaining values.
+    ctrl_len + encode_tail(samples, i, prev, ctrl, data, data_pos)
 }
 
 // ── encode: NEON / AArch64 ───────────────────────────────────────────────────
@@ -343,19 +352,16 @@ unsafe fn encode_ssse3(samples: &[i16], out: &mut Vec<u8>) {
     target_arch = "aarch64"
 ))]
 #[target_feature(enable = "neon")]
-unsafe fn encode_neon(samples: &[i16], out: &mut Vec<u8>) {
+unsafe fn encode_neon(samples: &[i16], out: &mut [u8]) -> usize {
     use crate::u32::shuffle::{DATA_LEN, ENCODE_TABLE_CLASSIC};
     use core::arch::aarch64::*;
 
     let n = samples.len();
     let ctrl_len = n.div_ceil(4);
-    let ctrl_start = out.len();
-    out.reserve(ctrl_len + 4 * n + 16);
-    out.resize(ctrl_start + ctrl_len, 0u8);
+    let (ctrl, data) = out.split_at_mut(ctrl_len);
+    let data_ptr = data.as_mut_ptr();
 
     let simd_n = (n / 4) * 4;
-    let data_start = ctrl_start + ctrl_len;
-    let base_ptr = out.as_mut_ptr();
     let mut data_pos = 0usize;
     let mut prev: i32 = 0;
 
@@ -392,43 +398,26 @@ unsafe fn encode_neon(samples: &[i16], out: &mut Vec<u8>) {
         );
         let tag16 = vmovn_u32(tag_vec);
         let tag8 = vmovn_u16(vcombine_u16(tag16, vdup_n_u16(0)));
-        let ctrl = vaddv_u8(vmul_u8(tag8, weights));
+        let cb = vaddv_u8(vmul_u8(tag8, weights));
 
         unsafe {
-            // SAFETY: block < ctrl_len.
-            *base_ptr.add(ctrl_start + block) = ctrl;
-            let mask = vld1q_u8(ENCODE_TABLE_CLASSIC[ctrl as usize].as_ptr());
-            // SAFETY: data_start + data_pos + 16 <= capacity.
+            // SAFETY: block = i / 4 and i + 4 <= n, so block < ctrl_len.
+            *ctrl.as_mut_ptr().add(block) = cb;
+            let mask = vld1q_u8(ENCODE_TABLE_CLASSIC[cb as usize].as_ptr());
+            // SAFETY: data_pos + 16 <= data.len(), see the overrun bound above.
             vst1q_u8(
-                base_ptr.add(data_start + data_pos),
+                data_ptr.add(data_pos),
                 vqtbl1q_u8(vreinterpretq_u8_u32(zigzag), mask),
             );
         }
 
-        data_pos += DATA_LEN[ctrl as usize] as usize;
+        data_pos += DATA_LEN[cb as usize] as usize;
         block += 1;
         i += 4;
     }
 
-    unsafe { out.set_len(data_start + data_pos) };
-
-    for j in i..n {
-        let v = samples[j] as i32;
-        let delta = v.wrapping_sub(prev);
-        let zz = ((delta << 1) ^ (delta >> 31)) as u32;
-        prev = v;
-        let (tag, count): (u8, usize) = if zz <= 0xFF {
-            (0, 1)
-        } else if zz <= 0xFFFF {
-            (1, 2)
-        } else if zz <= 0xFF_FFFF {
-            (2, 3)
-        } else {
-            (3, 4)
-        };
-        out[ctrl_start + j / 4] |= tag << ((j % 4) * 2);
-        out.extend_from_slice(&zz.to_le_bytes()[..count]);
-    }
+    // Scalar tail: the remaining values.
+    ctrl_len + encode_tail(samples, i, prev, ctrl, data, data_pos)
 }
 
 // ── decode: public entry points ───────────────────────────────────────────────
@@ -1219,5 +1208,89 @@ mod tests {
         let mut out = vec![7i16, 8];
         assert!(decode_into(&encoded, 40, &mut out).is_err());
         assert_eq!(out, [7, 8]);
+    }
+
+    // ── slice encode ──────────────────────────────────────────────────────────
+
+    // i16 samples giving 1-byte, 2-byte, 3-byte and mixed zigzag codes. Kind 2
+    // alternates between i16::MIN and i16::MAX, the largest possible deltas.
+    fn encode_samples(n: usize, kind: u8) -> Vec<i16> {
+        (0..n)
+            .map(|i| match kind {
+                0 => (i % 50) as i16 - 25,
+                1 => (i as i16).wrapping_mul(1237) % 16000,
+                2 => [i16::MIN, i16::MAX][i % 2],
+                _ => (i as i16).wrapping_mul(i as i16).wrapping_mul(31),
+            })
+            .collect()
+    }
+
+    // Runs every encode kernel this CPU supports through `encode_checked`,
+    // which fills the buffer with canary bytes and checks nothing is written
+    // past `max_encoded_len`.
+    fn check_encode_paths(samples: &[i16]) -> Vec<u8> {
+        let max = max_encoded_len(samples.len());
+        let reference = encode_reference(samples);
+        let n = samples.len();
+        let scalar = crate::test_util::encode_checked(samples, max, encode_scalar);
+        assert_eq!(scalar, reference, "scalar n={n}");
+
+        #[cfg(all(
+            any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
+            target_arch = "x86_64"
+        ))]
+        if !samples.is_empty() && std::is_x86_feature_detected!("ssse3") {
+            // SAFETY: SSSE3 confirmed at runtime.
+            let f = |v: &[i16], o: &mut [u8]| unsafe { encode_ssse3(v, o) };
+            let simd = crate::test_util::encode_checked(samples, max, f);
+            assert_eq!(simd, reference, "ssse3 n={n}");
+        }
+        #[cfg(all(
+            any(feature = "simd-avx2", feature = "simd-auto"),
+            target_arch = "x86_64"
+        ))]
+        if !samples.is_empty() && std::is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 confirmed at runtime.
+            let f = |v: &[i16], o: &mut [u8]| unsafe { encode_avx2(v, o) };
+            let simd = crate::test_util::encode_checked(samples, max, f);
+            assert_eq!(simd, reference, "avx2 n={n}");
+        }
+        #[cfg(all(
+            any(feature = "simd-neon", feature = "simd-auto"),
+            target_arch = "aarch64"
+        ))]
+        if !samples.is_empty() {
+            // SAFETY: NEON is mandatory on AArch64.
+            let f = |v: &[i16], o: &mut [u8]| unsafe { encode_neon(v, o) };
+            let simd = crate::test_util::encode_checked(samples, max, f);
+            assert_eq!(simd, reference, "neon n={n}");
+        }
+        reference
+    }
+
+    #[test]
+    fn encode_paths_agree_all_lengths() {
+        for kind in 0..4 {
+            for n in 0..=70usize {
+                let samples = encode_samples(n, kind);
+                let encoded = check_encode_paths(&samples);
+                let mut decoded = vec![0i16; n];
+                decode_from_to_slice(&encoded, 0, &mut decoded).unwrap();
+                assert_eq!(decoded, samples, "kind={kind} n={n}");
+            }
+        }
+    }
+
+    #[test]
+    fn encode_into_appends() {
+        let a = encode_samples(13, 3);
+        let b = encode_samples(30, 1);
+        let mut out = vec![1u8, 2, 3];
+        encode_into(&a, &mut out);
+        encode_into(&b, &mut out);
+        let mut expected = vec![1u8, 2, 3];
+        expected.extend(encode_reference(&a));
+        expected.extend(encode_reference(&b));
+        assert_eq!(out, expected);
     }
 }
