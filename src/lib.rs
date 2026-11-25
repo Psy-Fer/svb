@@ -1326,6 +1326,8 @@ pub fn decode_svbzd_fused(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError
 }
 
 /// Decode SVB-ZD bytes, appending to `out`. See [`decode_svbzd_fused`].
+///
+/// On error `out` is left at its original length.
 #[cfg(feature = "alloc")]
 pub fn decode_svbzd_fused_into(
     data: &[u8],
@@ -1333,6 +1335,23 @@ pub fn decode_svbzd_fused_into(
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
     svbzd_fused::decode_into(data, n, out)
+}
+
+/// Decode SVB-ZD bytes into `out` with the fused decoder.
+///
+/// The number of samples decoded is `out.len()`, which must equal the number
+/// that was encoded. On error the contents of `out` are unspecified.
+///
+/// ```
+/// let samples = [10i16, 11, 12, 11, 9];
+/// let encoded = svb::encode_svbzd(&samples);
+/// let mut out = [0i16; 5];
+/// svb::decode_svbzd_fused_to_slice(&encoded, &mut out).unwrap();
+/// assert_eq!(out, samples);
+/// ```
+#[cfg(feature = "alloc")]
+pub fn decode_svbzd_fused_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
+    svbzd_fused::decode_from_to_slice(data, 0, out)
 }
 
 /// Decode an SVB-ZD half-stream starting from an arbitrary `initial_carry` value.
@@ -1359,7 +1378,7 @@ pub fn decode_svbzd_fused_from(
 
 /// Decode an SVB-ZD half-stream starting from `initial_carry`, appending to `out`.
 ///
-/// See [`decode_svbzd_fused_from`].
+/// See [`decode_svbzd_fused_from`]. On error `out` is left at its original length.
 #[cfg(feature = "alloc")]
 pub fn decode_svbzd_fused_from_into(
     data: &[u8],
@@ -1368,6 +1387,22 @@ pub fn decode_svbzd_fused_from_into(
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
     svbzd_fused::decode_from_into(data, n, initial_carry, out)
+}
+
+/// Decode an SVB-ZD half-stream starting from `initial_carry` into `out`,
+/// which holds `out.len()` samples. On error the contents of `out` are
+/// unspecified.
+///
+/// See [`decode_svbzd_fused_from`]. Writing each half into its own part of one
+/// output slice (for example with `split_at_mut`) avoids concatenating the
+/// halves afterwards.
+#[cfg(feature = "alloc")]
+pub fn decode_svbzd_fused_from_to_slice(
+    data: &[u8],
+    initial_carry: i32,
+    out: &mut [i16],
+) -> Result<(), DecodeError> {
+    svbzd_fused::decode_from_to_slice(data, initial_carry, out)
 }
 
 // ── ex-zd convenience pipeline ─────────────────────────────────────────────────
@@ -1755,6 +1790,24 @@ mod svbzd_tests {
         let mut combined = out_a;
         combined.extend_from_slice(&out_b);
         assert_eq!(combined, samples);
+
+        // The same halves decoded straight into one output slice.
+        let mut out = vec![0i16; n];
+        let (half_a, half_b) = out.split_at_mut(n_half);
+        decode_svbzd_fused_from_to_slice(&stream_a, 0, half_a).unwrap();
+        decode_svbzd_fused_from_to_slice(&stream_b, mid_carry, half_b).unwrap();
+        assert_eq!(out, samples);
+    }
+
+    #[test]
+    fn fused_to_slice_matches_vec_decode() {
+        for n in [0usize, 1, 5, 63, 1000] {
+            let samples: Vec<i16> = (0..n).map(|i| (i as i16).wrapping_mul(613)).collect();
+            let enc = encode_svbzd(&samples);
+            let mut out = vec![0i16; n];
+            decode_svbzd_fused_to_slice(&enc, &mut out).unwrap();
+            assert_eq!(out, decode_svbzd(&enc, n).unwrap(), "n={n}");
+        }
     }
 }
 

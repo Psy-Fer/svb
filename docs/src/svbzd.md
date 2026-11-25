@@ -55,6 +55,25 @@ let decoded = decode_svbzd_fused(&encoded, samples.len()).unwrap();
 
 `decode_svbzd_fused_into` appends into an existing `Vec<i16>`.
 
+## Decoding into your own buffer
+
+`decode_svbzd_fused_to_slice` and `decode_svbzd_fused_from_to_slice` write into
+a caller-supplied `&mut [i16]`. The number of samples is `out.len()`, which must
+match the number that was encoded. On error the contents of `out` are
+unspecified; the `_into` functions leave the `Vec` at its original length
+instead.
+
+```rust
+use svb::{decode_svbzd_fused_to_slice, encode_svbzd};
+
+let samples = [100i16, 101, 103, 102, 98];
+let encoded = encode_svbzd(&samples);
+
+let mut out = [0i16; 5];
+decode_svbzd_fused_to_slice(&encoded, &mut out).unwrap();
+assert_eq!(out, samples);
+```
+
 ## Parallel decode with fused_from
 
 `decode_svbzd_fused_from` accepts a caller-supplied initial carry value, enabling independent decoding of any sub-stream that starts at a known split point. This is the building block for parallel decoding:
@@ -66,7 +85,7 @@ use svb::decode_svbzd_fused_from;
 let half_b = decode_svbzd_fused_from(&stream_b, n - n_half, mid_carry).unwrap();
 ```
 
-The `_into` variant (`decode_svbzd_fused_from_into`) appends into an existing `Vec<i16>`.
+The `_into` variant (`decode_svbzd_fused_from_into`) appends into an existing `Vec<i16>`. `decode_svbzd_fused_from_to_slice` writes into a slice, so each half can be decoded straight into its own part of one output buffer (for example with `split_at_mut`).
 
 ## Wire format
 

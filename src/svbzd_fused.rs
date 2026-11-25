@@ -6,6 +6,9 @@
 //! This fused decoder collapses U32Classic decode, inverse-zigzag, and delta
 //! prefix sum into one SIMD loop. U32Classic and zigzag work execute during the
 //! delta carry-chain stall, hiding most of their cost.
+//!
+//! The decode kernels write into a slice (`n = out.len()`); the `Vec` functions
+//! grow the `Vec`, decode into the new space and truncate it again on error.
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -437,13 +440,29 @@ pub fn decode_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), Deco
 /// Decode an SVB-ZD stream with an explicit starting carry value.
 ///
 /// `initial` is the i32 accumulator value from the end of the previous stream
-/// (0 for the first stream, `mid_carry` from the header for later sub-streams).
+/// (0 for the first stream).
 pub fn decode_from_into(
     data: &[u8],
     n: usize,
     initial: i32,
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
+    let start = out.len();
+    out.resize(start + n, 0);
+    let result = decode_from_to_slice(data, initial, &mut out[start..]);
+    if result.is_err() {
+        out.truncate(start);
+    }
+    result
+}
+
+/// Decode `out.len()` values of an SVB-ZD stream into `out`, starting from `initial`.
+pub(crate) fn decode_from_to_slice(
+    data: &[u8],
+    initial: i32,
+    out: &mut [i16],
+) -> Result<(), DecodeError> {
+    let n = out.len();
     if n == 0 {
         return Ok(());
     }
@@ -454,26 +473,22 @@ pub fn decode_from_into(
             have: data.len(),
         });
     }
-    let ctrl = &data[..ctrl_len];
-    let data_bytes = &data[ctrl_len..];
-    out.reserve(n);
-    decode_parts_into(ctrl, data_bytes, n, initial, out)
+    decode_parts_to_slice(&data[..ctrl_len], &data[ctrl_len..], initial, out)
 }
 
-/// Decode a pre-split SVB-ZD sub-stream — `ctrl` and `data_bytes` already separated.
-///
-/// Used by SVB-ZD-K to decode each sub-stream without copying.
-pub(crate) fn decode_parts_into(
+/// Decode a pre-split SVB-ZD stream (`ctrl` and `data_bytes` already
+/// separated) into `out`, which holds `out.len()` values. `ctrl` must hold at
+/// least `out.len().div_ceil(4)` bytes.
+fn decode_parts_to_slice(
     ctrl: &[u8],
     data_bytes: &[u8],
-    n: usize,
     initial: i32,
-    out: &mut Vec<i16>,
+    out: &mut [i16],
 ) -> Result<(), DecodeError> {
-    if n == 0 {
+    if out.is_empty() {
         return Ok(());
     }
-    out.reserve(n);
+    assert!(ctrl.len() >= out.len().div_ceil(4));
 
     #[cfg(all(
         any(feature = "simd-avx2", feature = "simd-ssse3"),
@@ -482,12 +497,12 @@ pub(crate) fn decode_parts_into(
     {
         // SAFETY: SSSE3 is required for pshufb; simd-ssse3/simd-avx2 features
         // declare it available at compile time.
-        return unsafe { decode_ssse3(ctrl, data_bytes, n, initial, out) };
+        return unsafe { decode_ssse3(ctrl, data_bytes, initial, out) };
     }
     #[cfg(all(feature = "simd-neon", target_arch = "aarch64"))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        return unsafe { decode_neon(ctrl, data_bytes, n, initial, out) };
+        return unsafe { decode_neon(ctrl, data_bytes, initial, out) };
     }
     #[cfg(all(
         feature = "simd-auto",
@@ -497,7 +512,7 @@ pub(crate) fn decode_parts_into(
     {
         // SAFETY: runtime check confirms SSSE3.
         if is_x86_feature_detected!("ssse3") {
-            return unsafe { decode_ssse3(ctrl, data_bytes, n, initial, out) };
+            return unsafe { decode_ssse3(ctrl, data_bytes, initial, out) };
         }
     }
     #[cfg(all(
@@ -507,28 +522,33 @@ pub(crate) fn decode_parts_into(
     ))]
     {
         // SAFETY: NEON is mandatory on AArch64.
-        return unsafe { decode_neon(ctrl, data_bytes, n, initial, out) };
+        return unsafe { decode_neon(ctrl, data_bytes, initial, out) };
     }
-    decode_scalar(ctrl, data_bytes, n, initial, out)
+    decode_scalar(ctrl, data_bytes, initial, out, 0)
 }
 
 // ── scalar fallback ───────────────────────────────────────────────────────────
 
+// Decodes `out.len()` values. Also used for the SIMD kernels' last 0-3 values,
+// with `first_index` set to where the tail starts so that `DataTruncated`
+// reports the index in the whole output.
 fn decode_scalar(
     ctrl: &[u8],
     data: &[u8],
-    n: usize,
     initial: i32,
-    out: &mut Vec<i16>,
+    out: &mut [i16],
+    first_index: usize,
 ) -> Result<(), DecodeError> {
     const WIDTHS: [usize; 4] = [1, 2, 3, 4];
     let mut acc = initial;
     let mut data_pos = 0usize;
-    for i in 0..n {
+    for (i, o) in out.iter_mut().enumerate() {
         let tag = ((ctrl[i / 4] >> (2 * (i % 4))) & 3) as usize;
         let width = WIDTHS[tag];
         if data_pos + width > data.len() {
-            return Err(DecodeError::DataTruncated { index: i });
+            return Err(DecodeError::DataTruncated {
+                index: first_index + i,
+            });
         }
         let raw = match width {
             1 => data[data_pos] as u32,
@@ -545,7 +565,7 @@ fn decode_scalar(
         // Inverse zigzag32: (raw >> 1) ^ -(raw & 1)
         let delta = ((raw >> 1) as i32) ^ -((raw & 1) as i32);
         acc = acc.wrapping_add(delta);
-        out.push(acc as i16);
+        *o = acc as i16;
     }
     Ok(())
 }
@@ -568,19 +588,17 @@ static TRUNC_I32_I16: [u8; 16] = [
     target_arch = "x86_64"
 ))]
 #[target_feature(enable = "ssse3")]
-pub(crate) unsafe fn decode_ssse3(
+unsafe fn decode_ssse3(
     ctrl: &[u8],
     data_bytes: &[u8],
-    n: usize,
     initial: i32,
-    out: &mut Vec<i16>,
+    out: &mut [i16],
 ) -> Result<(), DecodeError> {
     use crate::u32::shuffle::{DATA_LEN, TABLE};
     use core::arch::x86_64::*;
 
-    let base = out.len();
-    // SAFETY: caller already called out.reserve(n).
-    let out_ptr = unsafe { out.as_mut_ptr().add(base) };
+    let n = out.len();
+    let out_ptr = out.as_mut_ptr();
 
     // SAFETY: TRUNC_I32_I16 is 16 bytes; SSSE3 loadu has no alignment requirement.
     let trunc_mask = unsafe { _mm_loadu_si128(TRUNC_I32_I16.as_ptr() as *const __m128i) };
@@ -628,7 +646,7 @@ pub(crate) unsafe fn decode_ssse3(
             // Pack 8×i32 → 8×i16 (wrapping truncation) into one 128-bit store.
             let packed_a = _mm_shuffle_epi8(result_a, trunc_mask);
             let packed_b = _mm_shuffle_epi8(result_b, trunc_mask);
-            // SAFETY: decoded + 8 <= n; out reserved for n more elements.
+            // SAFETY: decoded + 8 <= n = out.len().
             _mm_storeu_si128(
                 out_ptr.add(decoded) as *mut __m128i,
                 _mm_unpacklo_epi64(packed_a, packed_b),
@@ -659,7 +677,7 @@ pub(crate) unsafe fn decode_ssse3(
             let result = _mm_add_epi32(delta, _mm_set1_epi32(acc));
             acc = _mm_cvtsi128_si32(_mm_srli_si128(result, 12));
             let packed = _mm_shuffle_epi8(result, trunc_mask);
-            // SAFETY: decoded + 4 <= n; out reserved for n more elements.
+            // SAFETY: decoded + 4 <= n = out.len().
             _mm_storel_epi64(out_ptr.add(decoded) as *mut __m128i, packed);
         }
 
@@ -716,46 +734,14 @@ pub(crate) unsafe fn decode_ssse3(
         }
     }
 
-    // SAFETY: every element in [base, base + decoded) was written above.
-    unsafe { out.set_len(base + decoded) };
-
-    // ── scalar tail: 0–3 remaining values ────────────────────────────────────
-    if decoded < n {
-        let tail = n - decoded;
-        let ctrl_tail = &ctrl[ctrl_pos..];
-        let data_tail = &data_bytes[data_pos..];
-        let mut tail_pos = 0usize;
-        const WIDTHS: [usize; 4] = [1, 2, 3, 4];
-        for i in 0..tail {
-            let tag = ((ctrl_tail[i / 4] >> (2 * (i % 4))) & 3) as usize;
-            let width = WIDTHS[tag];
-            if tail_pos + width > data_tail.len() {
-                return Err(DecodeError::DataTruncated { index: decoded + i });
-            }
-            let raw = match width {
-                1 => data_tail[tail_pos] as u32,
-                2 => u16::from_le_bytes([data_tail[tail_pos], data_tail[tail_pos + 1]]) as u32,
-                3 => u32::from_le_bytes([
-                    data_tail[tail_pos],
-                    data_tail[tail_pos + 1],
-                    data_tail[tail_pos + 2],
-                    0,
-                ]),
-                _ => u32::from_le_bytes([
-                    data_tail[tail_pos],
-                    data_tail[tail_pos + 1],
-                    data_tail[tail_pos + 2],
-                    data_tail[tail_pos + 3],
-                ]),
-            };
-            tail_pos += width;
-            let delta = ((raw >> 1) as i32) ^ -((raw & 1) as i32);
-            acc = acc.wrapping_add(delta);
-            out.push(acc as i16);
-        }
-    }
-
-    Ok(())
+    // Scalar tail: 0-3 remaining values.
+    decode_scalar(
+        &ctrl[ctrl_pos..],
+        &data_bytes[data_pos..],
+        acc,
+        &mut out[decoded..],
+        decoded,
+    )
 }
 
 // ── NEON / AArch64 ───────────────────────────────────────────────────────────
@@ -765,19 +751,17 @@ pub(crate) unsafe fn decode_ssse3(
     target_arch = "aarch64"
 ))]
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn decode_neon(
+unsafe fn decode_neon(
     ctrl: &[u8],
     data_bytes: &[u8],
-    n: usize,
     initial: i32,
-    out: &mut Vec<i16>,
+    out: &mut [i16],
 ) -> Result<(), DecodeError> {
     use crate::u32::shuffle::{DATA_LEN, TABLE};
     use core::arch::aarch64::*;
 
-    let base = out.len();
-    // SAFETY: caller already called out.reserve(n).
-    let out_ptr = unsafe { out.as_mut_ptr().add(base) };
+    let n = out.len();
+    let out_ptr = out.as_mut_ptr();
 
     let mut ctrl_pos = 0usize;
     let mut data_pos = 0usize;
@@ -821,7 +805,7 @@ pub(crate) unsafe fn decode_neon(
             acc = vgetq_lane_s32(result_b, 3);
 
             // Narrow 8×i32 → 8×i16 (wrapping) and store 16 bytes.
-            // SAFETY: decoded + 8 <= n; out reserved for n more elements.
+            // SAFETY: decoded + 8 <= n = out.len().
             vst1q_s16(
                 out_ptr.add(decoded),
                 vcombine_s16(vmovn_s32(result_a), vmovn_s32(result_b)),
@@ -851,7 +835,7 @@ pub(crate) unsafe fn decode_neon(
             let delta = vaddq_s32(delta, vextq_s32(zero_s32, delta, 2));
             let result = vaddq_s32(delta, vdupq_n_s32(acc));
             acc = vgetq_lane_s32(result, 3);
-            // SAFETY: decoded + 4 <= n; out reserved for n more elements.
+            // SAFETY: decoded + 4 <= n = out.len().
             vst1_s16(out_ptr.add(decoded), vmovn_s32(result));
         }
 
@@ -909,46 +893,14 @@ pub(crate) unsafe fn decode_neon(
         }
     }
 
-    // SAFETY: every element in [base, base + decoded) was written above.
-    unsafe { out.set_len(base + decoded) };
-
-    // ── scalar tail: 0–3 remaining values ────────────────────────────────────
-    if decoded < n {
-        let tail = n - decoded;
-        let ctrl_tail = &ctrl[ctrl_pos..];
-        let data_tail = &data_bytes[data_pos..];
-        let mut tail_pos = 0usize;
-        const WIDTHS: [usize; 4] = [1, 2, 3, 4];
-        for i in 0..tail {
-            let tag = ((ctrl_tail[i / 4] >> (2 * (i % 4))) & 3) as usize;
-            let width = WIDTHS[tag];
-            if tail_pos + width > data_tail.len() {
-                return Err(DecodeError::DataTruncated { index: decoded + i });
-            }
-            let raw = match width {
-                1 => data_tail[tail_pos] as u32,
-                2 => u16::from_le_bytes([data_tail[tail_pos], data_tail[tail_pos + 1]]) as u32,
-                3 => u32::from_le_bytes([
-                    data_tail[tail_pos],
-                    data_tail[tail_pos + 1],
-                    data_tail[tail_pos + 2],
-                    0,
-                ]),
-                _ => u32::from_le_bytes([
-                    data_tail[tail_pos],
-                    data_tail[tail_pos + 1],
-                    data_tail[tail_pos + 2],
-                    data_tail[tail_pos + 3],
-                ]),
-            };
-            tail_pos += width;
-            let delta = ((raw >> 1) as i32) ^ -((raw & 1) as i32);
-            acc = acc.wrapping_add(delta);
-            out.push(acc as i16);
-        }
-    }
-
-    Ok(())
+    // Scalar tail: 0-3 remaining values.
+    decode_scalar(
+        &ctrl[ctrl_pos..],
+        &data_bytes[data_pos..],
+        acc,
+        &mut out[decoded..],
+        decoded,
+    )
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -1111,5 +1063,161 @@ mod tests {
         let mut out_b = Vec::new();
         decode_from_into(&buf_b, 16, mid_carry, &mut out_b).unwrap();
         assert_eq!(out_b, samples[16..]);
+    }
+
+    // ── slice API and cross-path ──────────────────────────────────────────────
+
+    // Zigzag codes of four kinds: all 1-byte, all 2-byte, 1-3 bytes mixed (what
+    // encoding i16 samples produces) and all four widths mixed. 4-byte codes
+    // only appear in data not made by the encoder, but the decoder accepts them.
+    fn codes(n: usize, kind: u8) -> Vec<u32> {
+        (0..n as u32)
+            .map(|i| match kind {
+                0 => i % 200,
+                1 => 256 + (i * 1237) % 60000,
+                2 => [i % 7, 300 + i, 70000 + i * 31][i as usize % 3],
+                _ => (i.wrapping_mul(2_654_435_761)) >> (8 * (i % 4)),
+            })
+            .collect()
+    }
+
+    // Packs codes as U32Classic: ctrl bytes then data bytes.
+    fn pack(codes: &[u32]) -> Vec<u8> {
+        let mut ctrl = vec![0u8; codes.len().div_ceil(4)];
+        let mut data = Vec::new();
+        for (i, &c) in codes.iter().enumerate() {
+            let width = match c {
+                0..=0xFF => 1,
+                0x100..=0xFFFF => 2,
+                0x1_0000..=0xFF_FFFF => 3,
+                _ => 4,
+            };
+            ctrl[i / 4] |= ((width - 1) as u8) << (2 * (i % 4));
+            data.extend_from_slice(&c.to_le_bytes()[..width]);
+        }
+        ctrl.extend_from_slice(&data);
+        ctrl
+    }
+
+    fn expected(codes: &[u32], initial: i32) -> Vec<i16> {
+        let mut acc = initial;
+        codes
+            .iter()
+            .map(|&zz| {
+                acc = acc.wrapping_add(((zz >> 1) as i32) ^ -((zz & 1) as i32));
+                acc as i16
+            })
+            .collect()
+    }
+
+    // Runs the scalar decoder and every SIMD kernel this CPU supports on the
+    // same input, and checks they agree on success or failure and on output.
+    fn check_paths(data: &[u8], n: usize, initial: i32) -> Option<Vec<i16>> {
+        let ctrl_len = n.div_ceil(4);
+        if data.len() < ctrl_len {
+            return None;
+        }
+        let (ctrl, body) = data.split_at(ctrl_len);
+        let mut scalar = vec![0i16; n];
+        let scalar_ok = decode_scalar(ctrl, body, initial, &mut scalar, 0).is_ok();
+
+        #[cfg(all(
+            any(feature = "simd-avx2", feature = "simd-ssse3", feature = "simd-auto"),
+            target_arch = "x86_64"
+        ))]
+        if std::is_x86_feature_detected!("ssse3") {
+            let mut simd = vec![0i16; n];
+            // SAFETY: SSSE3 confirmed at runtime.
+            let ok = unsafe { decode_ssse3(ctrl, body, initial, &mut simd) }.is_ok();
+            assert_eq!(ok, scalar_ok, "ssse3 ok n={n}");
+            if ok {
+                assert_eq!(simd, scalar, "ssse3 n={n}");
+            }
+        }
+        #[cfg(all(
+            any(feature = "simd-neon", feature = "simd-auto"),
+            target_arch = "aarch64"
+        ))]
+        {
+            let mut simd = vec![0i16; n];
+            // SAFETY: NEON is mandatory on AArch64.
+            let ok = unsafe { decode_neon(ctrl, body, initial, &mut simd) }.is_ok();
+            assert_eq!(ok, scalar_ok, "neon ok n={n}");
+            if ok {
+                assert_eq!(simd, scalar, "neon n={n}");
+            }
+        }
+        scalar_ok.then_some(scalar)
+    }
+
+    #[test]
+    fn scalar_and_simd_agree_all_lengths() {
+        for kind in 0..4 {
+            for n in 0..=70usize {
+                let c = codes(n, kind);
+                let encoded = pack(&c);
+                let decoded = check_paths(&encoded, n, 0).expect("valid input");
+                assert_eq!(decoded, expected(&c, 0), "kind={kind} n={n}");
+
+                // A nonzero starting carry shifts every output by that carry.
+                let carry = 1000;
+                let shifted = check_paths(&encoded, n, carry).expect("valid input");
+                assert_eq!(shifted, expected(&c, carry), "carry kind={kind} n={n}");
+
+                // Every truncation of the data bytes must fail on every path.
+                for cut in n.div_ceil(4)..encoded.len() {
+                    assert!(
+                        check_paths(&encoded[..cut], n, 0).is_none(),
+                        "cut={cut} n={n}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn to_slice_matches_vec_decode() {
+        for n in [0usize, 1, 7, 64, 1000] {
+            let samples: Vec<i16> = (0..n).map(|i| (i as i16).wrapping_mul(997)).collect();
+            let enc = encode_reference(&samples);
+            let mut out = vec![0i16; n];
+            decode_from_to_slice(&enc, 0, &mut out).unwrap();
+            assert_eq!(out, samples, "n={n}");
+        }
+    }
+
+    #[test]
+    fn short_ctrl_stream_is_an_error() {
+        let mut out = [0i16; 9];
+        let err = decode_from_to_slice(&[0, 0], 0, &mut out).unwrap_err();
+        assert!(
+            matches!(err, DecodeError::ControlStreamTooShort { need: 3, have: 2 }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn tail_error_index_is_absolute() {
+        // All 1-byte codes; dropping the last byte leaves the last value short.
+        // Its index is in the scalar tail for these n on every path.
+        for n in [13usize, 22, 37] {
+            let mut encoded = pack(&codes(n, 0));
+            encoded.pop();
+            let mut out = vec![0i16; n];
+            let err = decode_from_to_slice(&encoded, 0, &mut out).unwrap_err();
+            assert!(
+                matches!(err, DecodeError::DataTruncated { index } if index == n - 1),
+                "n={n}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vec_wrapper_restores_length_on_error() {
+        let mut encoded = pack(&codes(40, 2));
+        encoded.pop();
+        let mut out = vec![7i16, 8];
+        assert!(decode_into(&encoded, 40, &mut out).is_err());
+        assert_eq!(out, [7, 8]);
     }
 }

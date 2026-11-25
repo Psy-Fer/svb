@@ -1067,6 +1067,22 @@ fn bench_svbzd_fused(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_svbzd_fused_to_slice(c: &mut Criterion) {
+    let mut g = c.benchmark_group("svbzd_fused_to_slice");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let enc = encode_svbzd(&vbz_i16_samples(n));
+        let mut out = vec![0i16; n];
+        g.bench_with_input(BenchmarkId::from_parameter(n), &enc, |b, enc| {
+            b.iter(|| {
+                svb::decode_svbzd_fused_to_slice(enc, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+}
+
 // ── ex-zd pipeline ────────────────────────────────────────────────────────────
 //
 // Same nanopore-style i16 signal as the VBZ/SVB-ZD benchmarks. ex-zd adds a
@@ -1321,6 +1337,7 @@ criterion_group!(
     bench_svbzd_encode,
     bench_svbzd_decode,
     bench_svbzd_fused,
+    bench_svbzd_fused_to_slice,
     bench_exzd_encode,
     bench_exzd_decode,
     bench_exzd_fused,
