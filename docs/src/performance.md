@@ -513,6 +513,22 @@ were not inlined. Same program, `decode_into` with a reused `Vec`:
 
 `decode_to_slice` for `i32` is 33.5 / 382 / 3231 ns at the same sizes.
 
+### Fused SVB-ZD decode
+
+Criterion, same machine, `simd-auto`, pinned to an idle core on an otherwise
+moderately busy machine (load average 2-6 on 16 cores), runs of 0.3.1 and 0.4.0
+alternated, median of 5 runs. `decode_svbzd_fused_into` with a reused `Vec`:
+
+| | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| `decode_svbzd_fused_into` (reuse), 0.3.1 | 75.0 ns | 464 ns | 3552 ns |
+| `decode_svbzd_fused_into` (reuse), 0.4.0 | 78.1 ns | 484 ns | 3676 ns |
+| `decode_svbzd_fused_to_slice` | 76.1 ns | 469 ns | 3581 ns |
+
+The slice function is within 1-2% of 0.3.1, which is inside the run-to-run
+spread here. The `Vec` wrapper is 3.5-4.5% slower than 0.3.1 because of the
+zero-fill.
+
 ## Running benchmarks
 
 ```sh
