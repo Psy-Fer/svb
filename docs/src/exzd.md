@@ -54,7 +54,7 @@ assert_eq!(out, samples);
 The qts and patched/exception stages are exposed independently, matching [delta and zigzag](transforms.md):
 
 - [`svb::quantize`] — `find_qts`, `apply_shift`, `unshift_inplace`, fixed to `i16`.
-- [`svb::patched`] — `encode_into`/`decode_into` over `&[u16]`, generically useful for any patched/exception encoding scenario beyond ex-zd.
+- [`svb::patched`] — `encode_into`/`decode_into` over `&[u16]`, generically useful for any patched/exception encoding scenario beyond ex-zd. `encode_to_slice` and `decode_to_slice` write into caller-supplied slices; size the encode buffer with `patched::max_encoded_len(n)`, which assumes every value is an exception (`12 + 2 * (ceil(n / 4) + 4 * n)` bytes). `decode_to_slice` decodes `out.len()` values and returns the number of bytes it read.
 
 ## Wire format
 

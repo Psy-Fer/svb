@@ -255,12 +255,12 @@ Run `cargo bench --features simd-avx2 --bench decode -- exzd_many_small_reads` l
 
 ### Adaptive exception-merge strategy
 
-Reconstructing the full sample stream means merging the literal-byte run and the exception list back into one array. Two strategies exist, picked by exception density:
+Reconstructing the full sample stream means merging the literal-byte run and the exception list back into one array. Since 0.4.0 this happens in place: the literal bytes are widened straight into the front of the output, and the merge works from the back, moving each literal right to its final position and writing the exceptions into the gaps. 0.3.1 widened the literals into a separate buffer and merged forwards from it, which cost an extra buffer and copy. Two strategies exist, picked by exception density:
 
-- **`merge_runs`**: copies each stretch of non-exception values in one `extend_from_slice` (a vectorized memcpy), interrupted only by a single `push` per exception. Wins when exceptions are rare — long runs, few interruptions.
-- **`merge_walk`**: writes every output element individually through a raw pointer, no bounds/capacity checks per element — the same mechanism slow5lib's C reference (`ex_depress`) uses. Loses to `merge_runs` on long runs (a scalar per-element loop can't beat a vectorized memcpy) but wins once runs get short enough that `merge_runs`'s per-run call overhead dominates.
+- **`merge_runs`**: moves each stretch of non-exception values with one `copy_within` (a vectorized memmove), interrupted only by a single write per exception. Wins when exceptions are rare: long runs, few interruptions.
+- **`merge_walk`**: writes every output element individually through a raw pointer, with no bounds checks per element. slow5lib's C reference (`ex_depress`) works the same way, but forwards from a separate buffer. Loses to `merge_runs` on long runs (a scalar per-element loop can't beat a vectorized memmove) but wins once runs get short enough that `merge_runs`'s per-run call overhead dominates.
 
-The crossover was found empirically (`patched::merge_density_sweep`, an `#[ignore]`d test — run with `cargo test --release --features simd-avx2 -- --ignored --nocapture merge_density_sweep`), timing both strategies directly against each other across a density sweep. It lands consistently around **14-15% exception density**, reproducible across n=128/1024/8192 — the format's own encoder-side warning threshold (~20%, "compression may not be ideal") turned out to be a reasonable starting guess but more conservative than the actual crossover. Decode dispatches on `nex * 7 >= n` (~14.3%) accordingly.
+The crossover was found empirically (`patched::merge_density_sweep`, an `#[ignore]`d test — run with `cargo test --release --features simd-avx2 -- --ignored --nocapture merge_density_sweep`), timing both strategies directly against each other across a density sweep. With the 0.3.1 forward merges it landed at 14-15% exception density across n=128/1024/8192, and decode dispatched on `nex * 7 >= n`. With the in-place merges it moved to 18-20%: at 18% the two are within 5% of each other, and from 20% the walk is faster at every size. Decode now dispatches on `nex * 5 >= n` (20%), which is also the format's own encoder-side warning threshold ("compression may not be ideal").
 
 ### vs. slow5lib (C reference)
 
@@ -550,6 +550,44 @@ and 0.4.0 run alternately. Ranges are over the three processes.
   (`ctrl[block] = cb`). That made the kernel 5-10% slower than 0.3.1 at
   n=1024 and n=8192, so the kernels write them through a raw pointer, as
   0.3.1 did.
+
+### ex-zd and `patched`
+
+`patched` (the exception layer under ex-zd) was converted to slices before the
+ex-zd functions themselves. Criterion, same machine, `simd-auto`, pinned to one
+core, runs of 0.3.1 and 0.4.0 alternated, median of 3 runs. Changes are 0.4.0
+against 0.3.1; the ex-zd functions still have their 0.3.1 signatures here.
+The spiky and real-read fused decode rows include a second run made after the
+merge threshold moved to 20%; ranges cover both runs.
+
+| Benchmark | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| `encode_exzd` | -31% | -48% | -55% |
+| `decode_exzd_fused_into` (reuse) | +3% | -3% | -4% |
+| `decode_exzd_fused_into`, spiky data (reuse) | -3 to -6% | -2% | -3 to -4% |
+| `decode_exzd` (3-pass) | +4% | +10% | +2% |
+
+| Real reads (`tests/vectors`) | 2885-2949 samples | 101988 samples |
+|---|---|---|
+| `decode_exzd_fused` | -4 to +1% | +3 to +4% |
+| `ExzdDecoder::decode_into` | -1 to -6% | -6% |
+| `decode_exzd` (3-pass) | -2 to +1% | +10% |
+
+`exzd_many_small_reads` (2000 reads decoded one after another) was 2-12%
+faster, both with `ExzdDecoder` and allocating per call.
+
+- Encode is faster because `patched::encode_into` used to push the literal
+  bytes into the output one at a time and build the exception arrays in two
+  temporary `Vec`s. It now sizes the output once and writes into it.
+- A first version kept the 0.3.1 decode structure and zero-filled the literal
+  scratch buffer and the zigzag-delta array on every call. That made decode
+  4-20% slower (up to 23% on the 101988-sample read). The in-place merge
+  (see "Adaptive exception-merge strategy" above) removed the literal buffer,
+  and `ExzdDecoder` now only fills its zigzag-delta buffer where it grows.
+- The one-shot decoders still allocate and zero-fill a new zigzag-delta array
+  each call, which is the +3% on the large read. The 3-pass `decode_exzd` also
+  goes through the `delta` `Vec` functions, which are 8-11% slower than 0.3.1
+  (see "Delta and zigzag" above).
 
 ## Running benchmarks
 

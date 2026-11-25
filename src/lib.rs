@@ -1602,34 +1602,24 @@ fn decode_exzd_header_and_zd(data: &[u8]) -> Result<Option<(u8, Vec<u16>)>, Deco
     use std::vec::Vec;
 
     let mut zd = Vec::new();
-    let mut literal = Vec::new();
     let mut ex_pos = Vec::new();
     let mut ex_val = Vec::new();
-    let q = decode_exzd_header_and_zd_with_scratch(
-        data,
-        &mut zd,
-        &mut literal,
-        &mut ex_pos,
-        &mut ex_val,
-    )?;
+    let q = decode_exzd_header_and_zd_with_scratch(data, &mut zd, &mut ex_pos, &mut ex_val)?;
     Ok(q.map(|q| (q, zd)))
 }
 
 /// Same as [`decode_exzd_header_and_zd`], but fills caller-supplied `zd`,
-/// `literal`, `ex_pos`, and `ex_val` scratch buffers (each cleared
-/// internally) instead of allocating fresh ones. Returns `Some(q)`, or
+/// `ex_pos`, and `ex_val` scratch buffers instead of allocating fresh ones.
+/// On success `zd` holds exactly `nin` values. Returns `Some(q)`, or
 /// `None` for `nin == 0`. Used by [`ExzdDecoder`] to avoid a heap
 /// allocation per decode when repeatedly decoding many small frames.
 #[cfg(feature = "alloc")]
 fn decode_exzd_header_and_zd_with_scratch(
     data: &[u8],
     zd: &mut Vec<u16>,
-    literal: &mut Vec<u16>,
     ex_pos: &mut Vec<u32>,
     ex_val: &mut Vec<u32>,
 ) -> Result<Option<u8>, DecodeError> {
-    zd.clear();
-
     if data.len() < EXZD_HEADER_LEN {
         return Err(DecodeError::ControlStreamTooShort {
             need: EXZD_HEADER_LEN,
@@ -1672,13 +1662,13 @@ fn decode_exzd_header_and_zd_with_scratch(
         });
     }
 
-    zd.reserve(nin);
-    zd.push(zd0);
-    patched::decode_into_with_scratch(
+    // Every element is overwritten below. `resize` keeps the existing
+    // elements, so a reused buffer is only filled where it grows.
+    zd.resize(nin, 0);
+    zd[0] = zd0;
+    patched::decode_to_slice_with_scratch(
         &data[EXZD_HEADER_LEN + 2..],
-        nin - 1,
-        zd,
-        literal,
+        &mut zd[1..],
         ex_pos,
         ex_val,
     )?;
@@ -1692,8 +1682,8 @@ fn decode_exzd_header_and_zd_with_scratch(
 ///
 /// The single-shot [`decode_exzd_fused`]/[`decode_exzd_fused_into`]
 /// functions allocate their working buffers (the reconstructed zigzag-delta
-/// array, the widened literal-byte buffer, and the decoded exception
-/// position/residual lists) fresh on every call — the right default for a
+/// array and the decoded exception position/residual lists) fresh on every
+/// call — the right default for a
 /// one-off decode. But the typical ex-zd workload is a BLOW5/nanopore file
 /// with many thousands of individual reads, each decoded via its own call;
 /// in that pattern, `ExzdDecoder` lets the same buffers be reused across
@@ -1716,7 +1706,6 @@ fn decode_exzd_header_and_zd_with_scratch(
 #[derive(Default)]
 pub struct ExzdDecoder {
     zd: Vec<u16>,
-    literal: Vec<u16>,
     ex_pos: Vec<u32>,
     ex_val: Vec<u32>,
 }
@@ -1736,7 +1725,6 @@ impl ExzdDecoder {
         let Some(q) = decode_exzd_header_and_zd_with_scratch(
             data,
             &mut self.zd,
-            &mut self.literal,
             &mut self.ex_pos,
             &mut self.ex_val,
         )?
