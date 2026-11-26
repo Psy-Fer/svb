@@ -2556,3 +2556,38 @@ mod exzd_tests {
         assert_eq!(out, [1, 2]);
     }
 }
+
+// ── book examples ─────────────────────────────────────────────────────────────
+//
+// Each chapter of the mdbook in docs/src is included as a doc comment here, so
+// `cargo test --doc` compiles and runs its Rust code blocks against this build
+// of the crate. `mdbook test` cannot do that reliably: it needs `-L` pointing
+// at a directory holding exactly one build of `svb`. Blocks that are not Rust
+// are marked `text`, `toml` or `sh` in the chapters so they are skipped.
+#[cfg(doctest)]
+mod book {
+    macro_rules! chapter {
+        ($name:ident, $path:literal) => {
+            #[doc = include_str!(concat!("../docs/src/", $path))]
+            struct $name;
+        };
+    }
+
+    chapter!(Index, "index.md");
+    chapter!(GettingStarted, "getting-started.md");
+    chapter!(Encoding, "encoding.md");
+    chapter!(Codecs, "codecs/index.md");
+    chapter!(CodecSvb16, "codecs/svb16.md");
+    chapter!(CodecU32Classic, "codecs/u32-classic.md");
+    chapter!(CodecU32Variant0124, "codecs/u32-variant0124.md");
+    chapter!(CodecU64Coder1234, "codecs/u64-coder1234.md");
+    chapter!(CodecU64Coder1248, "codecs/u64-coder1248.md");
+    chapter!(Transforms, "transforms.md");
+    chapter!(Vbz, "vbz.md");
+    chapter!(Svbzd, "svbzd.md");
+    chapter!(Exzd, "exzd.md");
+    chapter!(Simd, "simd.md");
+    chapter!(NoStd, "no-std.md");
+    chapter!(WireCompatibility, "wire-compatibility.md");
+    chapter!(Performance, "performance.md");
+}

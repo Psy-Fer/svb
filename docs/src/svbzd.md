@@ -2,7 +2,7 @@
 
 The SVB-ZD pipeline compresses 16-bit signal data into a compact byte stream. It is wire-compatible with the [slow5lib](https://github.com/hasindu2008/slow5lib) `SLOW5_COMPRESS_SVB_ZD` format used in BLOW5 files. The pipeline chains three stages:
 
-```
+```text
 raw i16 samples
   →  widen to i32
   →  fused zigzag-delta (delta of differences → zigzag32 to make values unsigned)
@@ -66,9 +66,12 @@ assert_eq!(&buf[..len], encode_svbzd(&samples));
 `decode_svbzd_fused` collapses all three decode stages (U32Classic, unzigzag, undelta) into a single SIMD loop. This avoids intermediate buffers and is the preferred path for high-throughput BLOW5 reads:
 
 ```rust
-use svb::decode_svbzd_fused;
+use svb::{decode_svbzd_fused, encode_svbzd};
 
+let samples: Vec<i16> = vec![100, 101, 103, 102, 98];
+let encoded = encode_svbzd(&samples);
 let decoded = decode_svbzd_fused(&encoded, samples.len()).unwrap();
+assert_eq!(decoded, samples);
 ```
 
 `decode_svbzd_fused_into` appends into an existing `Vec<i16>`.
@@ -100,11 +103,34 @@ U32Classic pass.
 
 `decode_svbzd_fused_from` accepts a caller-supplied initial carry value, enabling independent decoding of any sub-stream that starts at a known split point. This is the building block for parallel decoding:
 
-```rust
-use svb::decode_svbzd_fused_from;
+A stream can be split after any multiple of 4 samples. Each control byte
+covers 4 samples and holds a 2-bit tag per sample; a sample's data takes
+`tag + 1` bytes.
 
-// Decode second half independently, with known carry from midpoint
+```rust
+use svb::{decode_svbzd_fused_from, encode_svbzd};
+
+let samples: Vec<i16> = (0..64).map(|i| i * 37 - 1000).collect();
+let n = samples.len();
+let encoded = encode_svbzd(&samples);
+
+let n_half = 32;
+let (ctrl, data) = encoded.split_at(n.div_ceil(4));
+let (ctrl_a, ctrl_b) = ctrl.split_at(n_half / 4);
+let data_a_len: usize = ctrl_a
+    .iter()
+    .map(|&c| (0..4).map(|i| ((c >> (2 * i)) & 3) as usize + 1).sum::<usize>())
+    .sum();
+let (data_a, data_b) = data.split_at(data_a_len);
+let stream_a = [ctrl_a, data_a].concat();
+let stream_b = [ctrl_b, data_b].concat();
+
+// The second half starts from the last sample of the first. If that value is
+// stored with the data, the halves can be decoded on separate threads.
+let mid_carry = samples[n_half - 1] as i32;
+let half_a = decode_svbzd_fused_from(&stream_a, n_half, 0).unwrap();
 let half_b = decode_svbzd_fused_from(&stream_b, n - n_half, mid_carry).unwrap();
+assert_eq!([half_a, half_b].concat(), samples);
 ```
 
 The `_into` variant (`decode_svbzd_fused_from_into`) appends into an existing `Vec<i16>`. `decode_svbzd_fused_from_to_slice` writes into a slice, so each half can be decoded straight into its own part of one output buffer (for example with `split_at_mut`).

@@ -2,7 +2,7 @@
 
 The ex-zd pipeline improves on [SVB-ZD](svbzd.md) for 16-bit signal data. It is wire-compatible with the [slow5lib](https://github.com/hasindu2008/slow5lib) `SLOW5_COMPRESS_EX_ZD` format used in BLOW5 files. The pipeline chains four stages:
 
-```
+```text
 raw i16 samples
   →  qts               (find largest right-shift q ≤ 5 that loses no low bits, apply it)
   →  zigzag-delta       (delta of differences → zigzag16 to make values unsigned, u16 domain)
@@ -110,7 +110,7 @@ The qts and patched/exception stages are exposed independently, matching [delta 
 
 ## Wire format
 
-```
+```text
 u8   version        (0)
 u64  nin             (sample count, little-endian)
 u8   q               (qts shift, 0..=5)

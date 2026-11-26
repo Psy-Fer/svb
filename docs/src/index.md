@@ -6,7 +6,7 @@
 
 StreamVByte is a family of integer compression schemes that store values in a variable number of bytes. Rather than interleaving the control information with the data, StreamVByte places all control bytes in a separate stream. This layout makes SIMD-accelerated decode practical: a batch of control bytes can be loaded and shuffled in a single instruction, determining widths for an entire group of values without branching.
 
-```
+```text
 encoded buffer layout
 ┌────────────────────┬─────────────────────────────────────┐
 │   control stream   │            data stream               │

@@ -46,7 +46,7 @@ assert_eq!(out, values);
 
 Tags are packed 8 per byte, LSB-first. For `n` values the control stream is `ceil(n / 8)` bytes.
 
-```
+```text
 control byte k  →  tags for values 8k+0 through 8k+7
 bit 0  =  tag for value 8k+0
 bit 1  =  tag for value 8k+1

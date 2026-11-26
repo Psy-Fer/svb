@@ -28,7 +28,7 @@ assert_eq!(decoded, values);
 
 Encoding `[1, 256, 65536, 0xFFFFFFFF]` produces:
 
-```
+```text
 byte 0:     0xE4        control byte (tags: 0, 1, 2, 3 packed LSB-first → 0b11_10_01_00)
 bytes 1:    0x01        value 0: 1 (1 byte)
 bytes 2-3:  0x00 0x01   value 1: 256 (2 bytes, little-endian)

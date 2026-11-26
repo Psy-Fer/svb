@@ -14,7 +14,7 @@
 
 All u32 and u64 codecs pack four 2-bit tags into each control byte, LSB-first:
 
-```
+```text
 control byte n
 bits 1:0  → tag for value 4n+0
 bits 3:2  → tag for value 4n+1
@@ -28,7 +28,7 @@ bits 7:6  → tag for value 4n+3
 
 All codecs use the same flat layout: control bytes first, data bytes immediately after.
 
-```
+```text
 [ ctrl[0] ctrl[1] ... ctrl[ceil(n/4)-1] | data bytes ... ]
 ```
 

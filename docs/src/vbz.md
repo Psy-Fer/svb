@@ -2,7 +2,7 @@
 
 The VBZ pipeline compresses 16-bit ADC signal data as used in Oxford Nanopore POD5 files. It chains four stages:
 
-```
+```text
 raw i16 samples
   →  delta encode    (1st-order differences; small values dominate)
   →  zigzag encode   (signed i16 → unsigned u16; small |values| → small codes)

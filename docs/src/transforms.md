@@ -52,7 +52,7 @@ assert_eq!(recovered_b, chunk_b);
 
 Zigzag maps signed integers to unsigned integers so that small absolute values map to small codes. This allows signed differences from delta encoding to be compressed efficiently by any unsigned codec.
 
-```
+```text
 0  →  0
 -1 →  1
  1 →  2

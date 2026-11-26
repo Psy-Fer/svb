@@ -8,7 +8,7 @@ This page explains how StreamVByte, delta, and zigzag work, when to use each, an
 
 Every integer type has a fixed storage width. A `u32` always occupies 4 bytes, regardless of its value:
 
-```
+```text
 value         memory (big-endian for clarity)   bytes used
 ──────────────────────────────────────────────────────────
          1    00 00 00 01                        4 (3 wasted)
@@ -32,7 +32,7 @@ Most integers in real data are small. Fixed-width encoding wastes bytes on the h
 
 The key design decision is *where* to put the width metadata. Naive variable-byte schemes (such as SQLite's `varint` or Protocol Buffers' `LEN`) interleave a length prefix with each value, so the decoder must branch on every element, and SIMD cannot help. StreamVByte separates the metadata into a **control stream** and the integer bytes into a **data stream**:
 
-```
+```text
 ┌──────────────────────────────────┐
 │ control stream                   │
 │  tag tag tag tag tag tag tag tag  │  ← 2 bits per value (u32), 1 bit (u16)
@@ -49,7 +49,7 @@ Because all the widths for a block of values live in one or two control bytes, a
 
 Four `u32` values encoded with `U32Classic` (1/2/3/4-byte widths):
 
-```
+```text
 values:   [   1,   300,  75000,   5 ]
 widths:   [ 1 B,   2 B,    3 B, 1 B ]  ← determined by value magnitude
 tags:     [  00,    01,     10,  00 ]  ← 2-bit tag per value
@@ -82,7 +82,7 @@ The five variants differ in which byte widths they support and what element type
 
 Delta encoding replaces each value with its *difference* from the previous one:
 
-```
+```text
 original:  [ 1000,  1003,  1007,  1004,  1010 ]
                 ↘      ↘      ↘      ↘
 deltas:    [ 1000,    +3,    +4,    -3,    +6  ]
@@ -115,7 +115,7 @@ Variable-byte codecs assign shorter encodings to smaller *non-negative* integers
 
 Zigzag solves this by remapping signed integers to unsigned so that small absolute values map to small codes:
 
-```
+```text
 signed →  unsigned
      0 →  0
     -1 →  1
@@ -137,7 +137,7 @@ After zigzag, a signed delta of −1 becomes the unsigned value 1, which encodes
 
 Delta → zigzag → StreamVByte is a standard pipeline for compressing integer sequences that are slowly varying or oscillating. Each stage does one job:
 
-```
+```text
 raw values
   │
   ▼  delta encode
@@ -154,7 +154,7 @@ compact byte stream
 
 Five `i16` ADC-style samples:
 
-```
+```text
 stage         values
 ───────────────────────────────────────────────
 raw           [ 1000,  1003,  1007,  1004,  1010 ]

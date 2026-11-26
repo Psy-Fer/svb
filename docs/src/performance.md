@@ -53,11 +53,24 @@ for each sub-stream. A caller with its own thread pool can split the stream
 and decode the parts concurrently:
 
 ```rust
+# use svb::decode_vbz_fused_from;
+# let samples: Vec<i16> = (0..64).map(|i| i * 37 - 1000).collect();
+# let n = samples.len();
+# let encoded = svb::encode_vbz(&samples);
+# let n_half = 32;
+# let (ctrl, data) = encoded.split_at(n.div_ceil(8));
+# let (ctrl_a, ctrl_b) = ctrl.split_at(n_half / 8);
+# let data_a_len: usize = ctrl_a.iter().map(|c| 8 + c.count_ones() as usize).sum();
+# let (data_a, data_b) = data.split_at(data_a_len);
+# let stream_a = [ctrl_a, data_a].concat();
+# let stream_b = [ctrl_b, data_b].concat();
+# let carry = samples[n_half - 1];
 let (out_a, out_b) = std::thread::scope(|s| {
     let ha = s.spawn(|| decode_vbz_fused_from(&stream_a, n_half, 0));
     let hb = s.spawn(|| decode_vbz_fused_from(&stream_b, n - n_half, carry));
     (ha.join().unwrap(), hb.join().unwrap())
 });
+# assert_eq!([out_a.unwrap(), out_b.unwrap()].concat(), samples);
 ```
 
 Multi-threaded throughput is highly sensitive to CPU core count, L2/L3 topology,
@@ -72,7 +85,7 @@ the streams share no cache lines and the speedup approaches the thread count.
 `encode_vbzk(samples, k)` / `decode_vbzk_parallel_into(data, n, out)` split a
 VBZ stream into K independent sub-streams. The header stores K−1 split points:
 
-```
+```text
 [k: u8][(carry_i: i16 LE, data_offset_i: u32 LE) for i in 1..k][VBZ payload]
 ```
 
