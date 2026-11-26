@@ -265,7 +265,7 @@ mod vbz {
     /// assert_eq!(decode_vbz(&encoded, samples.len()).unwrap(), samples);
     /// ```
     pub fn decode_vbz(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
-        let mut out = Vec::with_capacity(n);
+        let mut out = Vec::new();
         decode_vbz_into(data, n, &mut out)?;
         Ok(out)
     }
@@ -288,6 +288,7 @@ mod vbz {
     ///
     /// On error `out` is left at its original length.
     pub fn decode_vbz_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
+        crate::error::check_ctrl_len(data, n.div_ceil(8))?;
         let start = out.len();
         out.resize(start + n, 0);
         let result = decode_vbz_to_slice(data, &mut out[start..]);
@@ -329,7 +330,7 @@ mod vbz {
 /// all three stages.
 #[cfg(feature = "alloc")]
 pub fn decode_vbz_fused(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
-    let mut out = Vec::with_capacity(n);
+    let mut out = Vec::new();
     decode_vbz_fused_into(data, n, &mut out)?;
     Ok(out)
 }
@@ -398,7 +399,7 @@ pub fn decode_vbz_fused_from(
     n: usize,
     initial_carry: i16,
 ) -> Result<Vec<i16>, DecodeError> {
-    let mut out = Vec::with_capacity(n);
+    let mut out = Vec::new();
     decode_vbz_fused_from_into(data, n, initial_carry, &mut out)?;
     Ok(out)
 }
@@ -934,6 +935,7 @@ pub fn decode_vbzk(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
 /// On error `out` is left at its original length.
 #[cfg(feature = "alloc")]
 pub fn decode_vbzk_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
+    crate::error::check_ctrl_len(data, n.div_ceil(8))?;
     let start = out.len();
     out.resize(start + n, 0);
     let result = decode_vbzk_to_slice(data, &mut out[start..]);
@@ -1090,6 +1092,7 @@ pub fn decode_vbzk_parallel_into(
     n: usize,
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
+    crate::error::check_ctrl_len(data, n.div_ceil(8))?;
     let start = out.len();
     out.resize(start + n, 0);
     let result = decode_vbzk_parallel_to_slice(data, &mut out[start..]);
@@ -1620,7 +1623,7 @@ pub fn decode_svbzd(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
     #[cfg(feature = "std")]
     use std::vec::Vec;
 
-    let mut out = Vec::with_capacity(n);
+    let mut out = Vec::new();
     decode_svbzd_into(data, n, &mut out)?;
     Ok(out)
 }
@@ -1630,6 +1633,7 @@ pub fn decode_svbzd(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
 /// On error `out` is left at its original length.
 #[cfg(feature = "alloc")]
 pub fn decode_svbzd_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
+    crate::error::check_ctrl_len(data, n.div_ceil(4))?;
     let start = out.len();
     out.resize(start + n, 0);
     let result = decode_svbzd_to_slice(data, &mut out[start..]);
@@ -1678,7 +1682,7 @@ pub fn decode_svbzd_fused(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError
     #[cfg(feature = "std")]
     use std::vec::Vec;
 
-    let mut out = Vec::with_capacity(n);
+    let mut out = Vec::new();
     decode_svbzd_fused_into(data, n, &mut out)?;
     Ok(out)
 }
@@ -1729,7 +1733,7 @@ pub fn decode_svbzd_fused_from(
     #[cfg(feature = "std")]
     use std::vec::Vec;
 
-    let mut out = Vec::with_capacity(n);
+    let mut out = Vec::new();
     decode_svbzd_fused_from_into(data, n, initial_carry, &mut out)?;
     Ok(out)
 }

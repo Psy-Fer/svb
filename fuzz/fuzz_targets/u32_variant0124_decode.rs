@@ -2,14 +2,32 @@
 //!
 //! Input layout: [n_lo, n_hi, ...encoded_bytes...]
 //! n = u16::from_le_bytes([n_lo, n_hi]) is the declared value count.
+//!
+//! `decode`, `decode_to_slice` and `decode_into` must agree, and
+//! `decode_into` must restore the `Vec` on error.
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
+use svb::u32::U32Variant0124;
+
+#[path = "common.rs"]
+mod common;
+use common::*;
 
 fuzz_target!(|data: &[u8]| {
-    if data.len() < 2 {
+    let Some((n, rest)) = split_n(data) else {
         return;
+    };
+
+    let mut out = vec![0x5A5A_5A5Au32; n];
+    let r = U32Variant0124.decode_to_slice(rest, &mut out);
+    let expected = r.is_ok().then_some(&out[..]);
+    match U32Variant0124.decode(rest, n) {
+        Ok(v) => assert_eq!(Some(&v[..]), expected),
+        Err(_) => assert!(expected.is_none()),
     }
-    let n = u16::from_le_bytes([data[0], data[1]]) as usize;
-    let _ = svb::u32::U32Variant0124.decode(&data[2..], n);
+    let prefix = [1u32, 2, 3];
+    let mut v = prefix.to_vec();
+    let r = U32Variant0124.decode_into(rest, n, &mut v);
+    check_into(&prefix, &v, &r, expected);
 });

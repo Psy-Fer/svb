@@ -182,6 +182,7 @@ impl U32Classic {
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
         // Not `vec![0; n]`: that allocates with calloc, which measured ~30-40 ns
         // slower than malloc + fill for small n on glibc.
+        crate::error::check_ctrl_len(data, n.div_ceil(4))?;
         let mut out = Vec::new();
         out.resize(n, 0);
         dispatch_decode_classic(data, &mut out)?;
@@ -215,6 +216,7 @@ impl U32Classic {
         n: usize,
         out: &mut Vec<u32>,
     ) -> Result<(), DecodeError> {
+        crate::error::check_ctrl_len(data, n.div_ceil(4))?;
         let start = out.len();
         out.resize(start + n, 0);
         let res = dispatch_decode_classic(data, &mut out[start..]);
@@ -383,6 +385,7 @@ impl U32Variant0124 {
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u32>, DecodeError> {
         // Not `vec![0; n]`: that allocates with calloc, which measured ~30-40 ns
         // slower than malloc + fill for small n on glibc.
+        crate::error::check_ctrl_len(data, n.div_ceil(4))?;
         let mut out = Vec::new();
         out.resize(n, 0);
         dispatch_decode_0124(data, &mut out)?;
@@ -416,6 +419,7 @@ impl U32Variant0124 {
         n: usize,
         out: &mut Vec<u32>,
     ) -> Result<(), DecodeError> {
+        crate::error::check_ctrl_len(data, n.div_ceil(4))?;
         let start = out.len();
         out.resize(start + n, 0);
         let res = dispatch_decode_0124(data, &mut out[start..]);

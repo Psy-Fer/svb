@@ -66,6 +66,20 @@ impl fmt::Display for DecodeError {
 
 impl Error for DecodeError {}
 
+// Fails if `data` is shorter than the `ctrl_len`-byte control stream. The
+// `Vec` decode wrappers call this before allocating `n` values, so a large
+// `n` with a short input fails without the allocation. The decoders make the
+// same check and return the same error.
+pub(crate) fn check_ctrl_len(data: &[u8], ctrl_len: usize) -> Result<(), DecodeError> {
+    if data.len() < ctrl_len {
+        return Err(DecodeError::ControlStreamTooShort {
+            need: ctrl_len,
+            have: data.len(),
+        });
+    }
+    Ok(())
+}
+
 /// Errors that can occur when encoding into a caller-supplied byte slice.
 ///
 /// # Examples

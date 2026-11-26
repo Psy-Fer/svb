@@ -296,11 +296,13 @@ pub(super) unsafe fn decode_to_slice_classic(
     // against the declared `n`) can't be trusted to satisfy that bound.
     if decoded + 4 <= n {
         let mut padded = [0u8; 64];
-        let rem = data_bytes.len() - data_pos;
-        if rem > padded.len() {
-            return Err(DecodeError::DataTruncated { index: decoded });
-        }
-        padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
+        // The main loop takes several groups at a time, so it can also stop
+        // because it ran out of values, with every byte after the frame still
+        // in `data_bytes`. Those bytes are ignored, so copy at most what the
+        // buffer holds. tests/trailing_bytes.rs checks that the frame's
+        // remaining groups always fit.
+        let rem = (data_bytes.len() - data_pos).min(padded.len());
+        padded[..rem].copy_from_slice(&data_bytes[data_pos..data_pos + rem]);
         let mut padded_pos = 0usize;
 
         while decoded + 4 <= n {
@@ -425,11 +427,13 @@ pub(super) unsafe fn decode_to_slice_0124(data: &[u8], out: &mut [u32]) -> Resul
     // still increment, so the while condition is exhausted in finite iterations.
     if decoded + 4 <= n {
         let mut padded = [0u8; 64];
-        let rem = data_bytes.len() - data_pos;
-        if rem > padded.len() {
-            return Err(DecodeError::DataTruncated { index: decoded });
-        }
-        padded[..rem].copy_from_slice(&data_bytes[data_pos..]);
+        // The main loop takes several groups at a time, so it can also stop
+        // because it ran out of values, with every byte after the frame still
+        // in `data_bytes`. Those bytes are ignored, so copy at most what the
+        // buffer holds. tests/trailing_bytes.rs checks that the frame's
+        // remaining groups always fit.
+        let rem = (data_bytes.len() - data_pos).min(padded.len());
+        padded[..rem].copy_from_slice(&data_bytes[data_pos..data_pos + rem]);
         let mut padded_pos = 0usize;
 
         while decoded + 4 <= n {

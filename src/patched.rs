@@ -217,6 +217,13 @@ pub(crate) fn decode_into_with_scratch(
     ex_pos: &mut Vec<u32>,
     ex_val: &mut Vec<u32>,
 ) -> Result<usize, DecodeError> {
+    // Every encoding of n > 0 values is at least n + 4 bytes: the 4-byte
+    // count, then one byte per literal and at least one byte per exception
+    // (8 bytes for a single exception), so a large `n` with a short input
+    // fails here instead of after allocating `n` values.
+    if n > 0 && data.len() < n + 4 {
+        return Err(too_short(n + 4, data.len()));
+    }
     let start = out.len();
     out.resize(start + n, 0);
     let result = decode_to_slice_with_scratch(data, &mut out[start..], ex_pos, ex_val);
@@ -264,6 +271,12 @@ fn decode_to_slice_with_scratch_choosing(
         return Err(too_short(4, data.len()));
     }
     let nex = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    // Rejected before the exception arrays are decoded, which would
+    // otherwise allocate `nex` values from an untrusted count. The position
+    // check below rejects nex > n as well, but only after decoding.
+    if nex > n {
+        return Err(DecodeError::DataTruncated { index: n });
+    }
     let mut offset = 4;
     let n_literal = n.saturating_sub(nex);
 

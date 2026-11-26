@@ -104,3 +104,31 @@ path = "fuzz_targets/exzd_roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "decode_vbzk"
+path = "fuzz_targets/decode_vbzk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vbzk_roundtrip"
+path = "fuzz_targets/vbzk_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "patched_decode"
+path = "fuzz_targets/patched_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "patched_roundtrip"
+path = "fuzz_targets/patched_roundtrip.rs"
+test = false
+doc = false
+bench = false

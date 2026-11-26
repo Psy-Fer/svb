@@ -167,6 +167,7 @@ impl Svb16 {
     pub fn decode(&self, data: &[u8], n: usize) -> Result<Vec<u16>, DecodeError> {
         // Not `vec![0; n]`: that allocates with calloc, which measured ~30-40 ns
         // slower than malloc + fill for small n on glibc.
+        crate::error::check_ctrl_len(data, n.div_ceil(8))?;
         let mut out = Vec::new();
         out.resize(n, 0);
         dispatch_decode(data, &mut out)?;
@@ -195,6 +196,7 @@ impl Svb16 {
         n: usize,
         out: &mut Vec<u16>,
     ) -> Result<(), DecodeError> {
+        crate::error::check_ctrl_len(data, n.div_ceil(8))?;
         let start = out.len();
         out.resize(start + n, 0);
         let res = dispatch_decode(data, &mut out[start..]);

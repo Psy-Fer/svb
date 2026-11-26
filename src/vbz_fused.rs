@@ -31,6 +31,7 @@ pub fn decode_from_into(
     initial: i16,
     out: &mut Vec<i16>,
 ) -> Result<(), DecodeError> {
+    crate::error::check_ctrl_len(data, n.div_ceil(8))?;
     let start = out.len();
     out.resize(start + n, 0);
     let result = decode_from_to_slice(data, initial, &mut out[start..]);
