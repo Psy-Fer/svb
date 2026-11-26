@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `delta::decode`, `decode_into` and the other `Vec` decode functions copy the deltas into the output and decode them in place, which makes them about 8-11% slower than 0.3.1 for `i16`. `zigzag::decode` and `decode_into` are now a plain loop that the compiler vectorizes, measured as fast as the 0.3.1 SSE2 path.
 - The SIMD encoders, including the fused SVB-ZD encoders, no longer reserve 16 bytes of padding. Their stores never go past `max_encoded_len` (`svbzd_max_encoded_len` for SVB-ZD), and a canary test checks this for every encode kernel.
 
+### Removed
+
+- `encode_vbz2`, `decode_vbz2` and `decode_vbz2_into`, deprecated since 0.1.0. Use VBZ-K (`encode_vbzk`, `decode_vbzk_*`) for parallel decode. The interleaved 2-chain decoder they used is gone too; `delta::decode_2chain` and `delta::mid_carry` remain.
+
 ### Fixed
 
 - Building with `simd-auto` and without `std` (`--no-default-features --features alloc,simd-auto`) failed on x86_64, because the VBZ and SVB-ZD fused decoders called `is_x86_feature_detected!` without checking for `std`. They now fall back to scalar in that configuration, as the other decoders do. CI now tests this configuration.

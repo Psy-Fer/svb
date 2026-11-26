@@ -13,7 +13,6 @@ At 8192 i16 elements with `simd-avx2`, each stage measured in isolation:
 | SVB16 (mixed) | 9.24 GB/s | 9.42 GB/s |
 | **VBZ (combined, 3-pass)** | **5.70 GB/s** | **2.42 GB/s** |
 | **VBZ fused decode** | N/A | **3.68 GB/s** |
-| **VBZ2 fused 2-chain decode** | N/A | **5.62 GB/s** |
 
 Zigzag is essentially free (pure bitwise ops, LLVM auto-vectorizes). Delta encode expresses adjacent differences as two overlapping slice views, which LLVM auto-vectorizes to around 29 GB/s with no unsafe code. Delta decode uses an explicit SIMD prefix-sum (SSE2/NEON); the serial carry chain between 8-element blocks limits single-stream throughput to around 3.70 GB/s, essentially the theoretical ceiling for this algorithm.
 
@@ -32,79 +31,46 @@ during the delta carry-chain stall (~8 cycles), hiding nearly all of their cost.
 ceiling (3.70 GB/s): SVB16 and zigzag are effectively free, and the delta carry
 chain is the only remaining bottleneck.
 
-## VBZ2: format-extension 2-chain decode
+## Two carry chains in one thread (VBZ2, removed)
 
-`encode_vbz2` / `decode_vbz2` extend the VBZ format with a 6-byte header that
-enables a two-chain fused decode with no pre-scan required:
-
-```
-[mid_carry: i16 LE][mid_data_offset: u32 LE][standard VBZ payload]
-```
-
-`mid_carry` is `samples[n_half - 1]`, the decoded sample at the chunk midpoint,
-i.e., the prefix sum of all deltas before the midpoint. `mid_data_offset` is the
-count of data bytes consumed by the first `n_half` elements (sum of `8 +
-popcnt(ctrl_byte)` over the first half of control bytes). Both are computed in
-O(n) during encode with negligible cost.
-
-At decode time the payload is split into two independent half-streams. Two carry
-chains run interleaved in one SIMD loop: the CPU's out-of-order engine overlaps
-chain A's carry-extract latency with chain B's prefix-sum arithmetic. Port-5
-usage is unchanged from single-chain (10 ops per 16 elements), so there is no
-throughput regression at any size; the gain accumulates only where the carry
-latency was the limiting factor.
-
-| | decode throughput |
-|---|---|
-| `decode_vbz` (3 separate passes) | 2.42 GB/s |
-| `decode_vbz_fused` (single SIMD pass) | 3.68 GB/s |
-| `decode_vbz2` (format-extension 2-chain) | **5.62 GB/s** |
-
-**1.53× over single-chain fused** at 8192 elements. The 2-chain interleaves two
-carry chains in one SIMD loop; the CPU's out-of-order engine overlaps chain A's
-carry-extract latency with chain B's prefix-sum arithmetic, hiding most of the
-serial dependency cost.
-
-The real payoff is **multi-threaded decoding**: with `mid_data_offset` known
-up-front, both half-streams are independent and can run on separate cores. The
-format overhead is 6 bytes per chunk regardless of chunk size, negligible for
-any practical payload.
+Versions 0.1 to 0.3 had a VBZ2 format: standard VBZ with a 6-byte header
+holding the sample and data offset at the midpoint. Its decoder ran the two
+halves as two interleaved carry chains in one SIMD loop, so the out-of-order
+engine could overlap one chain's carry-extract latency with the other chain's
+prefix sum. At 8192 elements that reached 5.62 GB/s on one thread, 1.53x the
+single-chain fused decoder. VBZ2 was deprecated from the first release in
+favour of VBZ-K and removed in 0.4.0. VBZ-K decodes its sub-streams with the single-chain
+decoder, so the interleaving trick is not currently used anywhere; it would
+apply to VBZ-K with k=2 if a kernel were written for it.
 
 ## Caller-side parallel decode
 
 `decode_vbz_fused_from_into(data, n, initial_carry, out)` exposes the single-chain
-fused decoder with a caller-supplied initial carry, making it possible to decode
-any half-stream independently. A caller that manages its own thread pool simply
-splits the VBZ2 payload and dispatches both halves concurrently:
+fused decoder with a caller-supplied initial carry, so any part of a VBZ stream
+can be decoded on its own once the sample before it and the position of its
+data are known (see the `decode_vbz_fused_from` example). VBZ-K stores both
+for each sub-stream. A caller with its own thread pool can split the stream
+and decode the parts concurrently:
 
 ```rust
 let (out_a, out_b) = std::thread::scope(|s| {
     let ha = s.spawn(|| decode_vbz_fused_from(&stream_a, n_half, 0));
-    let hb = s.spawn(|| decode_vbz_fused_from(&stream_b, n - n_half, mid_carry));
+    let hb = s.spawn(|| decode_vbz_fused_from(&stream_b, n - n_half, carry));
     (ha.join().unwrap(), hb.join().unwrap())
 });
 ```
 
-Decoding 64 × 8192-element chunks in parallel (64 half-A streams on thread 1,
-64 half-B streams on thread 2); run locally for hardware-specific numbers:
-
-| | decode throughput |
-|---|---|
-| `decode_vbz_fused` (single chain, 1 thread) | 1.84 Gelem/s |
-| `decode_vbz2` (2-chain interleaved, 1 thread) | 2.81 Gelem/s |
-| `decode_vbz_fused_from_into` (2 threads, batch of 64) | hardware-dependent |
-
 Multi-threaded throughput is highly sensitive to CPU core count, L2/L3 topology,
-and scheduler behaviour. The single-thread numbers above are from GitHub Actions
-CI (Azure x86-64). For two-thread measurements run the `vbz2_parallel` criterion
-benchmark locally: `cargo bench --features simd-avx2 --bench decode -- vbz2_parallel`.
+and scheduler behaviour, so it is not measured in CI. Run the `vbzk_parallel`
+criterion benchmark locally for hardware-specific numbers:
+`cargo bench --features simd-avx2 --bench decode -- vbzk_parallel`.
 With distinct chunks from independent nanopore reads (the realistic production case)
-the two streams share no cache lines and the speedup approaches 2×.
+the streams share no cache lines and the speedup approaches the thread count.
 
 ## VBZ-K: generalised K-stream parallel decode
 
-`encode_vbzk(samples, k)` / `decode_vbzk_parallel_into(data, n, out)` generalise
-VBZ2 to K independent sub-streams.  The header stores K−1 split points:
+`encode_vbzk(samples, k)` / `decode_vbzk_parallel_into(data, n, out)` split a
+VBZ stream into K independent sub-streams. The header stores K−1 split points:
 
 ```
 [k: u8][(carry_i: i16 LE, data_offset_i: u32 LE) for i in 1..k][VBZ payload]
@@ -173,12 +139,12 @@ With K sub-chunks, all stages of the VBZ pipeline (delta, zigzag, SVB16) can be 
 | Sub-chunks | decode throughput | vs. current |
 |---|---|---|
 | 1 (current VBZ) | 2.42 GB/s | N/A |
-| 2 (single-threaded 2-chain) | 5.62 GB/s | 2.3× |
+| 2 (one thread, interleaved chains; VBZ2, removed) | 5.62 GB/s | 2.3× |
 | 2 cores | ~11 GB/s | ~4.5× |
 | 4 cores | ~22 GB/s | ~9× |
 | 8 cores | ~44 GB/s | ~18× |
 
-The format change is: store K−1 carry values (K−1 × 2 bytes) in the chunk header and split the encoded payload into K equal sub-streams. Compression ratio is unchanged. The `svb` crate provides `decode_2chain` and `mid_carry` as the building blocks.
+The format change is: store K−1 carry values (K−1 × 2 bytes) in the chunk header and split the encoded payload into K equal sub-streams. Compression ratio is unchanged. VBZ-K is this format. `delta::decode_2chain` and `delta::mid_carry` remain as building blocks for the interleaved-chain decode.
 
 ## SVB-ZD pipeline
 

@@ -360,38 +360,34 @@ pub fn decode_vbz_fused_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), Dec
     vbz_fused::decode_from_to_slice(data, 0, out)
 }
 
-/// Decode a VBZ half-stream starting from an arbitrary `initial_carry` value.
+/// Decode a VBZ stream whose running sum starts from `initial_carry`.
 ///
-/// This is the building block for caller-side parallel decode of VBZ2 chunks.
-/// Given a VBZ2-encoded payload, parse the 6-byte header for `mid_carry` and
-/// `mid_data_offset`, split the SVB16 body into two independent sub-streams,
-/// then decode each on a separate thread:
+/// This decodes part of a longer VBZ stream: `initial_carry` is the last
+/// sample before the part starts. VBZ-K uses it to decode its sub-streams
+/// independently. A stream can be split after any multiple of 8 samples: each
+/// control byte covers 8 samples, and their data takes 8 bytes plus one for
+/// each set bit.
 ///
 /// ```
-/// # use svb::{encode_vbz2, decode_vbz_fused_from_into};
-/// let n = 64usize;
-/// let samples: Vec<i16> = (0..n as i16).collect();
-/// let encoded = encode_vbz2(&samples);
+/// let samples: Vec<i16> = (0..64).map(|i| i * 37 - 1000).collect();
+/// let n = samples.len();
+/// let encoded = svb::encode_vbz(&samples);
 ///
-/// let mid_carry      = i16::from_le_bytes([encoded[0], encoded[1]]);
-/// let mid_data_offset = u32::from_le_bytes([encoded[2], encoded[3], encoded[4], encoded[5]]) as usize;
-/// let svb            = &encoded[6..];
-/// let n_half         = (n / 2) & !7;
-/// let ctrl_len       = n.div_ceil(8);
-/// let ctrl_half      = n_half / 8;
+/// let n_half = 32;
+/// let (ctrl, data) = encoded.split_at(n.div_ceil(8));
+/// let (ctrl_a, ctrl_b) = ctrl.split_at(n_half / 8);
+/// let data_a_len: usize = ctrl_a.iter().map(|c| 8 + c.count_ones() as usize).sum();
+/// let (data_a, data_b) = data.split_at(data_a_len);
+/// let stream_a = [ctrl_a, data_a].concat();
+/// let stream_b = [ctrl_b, data_b].concat();
 ///
-/// // Reassemble each half as a flat [ctrl bytes | data bytes] stream.
-/// let mut stream_a = svb[..ctrl_half].to_vec();
-/// stream_a.extend_from_slice(&svb[ctrl_len..ctrl_len + mid_data_offset]);
-/// let mut stream_b = svb[ctrl_half..ctrl_len].to_vec();
-/// stream_b.extend_from_slice(&svb[ctrl_len + mid_data_offset..]);
-///
-/// let mut out_a = Vec::new();
-/// let mut out_b = Vec::new();
-/// // These two calls are independent and can run on separate threads:
-/// decode_vbz_fused_from_into(&stream_a, n_half,      0,         &mut out_a).unwrap();
-/// decode_vbz_fused_from_into(&stream_b, n - n_half,  mid_carry, &mut out_b).unwrap();
-/// // out_a ++ out_b == samples
+/// // The second half starts from the last sample of the first. If that value
+/// // is stored with the data, as VBZ-K does, the halves can be decoded on
+/// // separate threads.
+/// let carry = samples[n_half - 1];
+/// let a = svb::decode_vbz_fused_from(&stream_a, n_half, 0).unwrap();
+/// let b = svb::decode_vbz_fused_from(&stream_b, n - n_half, carry).unwrap();
+/// assert_eq!([a, b].concat(), samples);
 /// ```
 #[cfg(feature = "alloc")]
 pub fn decode_vbz_fused_from(
@@ -404,9 +400,9 @@ pub fn decode_vbz_fused_from(
     Ok(out)
 }
 
-/// Decode a VBZ half-stream starting from `initial_carry`, appending to `out`.
+/// Decode a VBZ stream starting from `initial_carry`, appending to `out`.
 ///
-/// See [`decode_vbz_fused_from`] for the split-stream pattern.
+/// See [`decode_vbz_fused_from`] for how to split a stream.
 #[cfg(feature = "alloc")]
 pub fn decode_vbz_fused_from_into(
     data: &[u8],
@@ -417,10 +413,10 @@ pub fn decode_vbz_fused_from_into(
     vbz_fused::decode_from_into(data, n, initial_carry, out)
 }
 
-/// Decode a VBZ half-stream starting from `initial_carry` into `out`, which
+/// Decode a VBZ stream starting from `initial_carry` into `out`, which
 /// holds `out.len()` samples. On error the contents of `out` are unspecified.
 ///
-/// See [`decode_vbz_fused_from`] for the split-stream pattern. Writing each
+/// See [`decode_vbz_fused_from`] for how to split a stream. Writing each
 /// half into its own part of one output slice (for example with
 /// `split_at_mut`) avoids concatenating the halves afterwards.
 #[cfg(feature = "alloc")]
@@ -430,100 +426,6 @@ pub fn decode_vbz_fused_from_to_slice(
     out: &mut [i16],
 ) -> Result<(), DecodeError> {
     vbz_fused::decode_from_to_slice(data, initial_carry, out)
-}
-
-// ── VBZ2 format ───────────────────────────────────────────────────────────────
-//
-// VBZ2 adds a 6-byte header to the standard VBZ (SVB16) layout that stores
-// the midpoint carry value and data-byte offset, enabling two-chain parallel
-// decode without a pre-scan pass.
-//
-// Header layout (little-endian):
-//   [0..2]  mid_carry:        i16  — samples[n_half - 1]
-//   [2..6]  mid_data_offset:  u32  — SVB16 data bytes consumed by first n_half elements
-//   [6..]   standard SVB16 layout: ctrl_len ctrl bytes + data bytes
-//
-// where n_half = (n / 2) & !7  (midpoint rounded down to multiple of 8).
-
-/// Encode samples to VBZ2 format (standard VBZ with a 6-byte header enabling 2-chain decode).
-///
-/// The 6-byte header stores `mid_carry` (2 bytes) and `mid_data_offset` (4 bytes),
-/// allowing `decode_vbz2` to skip the pre-scan and decode both halves in parallel.
-///
-/// **Deprecated in favour of [`encode_vbzk`].** VBZ2 is a fixed-k=2 predecessor;
-/// VBZ-K generalises it to any number of sub-streams and uses a different header layout.
-/// The two formats are **not interchangeable** — do not mix encoders and decoders.
-#[cfg(feature = "alloc")]
-#[deprecated(since = "0.1.0", note = "use encode_vbzk(samples, 2) instead")]
-pub fn encode_vbz2(samples: &[i16]) -> Vec<u8> {
-    #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
-    #[cfg(feature = "std")]
-    use std::vec::Vec;
-
-    let n = samples.len();
-    if n == 0 {
-        // 6-byte header with zeroes + empty body
-        return vec![0u8; 6];
-    }
-    let n_half = (n / 2) & !7;
-    // mid_carry = decoded value at position n_half - 1 = prefix sum of all deltas up to n_half.
-    // Since samples[k] = sum(deltas[0..=k]) with initial=0, samples[n_half-1] = mid_carry.
-    let mid_carry: i16 = if n_half > 0 { samples[n_half - 1] } else { 0 };
-
-    let svb = encode_vbz(samples);
-    let ctrl_len = n.div_ceil(8);
-    let ctrl_half = n_half / 8;
-    let ctrl = &svb[..ctrl_len];
-    let mut mid_data_offset: u32 = 0;
-    for &cb in &ctrl[..ctrl_half] {
-        mid_data_offset += 8 + cb.count_ones();
-    }
-
-    let mut out = Vec::with_capacity(6 + svb.len());
-    out.extend_from_slice(&mid_carry.to_le_bytes());
-    out.extend_from_slice(&mid_data_offset.to_le_bytes());
-    out.extend_from_slice(&svb);
-    out
-}
-
-/// Decode VBZ2-encoded data (format produced by `encode_vbz2`).
-#[cfg(feature = "alloc")]
-#[deprecated(
-    since = "0.1.0",
-    note = "use decode_vbzk / decode_vbzk_parallel_into instead"
-)]
-#[allow(deprecated)]
-pub fn decode_vbz2(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
-    #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
-    #[cfg(feature = "std")]
-    use std::vec::Vec;
-
-    let mut out = Vec::new();
-    decode_vbz2_into(data, n, &mut out)?;
-    Ok(out)
-}
-
-/// Decode VBZ2-encoded data into an existing Vec (avoids allocation if capacity is sufficient).
-#[cfg(feature = "alloc")]
-#[deprecated(
-    since = "0.1.0",
-    note = "use decode_vbzk_into / decode_vbzk_parallel_into instead"
-)]
-pub fn decode_vbz2_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
-    if n == 0 {
-        return Ok(());
-    }
-    if data.len() < 6 {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: 6,
-            have: data.len(),
-        });
-    }
-    let mid_carry = i16::from_le_bytes([data[0], data[1]]);
-    let mid_data_offset = u32::from_le_bytes([data[2], data[3], data[4], data[5]]) as usize;
-    vbz_fused::decode_2chain_into(&data[6..], n, mid_carry, mid_data_offset, out)
 }
 
 #[cfg(all(test, feature = "alloc"))]
@@ -653,142 +555,9 @@ mod vbz_tests {
     }
 }
 
-#[cfg(all(test, feature = "alloc"))]
-#[allow(deprecated)]
-mod vbz2_tests {
-    use super::*;
-    #[cfg(not(feature = "std"))]
-    use alloc::vec;
-    #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
-
-    /// Split a VBZ2 payload into two independent [ctrl|data] sub-streams.
-    fn split_vbz2_streams(encoded: &[u8], n: usize) -> (i16, Vec<u8>, Vec<u8>, usize, usize) {
-        let mid_carry = i16::from_le_bytes([encoded[0], encoded[1]]);
-        let mid_data_offset =
-            u32::from_le_bytes([encoded[2], encoded[3], encoded[4], encoded[5]]) as usize;
-        let svb = &encoded[6..];
-        let n_half = (n / 2) & !7;
-        let ctrl_len = n.div_ceil(8);
-        let ctrl_half = n_half / 8;
-        let mut stream_a = svb[..ctrl_half].to_vec();
-        stream_a.extend_from_slice(&svb[ctrl_len..ctrl_len + mid_data_offset]);
-        let mut stream_b = svb[ctrl_half..ctrl_len].to_vec();
-        stream_b.extend_from_slice(&svb[ctrl_len + mid_data_offset..]);
-        (mid_carry, stream_a, stream_b, n_half, n - n_half)
-    }
-
-    #[test]
-    fn roundtrip_basic() {
-        let samples: Vec<i16> = vec![100, 101, 103, 102, 98, 95, 97, 100];
-        let encoded = encode_vbz2(&samples);
-        let decoded = decode_vbz2(&encoded, samples.len()).unwrap();
-        assert_eq!(decoded, samples);
-    }
-
-    #[test]
-    fn roundtrip_large() {
-        let samples: Vec<i16> = (0..8192)
-            .map(|i| ((i % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
-            .collect();
-        let encoded = encode_vbz2(&samples);
-        let decoded = decode_vbz2(&encoded, samples.len()).unwrap();
-        assert_eq!(decoded, samples);
-    }
-
-    #[test]
-    fn matches_vbz_output() {
-        // VBZ2 must produce the same decoded output as standard VBZ.
-        let samples: Vec<i16> = (0..1024)
-            .map(|i| (i as i16 * 13).wrapping_sub(500))
-            .collect();
-        let decoded_vbz = decode_vbz(&encode_vbz(&samples), samples.len()).unwrap();
-        let decoded_vbz2 = decode_vbz2(&encode_vbz2(&samples), samples.len()).unwrap();
-        assert_eq!(decoded_vbz, decoded_vbz2);
-    }
-
-    #[test]
-    fn roundtrip_empty() {
-        let encoded = encode_vbz2(&[]);
-        let decoded = decode_vbz2(&encoded, 0).unwrap();
-        assert!(decoded.is_empty());
-    }
-
-    #[test]
-    fn roundtrip_small_n() {
-        // n < 16 falls back to single-chain
-        let samples: Vec<i16> = vec![10, 20, 15, 5, -10, -20, -5, 0, 10, 20, 15, 5, -10, -20, -5];
-        let encoded = encode_vbz2(&samples);
-        let decoded = decode_vbz2(&encoded, samples.len()).unwrap();
-        assert_eq!(decoded, samples);
-    }
-
-    #[test]
-    fn roundtrip_extremes() {
-        let samples = vec![
-            i16::MIN,
-            i16::MAX,
-            0,
-            -1,
-            1,
-            i16::MIN,
-            i16::MAX,
-            0,
-            i16::MIN,
-            i16::MAX,
-            0,
-            -1,
-            1,
-            i16::MIN,
-            i16::MAX,
-            0,
-        ];
-        let encoded = encode_vbz2(&samples);
-        let decoded = decode_vbz2(&encoded, samples.len()).unwrap();
-        assert_eq!(decoded, samples);
-    }
-
-    #[test]
-    fn parallel_decode_correctness() {
-        // Verify that a caller can split a VBZ2 payload and decode both halves
-        // independently (on separate threads) and get the same result as decode_vbz2.
-        let n = 8192usize;
-        #[cfg(feature = "std")]
-        use std::vec::Vec;
-        let samples: Vec<i16> = (0..n)
-            .map(|i| {
-                ((i as i32 % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3)
-            })
-            .collect();
-        let encoded = encode_vbz2(&samples);
-        let (mid_carry, stream_a, stream_b, n_a, n_b) = split_vbz2_streams(&encoded, n);
-
-        // Sequential version of the caller-side split (baseline for comparison).
-        let out_a = decode_vbz_fused_from(&stream_a, n_a, 0).unwrap();
-        let out_b = decode_vbz_fused_from(&stream_b, n_b, mid_carry).unwrap();
-        let mut combined = out_a;
-        combined.extend_from_slice(&out_b);
-        assert_eq!(combined, samples);
-
-        // Threaded version using std::thread::scope — the two calls are independent
-        // and can safely run concurrently because they write into separate Vecs.
-        #[cfg(feature = "std")]
-        {
-            let (out_a, out_b) = std::thread::scope(|s| {
-                let ha = s.spawn(|| decode_vbz_fused_from(&stream_a, n_a, 0).unwrap());
-                let hb = s.spawn(|| decode_vbz_fused_from(&stream_b, n_b, mid_carry).unwrap());
-                (ha.join().unwrap(), hb.join().unwrap())
-            });
-            let mut combined = out_a;
-            combined.extend_from_slice(&out_b);
-            assert_eq!(combined, samples);
-        }
-    }
-}
-
 // ── VBZ-K format ──────────────────────────────────────────────────────────────
 //
-// Generalisation of VBZ2 to K independent sub-streams.
+// K independent sub-streams, each decodable on its own thread.
 // Header: [k: u8][(carry_i: i16, data_offset_i: u32) for i in 1..k][VBZ payload]
 // n_sub = (n / k) & !7; last sub-chunk = n - (k-1)*n_sub
 
@@ -1083,9 +852,6 @@ pub fn decode_vbzk_parallel(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeErr
 /// maintaining a persistent thread pool and dispatching sub-streams via
 /// [`decode_vbz_fused_from_into`] — the `vbzk_parallel` benchmark demonstrates the
 /// pattern (pre-split each chunk's ctrl/data slices, send to workers, collect).
-///
-/// **Format note:** VBZ-K and VBZ2 use different headers and are not interchangeable.
-/// For any new format work, use VBZ-K (`encode_vbzk` / `decode_vbzk_*`).
 #[cfg(all(feature = "alloc", feature = "std"))]
 pub fn decode_vbzk_parallel_into(
     data: &[u8],

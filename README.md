@@ -92,7 +92,6 @@ Benchmarked with `simd-auto` on an Intel i7-11800H (AVX2), 8192-element slices:
 | VBZ encode (delta + zigzag + SVB16) | 3.14 GB/s | N/A |
 | VBZ decode (3-pass) | 1.88 GB/s | N/A |
 | VBZ decode fused (single SIMD pass) | 2.77 GB/s | N/A |
-| VBZ2 decode fused (2-chain, single thread) | **3.00 GB/s** | N/A |
 | U32Classic decode | 4.07 GB/s | 1.67 GB/s |
 | U32Classic encode | 2.08 GB/s | 1.09 GB/s |
 | U64Coder1248 decode | 1.90 GB/s | 1.32 GB/s |

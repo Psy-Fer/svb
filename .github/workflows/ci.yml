@@ -1,9 +1,20 @@
 name: CI
 
 on:
+  # Every branch, so work in progress is tested before a PR is opened.
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
+  # Manual run on any branch: Actions -> CI -> Run workflow, or
+  # `gh workflow run CI --ref <branch>`. GitHub only offers this once this
+  # file is on the default branch.
+  workflow_dispatch:
+
+# A branch with an open PR gets both a push and a pull_request run for the
+# same commit; keep only the newest run per branch.
+concurrency:
+  group: ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
