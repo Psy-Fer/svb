@@ -1490,9 +1490,82 @@ pub fn encode_exzd(samples: &[i16]) -> Vec<u8> {
 /// Encode `i16` samples to ex-zd, appending the result to `out`.
 #[cfg(feature = "alloc")]
 pub fn encode_exzd_into(samples: &[i16], out: &mut Vec<u8>) {
-    let nin = samples.len();
-    let q = quantize::find_qts(samples, 5);
+    let (q, zd) = exzd_transform(samples);
+    let mut header = [0u8; EXZD_HEADER_LEN];
+    write_exzd_header(samples.len(), q, &mut header);
+    out.extend_from_slice(&header);
+    if let Some((&first, rest)) = zd.split_first() {
+        out.extend_from_slice(&first.to_le_bytes());
+        patched::encode_into(rest, out);
+    }
+}
 
+/// Worst-case ex-zd frame size in bytes for `n` samples: the 10-byte header,
+/// then for `n > 0` the 2-byte first value and
+/// [`patched::max_encoded_len(n - 1)`](patched::max_encoded_len).
+///
+/// Use this to size the buffer for [`encode_exzd_to_slice`]. The worst case
+/// is about 8.5 bytes per sample, reached when every zigzag-delta value is an
+/// exception. The real nanopore reads in `tests/vectors` encode to about
+/// 1.03 bytes per sample, so this bound is much larger than the usual output.
+///
+/// ```
+/// assert_eq!(svb::exzd_max_encoded_len(0), 10);
+/// assert_eq!(svb::exzd_max_encoded_len(1), 10 + 2 + 12);
+/// ```
+#[cfg(feature = "alloc")]
+pub const fn exzd_max_encoded_len(n: usize) -> usize {
+    if n == 0 {
+        EXZD_HEADER_LEN
+    } else {
+        (EXZD_HEADER_LEN + 2).saturating_add(patched::max_encoded_len(n - 1))
+    }
+}
+
+/// Encode `i16` samples to ex-zd into the start of `out` and return the
+/// number of bytes written.
+///
+/// `out` must be at least [`exzd_max_encoded_len(samples.len())`](exzd_max_encoded_len)
+/// bytes long, otherwise [`EncodeError::OutputTooSmall`] is returned and `out`
+/// is not modified. The check is against the worst case, so a shorter slice is
+/// rejected even if the actual encoded bytes would have fitted. Bytes in `out`
+/// after the returned length may be overwritten.
+///
+/// This writes the frame directly into `out`, but the qts, delta and zigzag
+/// passes still allocate temporary buffers internally.
+///
+/// ```
+/// let samples = [100i16, -100, 0, 10000, 3442];
+/// let mut buf = vec![0u8; svb::exzd_max_encoded_len(samples.len())];
+/// let len = svb::encode_exzd_to_slice(&samples, &mut buf).unwrap();
+/// assert_eq!(&buf[..len], svb::encode_exzd(&samples));
+/// ```
+#[cfg(feature = "alloc")]
+pub fn encode_exzd_to_slice(samples: &[i16], out: &mut [u8]) -> Result<usize, EncodeError> {
+    let need = exzd_max_encoded_len(samples.len());
+    if out.len() < need {
+        return Err(EncodeError::OutputTooSmall {
+            need,
+            have: out.len(),
+        });
+    }
+    let (q, zd) = exzd_transform(samples);
+    let (header, rest) = out.split_at_mut(EXZD_HEADER_LEN);
+    write_exzd_header(samples.len(), q, header);
+    let Some((&first, zd_rest)) = zd.split_first() else {
+        return Ok(EXZD_HEADER_LEN);
+    };
+    rest[..2].copy_from_slice(&first.to_le_bytes());
+    // `rest[2..]` holds patched::max_encoded_len(n - 1) bytes, checked above.
+    let len = patched::encode_to_slice(zd_rest, &mut rest[2..])
+        .expect("buffer sized by exzd_max_encoded_len");
+    Ok(EXZD_HEADER_LEN + 2 + len)
+}
+
+// qts shift, delta and zigzag. Returns the shift and the zigzag-delta values.
+#[cfg(feature = "alloc")]
+fn exzd_transform(samples: &[i16]) -> (u8, Vec<u16>) {
+    let q = quantize::find_qts(samples, 5);
     let shifted_storage;
     let shifted: &[i16] = if q == 0 {
         samples
@@ -1500,18 +1573,16 @@ pub fn encode_exzd_into(samples: &[i16], out: &mut Vec<u8>) {
         shifted_storage = quantize::apply_shift(samples, q);
         &shifted_storage
     };
-
     let deltas = delta::encode(shifted);
-    let zd = zigzag::encode(&deltas);
+    (q, zigzag::encode(&deltas))
+}
 
-    out.extend_from_slice(&EXZD_VERSION.to_le_bytes());
-    out.extend_from_slice(&(nin as u64).to_le_bytes());
-    out.extend_from_slice(&q.to_le_bytes());
-
-    if nin > 0 {
-        out.extend_from_slice(&zd[0].to_le_bytes());
-        patched::encode_into(&zd[1..], out);
-    }
+// Writes the version, sample count and shift into `out[..EXZD_HEADER_LEN]`.
+#[cfg(feature = "alloc")]
+fn write_exzd_header(nin: usize, q: u8, out: &mut [u8]) {
+    out[0] = EXZD_VERSION;
+    out[1..9].copy_from_slice(&(nin as u64).to_le_bytes());
+    out[9] = q;
 }
 
 /// Decode ex-zd bytes into `i16` samples.
@@ -2224,6 +2295,51 @@ mod exzd_tests {
             decoder.decode_to_slice(&enc, &mut out).unwrap();
             assert_eq!(out, samples, "reused decoder n={n}");
         }
+    }
+
+    #[test]
+    fn encode_to_slice_matches_vec_encode() {
+        for samples in slice_cases() {
+            let n = samples.len();
+            let max = exzd_max_encoded_len(n);
+            let enc = crate::test_util::encode_checked(&samples, max, |s, o| {
+                encode_exzd_to_slice(s, o).unwrap()
+            });
+            assert_eq!(enc, encode_exzd(&samples), "n={n}");
+            assert_eq!(decode_exzd(&enc).unwrap(), samples, "n={n}");
+        }
+    }
+
+    #[test]
+    fn encode_to_slice_worst_case_fits() {
+        // Alternating extremes make every zigzag-delta value an exception
+        // with a large residual, the largest output the encoder produces.
+        for n in [1usize, 2, 3, 4, 5, 8, 9, 63, 64, 65, 1000] {
+            let samples: Vec<i16> = (0..n)
+                .map(|i| if i % 2 == 0 { i16::MIN } else { i16::MAX })
+                .collect();
+            let enc =
+                crate::test_util::encode_checked(&samples, exzd_max_encoded_len(n), |s, o| {
+                    encode_exzd_to_slice(s, o).unwrap()
+                });
+            assert_eq!(decode_exzd(&enc).unwrap(), samples, "n={n}");
+        }
+    }
+
+    #[test]
+    fn encode_to_slice_too_small() {
+        for samples in [vec![], vec![1i16, 2, 3, 4, 5]] {
+            let need = exzd_max_encoded_len(samples.len());
+            let mut buf = vec![0xA5u8; need - 1];
+            let err = encode_exzd_to_slice(&samples, &mut buf).unwrap_err();
+            assert!(
+                matches!(err, EncodeError::OutputTooSmall { need: nd, have } if nd == need && have == need - 1),
+                "{err:?}"
+            );
+            assert!(buf.iter().all(|&b| b == 0xA5), "out was modified");
+        }
+        assert_eq!(exzd_max_encoded_len(0), 10);
+        assert_eq!(exzd_max_encoded_len(5), 10 + 2 + 12 + 2 * (1 + 4 * 4));
     }
 
     #[test]

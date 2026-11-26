@@ -77,6 +77,30 @@ once the buffers have grown to the largest frame seen. On error the `_into`
 functions leave the `Vec` at its original length; the contents of a slice are
 unspecified.
 
+## Encoding into your own buffer
+
+`encode_exzd_to_slice` writes the frame into the start of a caller-supplied
+`&mut [u8]` and returns the number of bytes written. The slice must be at
+least `exzd_max_encoded_len(samples.len())` bytes, otherwise
+`EncodeError::OutputTooSmall` is returned and the slice is left unchanged.
+
+```rust
+use svb::{encode_exzd, encode_exzd_to_slice, exzd_max_encoded_len};
+
+let samples = [100i16, 101, 103, 102, 98];
+let mut buf = vec![0u8; exzd_max_encoded_len(samples.len())];
+let len = encode_exzd_to_slice(&samples, &mut buf).unwrap();
+assert_eq!(&buf[..len], encode_exzd(&samples));
+```
+
+`exzd_max_encoded_len` assumes every zigzag-delta value is an exception, which
+is about 8.5 bytes per sample. The real nanopore reads in `tests/vectors`
+encode to about 1.03 bytes per sample, so the buffer is much larger than the
+output. If that
+matters, use `encode_exzd_into`, which sizes its output from the actual
+exception count. Both functions still allocate temporary buffers for the qts,
+delta and zigzag passes.
+
 ## Composable primitives
 
 The qts and patched/exception stages are exposed independently, matching [delta and zigzag](transforms.md):

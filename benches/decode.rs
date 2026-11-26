@@ -3,7 +3,7 @@ use streamvbyte64::Coder as _;
 use svb::{
     ExzdDecoder, decode_exzd_fused_into, decode_exzd_into, decode_svbzd, decode_svbzd_fused_into,
     decode_vbz, decode_vbz_fused_from_into, decode_vbz_fused_into, delta, encode_exzd,
-    encode_svbzd, encode_vbz, encode_vbzk,
+    encode_exzd_into, encode_svbzd, encode_vbz, encode_vbzk,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
@@ -1122,6 +1122,28 @@ fn bench_exzd_encode(c: &mut Criterion) {
     g.finish();
 }
 
+// encode_exzd_into and encode_exzd_to_slice with a reused output buffer.
+fn bench_exzd_encode_reuse(c: &mut Criterion) {
+    let mut g = c.benchmark_group("exzd/encode_reuse");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let samples = vbz_i16_samples(n);
+        let mut v = Vec::new();
+        g.bench_with_input(BenchmarkId::new("into", n), &samples, |b, s| {
+            b.iter(|| {
+                v.clear();
+                encode_exzd_into(s, &mut v);
+                black_box(v.len())
+            });
+        });
+        let mut buf = vec![0u8; svb::exzd_max_encoded_len(n)];
+        g.bench_with_input(BenchmarkId::new("to_slice", n), &samples, |b, s| {
+            b.iter(|| black_box(svb::encode_exzd_to_slice(s, &mut buf).unwrap()));
+        });
+    }
+    g.finish();
+}
+
 fn bench_exzd_decode(c: &mut Criterion) {
     let mut g = c.benchmark_group("exzd/decode");
     for &n in SIZES {
@@ -1386,6 +1408,7 @@ criterion_group!(
     bench_svbzd_fused,
     bench_svbzd_fused_to_slice,
     bench_exzd_encode,
+    bench_exzd_encode_reuse,
     bench_exzd_decode,
     bench_exzd_fused,
     bench_exzd_to_slice,

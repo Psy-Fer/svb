@@ -3,7 +3,8 @@
 //! If any of these fail, the wire format has drifted from the spec.
 
 use svb::{
-    decode_exzd, decode_exzd_fused, decode_vbz, encode_exzd, encode_vbz,
+    decode_exzd, decode_exzd_fused, decode_exzd_fused_to_slice, decode_exzd_to_slice, decode_vbz,
+    encode_exzd, encode_exzd_to_slice, encode_vbz, exzd_max_encoded_len,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
@@ -304,6 +305,17 @@ macro_rules! exzd_parity_test {
             assert_eq!(decode_exzd(enc).unwrap(), expected);
             assert_eq!(decode_exzd_fused(enc).unwrap(), expected);
             assert_eq!(encode_exzd(&expected), enc);
+
+            let mut buf = vec![0u8; exzd_max_encoded_len(expected.len())];
+            let len = encode_exzd_to_slice(&expected, &mut buf).unwrap();
+            assert_eq!(&buf[..len], enc);
+
+            let mut out = vec![0i16; expected.len()];
+            decode_exzd_to_slice(enc, &mut out).unwrap();
+            assert_eq!(out, expected);
+            out.fill(0);
+            decode_exzd_fused_to_slice(enc, &mut out).unwrap();
+            assert_eq!(out, expected);
         }
     };
 }

@@ -613,6 +613,18 @@ reused `Vec`.
 read (about 4 ns per read), +4% allocating per call, and within 2% at 512
 samples per read.
 
+Encode after `encode_exzd_to_slice` was added, same method:
+
+| Benchmark | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| `encode_exzd` | -35% | -55% | -57% |
+| `encode_exzd_into` (reused `Vec`) | -44% | -48% | -55% |
+| `encode_exzd_to_slice` (reused buffer) | 164 ns | 1119 ns | 7858 ns |
+
+`encode_exzd_to_slice` has no 0.3.1 equivalent. It runs within 3% of a reused
+`encode_exzd_into`, because both spend most of their time in the qts, delta
+and zigzag passes, which still allocate.
+
 - The extra cost against the step before is the zero-fill of `out` in the
   `Vec` wrappers. On the 101988-sample read that is about 200 KB, roughly the
   4 us added to `decode_exzd_fused`.
