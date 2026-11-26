@@ -196,10 +196,10 @@ pub(super) unsafe fn encode_to_slice_0124(values: &[u32], out: &mut [u8]) -> usi
 pub(super) unsafe fn decode_to_slice_classic(
     data: &[u8],
     out: &mut [u32],
-) -> Result<(), DecodeError> {
+) -> Result<usize, DecodeError> {
     let n = out.len();
     if n == 0 {
-        return Ok(());
+        return Ok(0);
     }
 
     let ctrl_len = n.div_ceil(4);
@@ -287,7 +287,7 @@ pub(super) unsafe fn decode_to_slice_classic(
 
     // Scalar for n % 4 remainder (0–3 values).
     if decoded < n {
-        super::scalar::decode_classic_from_raw(
+        data_pos += super::scalar::decode_classic_from_raw(
             &ctrl[ctrl_pos..],
             &data_bytes[data_pos..],
             &mut out[decoded..],
@@ -295,7 +295,7 @@ pub(super) unsafe fn decode_to_slice_classic(
         )?;
     }
 
-    Ok(())
+    Ok(ctrl_len + data_pos)
 }
 
 /// Decode `n` u32 values from a U32Variant0124-encoded buffer using SSSE3 `PSHUFB`.
@@ -307,10 +307,13 @@ pub(super) unsafe fn decode_to_slice_classic(
 /// The executing CPU must support SSSE3.
 #[allow(dead_code)]
 #[target_feature(enable = "ssse3")]
-pub(super) unsafe fn decode_to_slice_0124(data: &[u8], out: &mut [u32]) -> Result<(), DecodeError> {
+pub(super) unsafe fn decode_to_slice_0124(
+    data: &[u8],
+    out: &mut [u32],
+) -> Result<usize, DecodeError> {
     let n = out.len();
     if n == 0 {
-        return Ok(());
+        return Ok(0);
     }
 
     let ctrl_len = n.div_ceil(4);
@@ -396,7 +399,7 @@ pub(super) unsafe fn decode_to_slice_0124(data: &[u8], out: &mut [u32]) -> Resul
 
     // Scalar for n % 4 remainder (0–3 values).
     if decoded < n {
-        super::scalar::decode_0124_from_raw(
+        data_pos += super::scalar::decode_0124_from_raw(
             &ctrl[ctrl_pos..],
             &data_bytes[data_pos..],
             &mut out[decoded..],
@@ -404,5 +407,5 @@ pub(super) unsafe fn decode_to_slice_0124(data: &[u8], out: &mut [u32]) -> Resul
         )?;
     }
 
-    Ok(())
+    Ok(ctrl_len + data_pos)
 }

@@ -66,12 +66,13 @@ pub(super) fn encode_tail_1234(
 /// byte slices. Used by the SIMD decode paths for their scalar tail.
 /// `first_index` is the index of `out[0]` in the whole output, used in error
 /// reports.
+/// Returns the number of `data` bytes read.
 pub(super) fn decode_1234_from_raw(
     ctrl: &[u8],
     data: &[u8],
     out: &mut [u64],
     first_index: usize,
-) -> Result<(), DecodeError> {
+) -> Result<usize, DecodeError> {
     let mut pos = 0usize;
     for (i, o) in out.iter_mut().enumerate() {
         let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
@@ -86,13 +87,13 @@ pub(super) fn decode_1234_from_raw(
         *o = u32::from_le_bytes(bytes) as u64;
         pos += count;
     }
-    Ok(())
+    Ok(pos)
 }
 
 /// Decode `out.len()` U64Coder1234 values from `data`.
-pub(super) fn decode_to_slice_1234(data: &[u8], out: &mut [u64]) -> Result<(), DecodeError> {
+pub(super) fn decode_to_slice_1234(data: &[u8], out: &mut [u64]) -> Result<usize, DecodeError> {
     let ctrl_len = check_ctrl_len(data, out.len())?;
-    decode_1234_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)
+    Ok(ctrl_len + decode_1234_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)?)
 }
 
 #[allow(dead_code)]
@@ -159,7 +160,7 @@ pub(super) fn decode_1248_from_raw(
     data: &[u8],
     out: &mut [u64],
     first_index: usize,
-) -> Result<(), DecodeError> {
+) -> Result<usize, DecodeError> {
     let mut pos = 0usize;
     for (i, o) in out.iter_mut().enumerate() {
         let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
@@ -174,13 +175,13 @@ pub(super) fn decode_1248_from_raw(
         *o = u64::from_le_bytes(bytes);
         pos += count;
     }
-    Ok(())
+    Ok(pos)
 }
 
 /// Decode `out.len()` U64Coder1248 values from `data`.
-pub(super) fn decode_to_slice_1248(data: &[u8], out: &mut [u64]) -> Result<(), DecodeError> {
+pub(super) fn decode_to_slice_1248(data: &[u8], out: &mut [u64]) -> Result<usize, DecodeError> {
     let ctrl_len = check_ctrl_len(data, out.len())?;
-    decode_1248_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)
+    Ok(ctrl_len + decode_1248_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)?)
 }
 
 #[allow(dead_code)]

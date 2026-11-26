@@ -16,7 +16,11 @@ use core::fmt;
 ///     _ => panic!("expected ControlStreamTooShort"),
 /// }
 /// ```
+///
+/// The enum is `#[non_exhaustive]`, so a `match` on it needs a `_` arm. New
+/// variants can then be added without a breaking release.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// The data stream ended before all `n` values could be decoded.
     ///

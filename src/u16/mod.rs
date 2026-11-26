@@ -47,7 +47,7 @@ impl_dispatch! {
     scalar::encode_to_slice
 }
 impl_dispatch! {
-    fn dispatch_decode(data: &[u8], out: &mut [u16]) -> Result<(), DecodeError>;
+    fn dispatch_decode(data: &[u8], out: &mut [u16]) -> Result<usize, DecodeError>;
     avx2::decode_to_slice,
     sse2::decode_to_slice,
     neon::decode_to_slice,
@@ -199,11 +199,13 @@ impl Svb16 {
         crate::error::check_ctrl_len(data, n.div_ceil(8))?;
         let start = out.len();
         out.resize(start + n, 0);
-        let res = dispatch_decode(data, &mut out[start..]);
-        if res.is_err() {
-            out.truncate(start);
+        match dispatch_decode(data, &mut out[start..]) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                out.truncate(start);
+                Err(e)
+            }
         }
-        res
     }
 
     /// Decode exactly `out.len()` values from `data` into `out`.
@@ -212,16 +214,22 @@ impl Svb16 {
     /// encoded; a wrong length produces incorrect output or a [`DecodeError`].
     /// On error the contents of `out` are unspecified.
     ///
+    /// Returns the number of bytes of `data` the encoded values took up
+    /// (control stream plus data stream). Bytes after that are not read, so
+    /// the values can be followed by other data. A caller that expects `data`
+    /// to hold only these values can compare the count with `data.len()`.
+    ///
     /// # Examples
     ///
     /// ```
     /// # use svb::u16::Svb16;
     /// let bytes = Svb16.encode(&[10u16, 300]);
     /// let mut out = [0u16; 2];
-    /// Svb16.decode_to_slice(&bytes, &mut out).unwrap();
+    /// let used = Svb16.decode_to_slice(&bytes, &mut out).unwrap();
+    /// assert_eq!(used, bytes.len());
     /// assert_eq!(out, [10u16, 300]);
     /// ```
-    pub fn decode_to_slice(&self, data: &[u8], out: &mut [u16]) -> Result<(), DecodeError> {
+    pub fn decode_to_slice(&self, data: &[u8], out: &mut [u16]) -> Result<usize, DecodeError> {
         dispatch_decode(data, out)
     }
 }
@@ -538,7 +546,7 @@ mod cross_path {
                 let values: Vec<u16> = (0..n as u16).map(|i| i * 300).collect();
                 let mut enc = encode(&values);
                 enc.pop(); // last value loses its high byte
-                let check = |name: &str, r: Result<(), DecodeError>| match r {
+                let check = |name: &str, r: Result<usize, DecodeError>| match r {
                     Err(DecodeError::DataTruncated { index }) => {
                         assert_eq!(index, n - 1, "{name} n={n}")
                     }

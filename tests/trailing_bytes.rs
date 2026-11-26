@@ -8,6 +8,9 @@
 //! 1, 31 and 200 extra bytes, for every count up to 100 (all tail shapes of
 //! every kernel), with values at the narrowest, widest and mixed widths.
 //! CI runs them under each SIMD feature.
+//!
+//! The codec `decode_to_slice` functions must also return the length of the
+//! frame, whatever follows it.
 
 use svb::u16::Svb16;
 use svb::u32::{U32Classic, U32Variant0124};
@@ -43,8 +46,9 @@ macro_rules! check_codec {
                     let ctx = format!("{} n={n} extra={extra}", stringify!($codec));
                     assert_eq!($codec.decode(&data, n).expect(&ctx), values, "{ctx}");
                     let mut out = vec![1 as $t; n];
-                    $codec.decode_to_slice(&data, &mut out).expect(&ctx);
+                    let used = $codec.decode_to_slice(&data, &mut out).expect(&ctx);
                     assert_eq!(out, values, "{ctx}");
+                    assert_eq!(used, enc.len(), "{ctx}: bytes used");
                 }
             }
         }

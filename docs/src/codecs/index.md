@@ -57,7 +57,8 @@ let mut buf = vec![0u8; U32Classic.max_encoded_len(values.len())];
 let len = U32Classic.encode_to_slice(&values, &mut buf).unwrap();
 
 let mut out = [0u32; 4];
-U32Classic.decode_to_slice(&buf[..len], &mut out).unwrap();
+let used = U32Classic.decode_to_slice(&buf[..len], &mut out).unwrap();
+assert_eq!(used, len);
 assert_eq!(out, values);
 ```
 
@@ -67,6 +68,11 @@ assert_eq!(out, values);
 - `decode_to_slice` decodes exactly `out.len()` values. The count is not stored
   in the encoded bytes, so `out.len()` must match the number of values that
   were encoded.
+- `decode_to_slice` returns the number of bytes the encoded values took up and
+  does not read past them, so encoded values can be followed by other data in
+  the same buffer. The count tells you where the next field starts. To reject
+  extra bytes, compare it with the length of the input. The `Vec` methods
+  ignore extra bytes.
 - The `Vec` methods zero-fill the new space before the codec writes into it.
   That costs a few nanoseconds per call, which matters only for small inputs;
   see [Performance](../performance.md#slice-api-and-the-vec-wrappers).

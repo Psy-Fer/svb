@@ -85,10 +85,10 @@ pub(super) unsafe fn encode_to_slice(values: &[u16], out: &mut [u8]) -> usize {
 /// Must run on AArch64 (NEON is mandatory on that architecture).
 #[allow(dead_code)]
 #[target_feature(enable = "neon")]
-pub(super) unsafe fn decode_to_slice(data: &[u8], out: &mut [u16]) -> Result<(), DecodeError> {
+pub(super) unsafe fn decode_to_slice(data: &[u8], out: &mut [u16]) -> Result<usize, DecodeError> {
     let n = out.len();
     if n == 0 {
-        return Ok(());
+        return Ok(0);
     }
 
     let ctrl_len = n.div_ceil(8);
@@ -173,7 +173,7 @@ pub(super) unsafe fn decode_to_slice(data: &[u8], out: &mut [u16]) -> Result<(),
 
     // Scalar for n % 8 remainder (0–7 values).
     if decoded < n {
-        super::scalar::decode_from_raw(
+        data_pos += super::scalar::decode_from_raw(
             &ctrl[ctrl_pos..],
             &data_bytes[data_pos..],
             &mut out[decoded..],
@@ -181,5 +181,5 @@ pub(super) unsafe fn decode_to_slice(data: &[u8], out: &mut [u16]) -> Result<(),
         )?;
     }
 
-    Ok(())
+    Ok(ctrl_len + data_pos)
 }

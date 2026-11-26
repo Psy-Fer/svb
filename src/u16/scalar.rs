@@ -37,10 +37,10 @@ pub(super) fn encode_tail(
 }
 
 /// Decode `out.len()` values from `data`.
-pub(super) fn decode_to_slice(data: &[u8], out: &mut [u16]) -> Result<(), DecodeError> {
+pub(super) fn decode_to_slice(data: &[u8], out: &mut [u16]) -> Result<usize, DecodeError> {
     let n = out.len();
     if n == 0 {
-        return Ok(());
+        return Ok(0);
     }
     let ctrl_len = n.div_ceil(8);
     if data.len() < ctrl_len {
@@ -49,18 +49,19 @@ pub(super) fn decode_to_slice(data: &[u8], out: &mut [u16]) -> Result<(), Decode
             have: data.len(),
         });
     }
-    decode_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)
+    Ok(ctrl_len + decode_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)?)
 }
 
 /// Decode `out.len()` values from pre-split `ctrl` and `data` byte slices.
 /// Called by SIMD paths for their scalar tail. `first_index` is the index of
 /// `out[0]` in the whole output, used in error reports.
+/// Returns the number of `data` bytes read.
 pub(super) fn decode_from_raw(
     ctrl: &[u8],
     data: &[u8],
     out: &mut [u16],
     first_index: usize,
-) -> Result<(), DecodeError> {
+) -> Result<usize, DecodeError> {
     let mut pos = 0usize;
     for (i, o) in out.iter_mut().enumerate() {
         let bit = (ctrl[i / 8] >> (i % 8)) & 1;
@@ -82,7 +83,7 @@ pub(super) fn decode_from_raw(
             pos += 2;
         }
     }
-    Ok(())
+    Ok(pos)
 }
 
 /// Number of data bytes consumed by `n` values given their control stream.

@@ -60,7 +60,7 @@ impl_dispatch! {
     scalar::encode_to_slice_1234
 }
 impl_dispatch! {
-    fn dispatch_decode_1234(data: &[u8], out: &mut [u64]) -> Result<(), DecodeError>;
+    fn dispatch_decode_1234(data: &[u8], out: &mut [u64]) -> Result<usize, DecodeError>;
     avx2::decode_to_slice_1234,
     sse2::decode_to_slice_1234,
     neon::decode_to_slice_1234,
@@ -265,11 +265,13 @@ impl U64Coder1234 {
         crate::error::check_ctrl_len(data, n.div_ceil(4))?;
         let start = out.len();
         out.resize(start + n, 0);
-        let res = dispatch_decode_1234(data, &mut out[start..]);
-        if res.is_err() {
-            out.truncate(start);
+        match dispatch_decode_1234(data, &mut out[start..]) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                out.truncate(start);
+                Err(e)
+            }
         }
-        res
     }
 
     /// Decode exactly `out.len()` values from `data` into `out`.
@@ -280,6 +282,11 @@ impl U64Coder1234 {
     /// [`decode`](Self::decode), the data must have been encoded by the same
     /// codec variant.
     ///
+    /// Returns the number of bytes of `data` the encoded values took up
+    /// (control stream plus data stream). Bytes after that are not read, so
+    /// the values can be followed by other data. A caller that expects `data`
+    /// to hold only these values can compare the count with `data.len()`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -287,10 +294,11 @@ impl U64Coder1234 {
     /// let values = [1u64, 256, 65536, u32::MAX as u64];
     /// let bytes = U64Coder1234.encode(&values);
     /// let mut out = [0u64; 4];
-    /// U64Coder1234.decode_to_slice(&bytes, &mut out).unwrap();
+    /// let used = U64Coder1234.decode_to_slice(&bytes, &mut out).unwrap();
+    /// assert_eq!(used, bytes.len());
     /// assert_eq!(out, values);
     /// ```
-    pub fn decode_to_slice(&self, data: &[u8], out: &mut [u64]) -> Result<(), DecodeError> {
+    pub fn decode_to_slice(&self, data: &[u8], out: &mut [u64]) -> Result<usize, DecodeError> {
         dispatch_decode_1234(data, out)
     }
 }
@@ -305,7 +313,7 @@ impl_dispatch! {
     scalar::encode_to_slice_1248
 }
 impl_dispatch! {
-    fn dispatch_decode_1248(data: &[u8], out: &mut [u64]) -> Result<(), DecodeError>;
+    fn dispatch_decode_1248(data: &[u8], out: &mut [u64]) -> Result<usize, DecodeError>;
     avx2::decode_to_slice_1248,
     sse2::decode_to_slice_1248,
     neon::decode_to_slice_1248,
@@ -468,11 +476,13 @@ impl U64Coder1248 {
         crate::error::check_ctrl_len(data, n.div_ceil(4))?;
         let start = out.len();
         out.resize(start + n, 0);
-        let res = dispatch_decode_1248(data, &mut out[start..]);
-        if res.is_err() {
-            out.truncate(start);
+        match dispatch_decode_1248(data, &mut out[start..]) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                out.truncate(start);
+                Err(e)
+            }
         }
-        res
     }
 
     /// Decode exactly `out.len()` values from `data` into `out`.
@@ -483,6 +493,11 @@ impl U64Coder1248 {
     /// [`decode`](Self::decode), the data must have been encoded by the same
     /// codec variant.
     ///
+    /// Returns the number of bytes of `data` the encoded values took up
+    /// (control stream plus data stream). Bytes after that are not read, so
+    /// the values can be followed by other data. A caller that expects `data`
+    /// to hold only these values can compare the count with `data.len()`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -490,10 +505,11 @@ impl U64Coder1248 {
     /// let values = [1u64, 256, 65536, u64::MAX];
     /// let bytes = U64Coder1248.encode(&values);
     /// let mut out = [0u64; 4];
-    /// U64Coder1248.decode_to_slice(&bytes, &mut out).unwrap();
+    /// let used = U64Coder1248.decode_to_slice(&bytes, &mut out).unwrap();
+    /// assert_eq!(used, bytes.len());
     /// assert_eq!(out, values);
     /// ```
-    pub fn decode_to_slice(&self, data: &[u8], out: &mut [u64]) -> Result<(), DecodeError> {
+    pub fn decode_to_slice(&self, data: &[u8], out: &mut [u64]) -> Result<usize, DecodeError> {
         dispatch_decode_1248(data, out)
     }
 }
@@ -632,7 +648,7 @@ mod cross_path {
                         let values = vec![widest; n];
                         let mut enc = encode(&values);
                         enc.pop(); // last value loses its top byte
-                        let check = |name: &str, r: Result<(), DecodeError>| match r {
+                        let check = |name: &str, r: Result<usize, DecodeError>| match r {
                             Err(DecodeError::DataTruncated { index }) => {
                                 assert_eq!(index, n - 1, "{name} n={n}")
                             }

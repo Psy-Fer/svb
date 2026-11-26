@@ -252,10 +252,13 @@ pub(super) unsafe fn encode_to_slice_1248(values: &[u64], out: &mut [u8]) -> usi
 /// The executing CPU must support AVX2.
 #[allow(dead_code)]
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn decode_to_slice_1234(data: &[u8], out: &mut [u64]) -> Result<(), DecodeError> {
+pub(super) unsafe fn decode_to_slice_1234(
+    data: &[u8],
+    out: &mut [u64],
+) -> Result<usize, DecodeError> {
     let n = out.len();
     if n == 0 {
-        return Ok(());
+        return Ok(0);
     }
 
     let ctrl_len = n.div_ceil(4);
@@ -361,7 +364,7 @@ pub(super) unsafe fn decode_to_slice_1234(data: &[u8], out: &mut [u64]) -> Resul
 
     // Scalar for n % 4 remainder (0–3 values).
     if decoded < n {
-        super::scalar::decode_1234_from_raw(
+        data_pos += super::scalar::decode_1234_from_raw(
             &ctrl[ctrl_pos..],
             &data_bytes[data_pos..],
             &mut out[decoded..],
@@ -369,7 +372,7 @@ pub(super) unsafe fn decode_to_slice_1234(data: &[u8], out: &mut [u64]) -> Resul
         )?;
     }
 
-    Ok(())
+    Ok(ctrl_len + data_pos)
 }
 
 /// Decode `n` u64 values from a U64Coder1248-encoded buffer using AVX2.
@@ -383,10 +386,13 @@ pub(super) unsafe fn decode_to_slice_1234(data: &[u8], out: &mut [u64]) -> Resul
 /// The executing CPU must support AVX2.
 #[allow(dead_code)]
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn decode_to_slice_1248(data: &[u8], out: &mut [u64]) -> Result<(), DecodeError> {
+pub(super) unsafe fn decode_to_slice_1248(
+    data: &[u8],
+    out: &mut [u64],
+) -> Result<usize, DecodeError> {
     let n = out.len();
     if n == 0 {
-        return Ok(());
+        return Ok(0);
     }
 
     let ctrl_len = n.div_ceil(4);
@@ -524,7 +530,7 @@ pub(super) unsafe fn decode_to_slice_1248(data: &[u8], out: &mut [u64]) -> Resul
 
     // Scalar for n % 4 remainder (0–3 values).
     if decoded < n {
-        super::scalar::decode_1248_from_raw(
+        data_pos += super::scalar::decode_1248_from_raw(
             &ctrl[ctrl_pos..],
             &data_bytes[data_pos..],
             &mut out[decoded..],
@@ -532,5 +538,5 @@ pub(super) unsafe fn decode_to_slice_1248(data: &[u8], out: &mut [u64]) -> Resul
         )?;
     }
 
-    Ok(())
+    Ok(ctrl_len + data_pos)
 }

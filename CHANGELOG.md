@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Slice API for every codec (issue #4): `max_encoded_len`, `encode_to_slice` and `decode_to_slice` on `Svb16`, `U32Classic`, `U32Variant0124`, `U64Coder1234` and `U64Coder1248` encode into and decode from caller-supplied slices, so the output can live in any storage type. The `Vec` methods are now wrappers around them.
+- Slice API for every codec (issue #4): `max_encoded_len`, `encode_to_slice` and `decode_to_slice` on `Svb16`, `U32Classic`, `U32Variant0124`, `U64Coder1234` and `U64Coder1248` encode into and decode from caller-supplied slices, so the output can live in any storage type. The `Vec` methods are now wrappers around them. `decode_to_slice` returns the number of bytes the encoded values took up and does not read past them, so the values can be followed by other data; compare the count with `data.len()` to reject extra bytes.
 - `EncodeError::OutputTooSmall`, returned by `encode_to_slice` when the output slice is shorter than `max_encoded_len`.
 - `decode_vbz_fused_to_slice` and `decode_vbz_fused_from_to_slice` decode VBZ into a caller-supplied `&mut [i16]`, with `n = out.len()`. VBZ-K (experimental) gains `decode_vbzk_to_slice` and `decode_vbzk_parallel_to_slice`; the parallel version has each thread decode straight into its own part of `out`.
 - `decode_svbzd_fused_to_slice` and `decode_svbzd_fused_from_to_slice` do the same for SVB-ZD.
@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `DecodeError` is now `#[non_exhaustive]`, so a `match` on it needs a `_` arm. Later releases can then add variants without breaking code.
 - `encode_exzd` and `patched::encode_into` are 31-55% faster. The literal bytes were pushed into the output one at a time, and the exception positions went through two temporary `Vec`s.
 - `patched` decode merges the literals and exceptions in place, working from the back of the output, instead of widening the literals into a separate buffer first. The density at which decode switches from the run-copy merge to the per-element merge moved from about 14% to 20% exceptions, re-measured with `merge_density_sweep`. ex-zd decode is 1-12% faster than 0.3.1 on most benchmarks; see "ex-zd and `patched`" in `docs/src/performance.md`.
 - `decode_into` on every codec, `decode_vbz_fused_into`, `decode_vbz_fused_from_into`, `decode_vbzk_into`, `decode_vbzk_parallel_into`, `decode_svbzd_fused_into` and `decode_svbzd_fused_from_into` now leave `out` at its original length on error. Previously they kept any values decoded before the error.

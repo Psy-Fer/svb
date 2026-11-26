@@ -49,12 +49,13 @@ pub(super) fn encode_tail_classic(
 /// Decode `out.len()` U32Classic values from pre-split `ctrl` and `data` byte
 /// slices. Used by the SIMD decode paths for their scalar tail. `first_index`
 /// is the index of `out[0]` in the whole output, used in error reports.
+/// Returns the number of `data` bytes read.
 pub(super) fn decode_classic_from_raw(
     ctrl: &[u8],
     data: &[u8],
     out: &mut [u32],
     first_index: usize,
-) -> Result<(), DecodeError> {
+) -> Result<usize, DecodeError> {
     let mut pos = 0usize;
     for (i, o) in out.iter_mut().enumerate() {
         let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
@@ -69,13 +70,13 @@ pub(super) fn decode_classic_from_raw(
         *o = u32::from_le_bytes(bytes);
         pos += count;
     }
-    Ok(())
+    Ok(pos)
 }
 
 /// Decode `out.len()` U32Classic values from `data`.
-pub(super) fn decode_to_slice_classic(data: &[u8], out: &mut [u32]) -> Result<(), DecodeError> {
+pub(super) fn decode_to_slice_classic(data: &[u8], out: &mut [u32]) -> Result<usize, DecodeError> {
     let ctrl_len = check_ctrl_len(data, out.len())?;
-    decode_classic_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)
+    Ok(ctrl_len + decode_classic_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)?)
 }
 
 /// Return the control stream length for `n` values, or an error if `data` is
@@ -154,7 +155,7 @@ pub(super) fn decode_0124_from_raw(
     data: &[u8],
     out: &mut [u32],
     first_index: usize,
-) -> Result<(), DecodeError> {
+) -> Result<usize, DecodeError> {
     let mut pos = 0usize;
     for (i, o) in out.iter_mut().enumerate() {
         let tag = (ctrl[i / 4] >> ((i % 4) * 2)) & 3;
@@ -169,13 +170,13 @@ pub(super) fn decode_0124_from_raw(
         *o = u32::from_le_bytes(bytes);
         pos += count;
     }
-    Ok(())
+    Ok(pos)
 }
 
 /// Decode `out.len()` Variant0124 values from `data`.
-pub(super) fn decode_to_slice_0124(data: &[u8], out: &mut [u32]) -> Result<(), DecodeError> {
+pub(super) fn decode_to_slice_0124(data: &[u8], out: &mut [u32]) -> Result<usize, DecodeError> {
     let ctrl_len = check_ctrl_len(data, out.len())?;
-    decode_0124_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)
+    Ok(ctrl_len + decode_0124_from_raw(&data[..ctrl_len], &data[ctrl_len..], out, 0)?)
 }
 
 #[allow(dead_code)]
