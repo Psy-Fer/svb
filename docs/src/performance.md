@@ -656,6 +656,13 @@ Same method as the ex-zd tables, load average 4-6 on 16 cores. Changes are
 - The 3-pass SVB-ZD decoder used to `push` each sample onto the `Vec`. It now
   writes into a slice, and the `Vec` wrapper zero-fills first, which is still
   faster than the `push` loop.
+- `encode_vbzk` (k=4) is 8-16% faster than 0.3.1: 113 ns, 544 ns and 2995 ns
+  against 123 ns, 602 ns and 3210-3747 ns. 0.3.1 encoded into a temporary
+  `Vec` and copied it after the header; it now encodes into the output once.
+  `encode_vbzk_to_slice` with a reused buffer takes 89 ns, 468 ns and 2742 ns.
+  A first version allocated the output with `vec![0u8; len]`, which made
+  `encode_vbzk` 16% slower than 0.3.1 at n=128; `Vec::new()` and `resize`
+  fixed that, as it did for the other `Vec` wrappers.
 - These are not the fast paths. `decode_vbz_fused_to_slice` is 1.3-1.6x
   faster than `decode_vbz_to_slice` (59, 346 and 3016 ns in the same run), and
   `decode_svbzd_fused_to_slice` is about 2x faster than

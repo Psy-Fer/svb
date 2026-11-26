@@ -96,7 +96,8 @@ let len = encode_vbz_to_slice(&samples, &mut buf).unwrap();
 assert_eq!(&buf[..len], encode_vbz(&samples));
 ```
 
-The experimental VBZ-K format has `decode_vbzk_to_slice` and
+The experimental VBZ-K format has `encode_vbzk_to_slice` (sized with
+`vbzk_max_encoded_len(n, k)`), `decode_vbzk_to_slice` and
 `decode_vbzk_parallel_to_slice`. The parallel version gives each thread its
 own part of `out`, so the sub-streams are not copied together afterwards.
 

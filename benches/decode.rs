@@ -458,6 +458,22 @@ fn bench_vbz_fused_to_slice(c: &mut Criterion) {
 
 // VBZ-K through the library API, k=4. The parallel variants spawn threads on
 // every call, so they mostly measure that cost at this size.
+fn bench_vbzk_encode(c: &mut Criterion) {
+    let mut g = c.benchmark_group("vbzk_encode");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let samples = vbz_i16_samples(n);
+        g.bench_with_input(BenchmarkId::new("k=4", n), &samples, |b, s| {
+            b.iter(|| encode_vbzk(s, 4));
+        });
+        let mut buf = vec![0u8; svb::vbzk_max_encoded_len(n, 4)];
+        g.bench_with_input(BenchmarkId::new("to_slice/k=4", n), &samples, |b, s| {
+            b.iter(|| black_box(svb::encode_vbzk_to_slice(s, 4, &mut buf).unwrap()));
+        });
+    }
+    g.finish();
+}
+
 fn bench_vbzk_api(c: &mut Criterion) {
     const N: usize = 8192;
     let encoded = encode_vbzk(&vbz_i16_samples(N), 4);
@@ -1439,6 +1455,7 @@ criterion_group!(
     bench_vbz_reuse,
     bench_vbz_fused,
     bench_vbz_fused_to_slice,
+    bench_vbzk_encode,
     bench_vbzk_api,
     bench_vbz2_decode,
     bench_vbz2_parallel,

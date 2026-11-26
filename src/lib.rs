@@ -799,6 +799,7 @@ mod vbz2_tests {
 ///
 /// Header: `[k: u8][(carry_i: i16 LE, data_offset_i: u32 LE) for i in 1..k][VBZ payload]`
 ///
+/// The header stores `k` in one byte, so a `k` above 255 is reduced to 255.
 /// When `n_sub = (n / k) & !7` is 0 (fewer than `k*8` samples), the encoder
 /// falls back to `k=1` (1-byte header + standard VBZ body).
 ///
@@ -806,56 +807,113 @@ mod vbz2_tests {
 ///
 /// Panics if `k == 0`.
 #[cfg(feature = "alloc")]
+#[allow(clippy::slow_vector_initialization)]
 pub fn encode_vbzk(samples: &[i16], k: usize) -> Vec<u8> {
-    #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
-    #[cfg(feature = "std")]
-    use std::vec::Vec;
-
-    assert!(k != 0, "k must be >= 1");
-
-    let n = samples.len();
-    let n_sub = if k > 1 { (n / k) & !7 } else { 0 };
-    let effective_k = if n_sub == 0 { 1 } else { k };
-
-    let svb = encode_vbz(samples);
-
-    if effective_k == 1 {
-        let mut out = Vec::with_capacity(1 + svb.len());
-        out.push(1u8);
-        out.extend_from_slice(&svb);
-        return out;
-    }
-
-    // Compute split points for i in 1..effective_k.
-    let ctrl_len = n.div_ceil(8);
-    let ctrl = &svb[..ctrl_len];
-
-    // Accumulate data_offset incrementally as we walk ctrl bytes.
-    let header_size = 1 + (effective_k - 1) * 6;
-    let mut out = Vec::with_capacity(header_size + svb.len());
-    out.push(effective_k as u8);
-
-    let mut cumulative_data_offset: u32 = 0;
-    let mut ctrl_byte_idx = 0usize;
-
-    for i in 1..effective_k {
-        let split_pos = n_sub * i;
-        let ctrl_boundary = split_pos / 8;
-
-        // Advance the cumulative data offset to ctrl_boundary.
-        while ctrl_byte_idx < ctrl_boundary {
-            cumulative_data_offset += 8 + ctrl[ctrl_byte_idx].count_ones();
-            ctrl_byte_idx += 1;
-        }
-
-        let carry: i16 = samples[split_pos - 1];
-        out.extend_from_slice(&carry.to_le_bytes());
-        out.extend_from_slice(&cumulative_data_offset.to_le_bytes());
-    }
-
-    out.extend_from_slice(&svb);
+    // Not `vec![0; len]`: that allocates with calloc, which measured 16%
+    // slower at n=128.
+    let mut out = Vec::new();
+    out.resize(vbzk_max_encoded_len(samples.len(), k), 0);
+    let len =
+        encode_vbzk_to_slice(samples, k, &mut out).expect("buffer sized by vbzk_max_encoded_len");
+    out.truncate(len);
     out
+}
+
+/// Worst-case VBZ-K encoded size in bytes for `n` samples split into `k`
+/// sub-streams: the header for the `k` the encoder will actually use (see
+/// [`encode_vbzk`]) plus [`vbz_max_encoded_len(n)`](vbz_max_encoded_len).
+///
+/// **Experimental**, like the rest of VBZ-K.
+///
+/// ```
+/// // 64 samples split 4 ways: 1 + 3 * 6 header bytes.
+/// assert_eq!(svb::vbzk_max_encoded_len(64, 4), 19 + svb::vbz_max_encoded_len(64));
+/// // Too few samples for 4 sub-streams of 8, so k falls back to 1.
+/// assert_eq!(svb::vbzk_max_encoded_len(16, 4), 1 + svb::vbz_max_encoded_len(16));
+/// ```
+///
+/// # Panics
+///
+/// Panics if `k == 0`.
+#[cfg(feature = "alloc")]
+pub const fn vbzk_max_encoded_len(n: usize, k: usize) -> usize {
+    vbzk_header_len(vbzk_effective_k(n, k)).saturating_add(vbz_max_encoded_len(n))
+}
+
+/// Encode samples to VBZ-K format into the start of `out` and return the
+/// number of bytes written.
+///
+/// **Experimental**, like the rest of VBZ-K. `out` must be at least
+/// [`vbzk_max_encoded_len(samples.len(), k)`](vbzk_max_encoded_len) bytes
+/// long, otherwise [`EncodeError::OutputTooSmall`] is returned and `out` is
+/// not modified. Bytes in `out` after the returned length may be overwritten.
+///
+/// ```
+/// let samples: Vec<i16> = (0..100).map(|i| i * 3 - 150).collect();
+/// let mut buf = vec![0u8; svb::vbzk_max_encoded_len(samples.len(), 4)];
+/// let len = svb::encode_vbzk_to_slice(&samples, 4, &mut buf).unwrap();
+/// assert_eq!(&buf[..len], svb::encode_vbzk(&samples, 4));
+/// ```
+///
+/// # Panics
+///
+/// Panics if `k == 0`.
+#[cfg(feature = "alloc")]
+pub fn encode_vbzk_to_slice(
+    samples: &[i16],
+    k: usize,
+    out: &mut [u8],
+) -> Result<usize, EncodeError> {
+    let n = samples.len();
+    let need = vbzk_max_encoded_len(n, k);
+    if out.len() < need {
+        return Err(EncodeError::OutputTooSmall {
+            need,
+            have: out.len(),
+        });
+    }
+    let effective_k = vbzk_effective_k(n, k);
+    let n_sub = (n / effective_k) & !7;
+    let (header, body) = out.split_at_mut(vbzk_header_len(effective_k));
+    let body_len =
+        encode_vbz_to_slice(samples, body).expect("buffer sized by vbzk_max_encoded_len");
+
+    header[0] = effective_k as u8;
+    // Entry i - 1 holds the carry into sub-stream i and the offset of its
+    // first data byte, found by summing the data lengths of the ctrl bytes
+    // before it. Each ctrl byte covers 8 samples and n_sub is a multiple of 8.
+    let ctrl = &body[..n.div_ceil(8)];
+    let mut data_offset: u32 = 0;
+    let mut ctrl_idx = 0usize;
+    for (i, entry) in header[1..].chunks_exact_mut(6).enumerate() {
+        let split_pos = n_sub * (i + 1);
+        while ctrl_idx < split_pos / 8 {
+            data_offset += 8 + ctrl[ctrl_idx].count_ones();
+            ctrl_idx += 1;
+        }
+        entry[..2].copy_from_slice(&samples[split_pos - 1].to_le_bytes());
+        entry[2..].copy_from_slice(&data_offset.to_le_bytes());
+    }
+    Ok(header.len() + body_len)
+}
+
+// The number of sub-streams the encoder uses: `k` capped at 255 (the header
+// stores it in one byte), or 1 when sub-streams of `(n / k) & !7` samples
+// would be empty.
+#[cfg(feature = "alloc")]
+const fn vbzk_effective_k(n: usize, k: usize) -> usize {
+    assert!(k != 0, "k must be >= 1");
+    let k = if k > u8::MAX as usize {
+        u8::MAX as usize
+    } else {
+        k
+    };
+    if k > 1 && (n / k) & !7 != 0 { k } else { 1 }
+}
+
+#[cfg(feature = "alloc")]
+const fn vbzk_header_len(k: usize) -> usize {
+    1 + (k - 1) * 6
 }
 
 /// Decode VBZ-K encoded data, returning a new `Vec<i16>`.
@@ -1089,6 +1147,97 @@ mod vbzk_tests {
     use alloc::vec;
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
+
+    // The 0.3.1 encoder, kept to check that encode_vbzk_to_slice writes the
+    // same bytes.
+    fn encode_vbzk_reference(samples: &[i16], k: usize) -> Vec<u8> {
+        let n = samples.len();
+        let n_sub = if k > 1 { (n / k) & !7 } else { 0 };
+        let effective_k = if n_sub == 0 { 1 } else { k };
+        let svb = encode_vbz(samples);
+        let mut out = vec![effective_k as u8];
+        if effective_k == 1 {
+            out.extend_from_slice(&svb);
+            return out;
+        }
+        let ctrl = &svb[..n.div_ceil(8)];
+        let mut cumulative_data_offset: u32 = 0;
+        let mut ctrl_byte_idx = 0usize;
+        for i in 1..effective_k {
+            let split_pos = n_sub * i;
+            while ctrl_byte_idx < split_pos / 8 {
+                cumulative_data_offset += 8 + ctrl[ctrl_byte_idx].count_ones();
+                ctrl_byte_idx += 1;
+            }
+            out.extend_from_slice(&samples[split_pos - 1].to_le_bytes());
+            out.extend_from_slice(&cumulative_data_offset.to_le_bytes());
+        }
+        out.extend_from_slice(&svb);
+        out
+    }
+
+    #[test]
+    fn encode_to_slice_matches_reference() {
+        for n in [
+            0usize, 1, 7, 8, 15, 16, 17, 31, 32, 33, 100, 1000, 2048, 4099,
+        ] {
+            let samples = make_samples(n);
+            for k in [1usize, 2, 3, 4, 7, 8, 16, 255] {
+                let max = vbzk_max_encoded_len(n, k);
+                let enc = crate::test_util::encode_checked(&samples, max, |s, o| {
+                    encode_vbzk_to_slice(s, k, o).unwrap()
+                });
+                assert_eq!(enc, encode_vbzk_reference(&samples, k), "n={n} k={k}");
+                assert_eq!(encode_vbzk(&samples, k), enc, "n={n} k={k}");
+                assert_eq!(decode_vbzk(&enc, n).unwrap(), samples, "n={n} k={k}");
+            }
+        }
+    }
+
+    #[test]
+    fn encode_to_slice_too_small() {
+        let samples = make_samples(64);
+        let need = vbzk_max_encoded_len(64, 4);
+        assert_eq!(need, 1 + 3 * 6 + 8 + 2 * 64);
+        let mut buf = vec![0xA5u8; need - 1];
+        let err = encode_vbzk_to_slice(&samples, 4, &mut buf).unwrap_err();
+        assert!(
+            matches!(err, EncodeError::OutputTooSmall { need: nd, have } if nd == need && have == need - 1),
+            "{err:?}"
+        );
+        assert!(buf.iter().all(|&b| b == 0xA5), "out was modified");
+    }
+
+    #[test]
+    fn k_255_roundtrips() {
+        // 255 * 8 samples is the smallest input that keeps all 255 sub-streams.
+        let samples = make_samples(255 * 8 + 5);
+        let enc = encode_vbzk(&samples, 255);
+        assert_eq!(enc[0], 255);
+        assert_eq!(decode_vbzk(&enc, samples.len()).unwrap(), samples);
+    }
+
+    #[test]
+    fn k_above_255_is_capped() {
+        // Before 0.4.0, k=256 wrote 0 in the header byte (decode failed) and
+        // k=257 wrote 1 (decode returned the wrong samples).
+        let samples = make_samples(4096);
+        for k in [256usize, 257, 1000] {
+            let enc = encode_vbzk(&samples, k);
+            assert_eq!(enc, encode_vbzk(&samples, 255), "k={k}");
+            assert_eq!(decode_vbzk(&enc, samples.len()).unwrap(), samples, "k={k}");
+            assert_eq!(
+                vbzk_max_encoded_len(4096, k),
+                vbzk_max_encoded_len(4096, 255)
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "k must be >= 1")]
+    fn k_0_panics() {
+        encode_vbzk(&make_samples(10), 0);
+    }
 
     fn make_samples(n: usize) -> Vec<i16> {
         (0..n)
