@@ -34,7 +34,24 @@ pub fn encode_into(samples: &[i16], out: &mut Vec<u8>) {
 
 /// Encode `samples` into the start of `out` and return the number of bytes
 /// written. `out` must be at least `max_encoded_len(samples.len())` bytes.
+// Every arm, including the scalar fallback, is a `return` inside a #[cfg]
+// block, because a #[cfg] cannot remove a tail expression. Whichever arm is
+// last in a given build is a needless return to clippy.
+#[allow(clippy::needless_return)]
 pub(crate) fn encode_to_slice(samples: &[i16], out: &mut [u8]) -> usize {
+    // Keeps encode_scalar from being reported as dead code in builds where
+    // the scalar call below is compiled out.
+    #[cfg(any(
+        all(
+            target_arch = "x86_64",
+            any(feature = "simd-avx2", feature = "simd-ssse3")
+        ),
+        all(
+            target_arch = "aarch64",
+            any(feature = "simd-neon", feature = "simd-auto")
+        )
+    ))]
+    let _ = encode_scalar;
     assert!(out.len() >= max_encoded_len(samples.len()));
     if samples.is_empty() {
         return 0;
@@ -80,7 +97,20 @@ pub(crate) fn encode_to_slice(samples: &[i16], out: &mut [u8]) -> usize {
             return unsafe { encode_neon(samples, out) };
         }
     }
-    encode_scalar(samples, out)
+    // Compiled out where a SIMD arm above always returns.
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            any(feature = "simd-avx2", feature = "simd-ssse3")
+        ),
+        all(
+            target_arch = "aarch64",
+            any(feature = "simd-neon", feature = "simd-auto")
+        )
+    )))]
+    {
+        return encode_scalar(samples, out);
+    }
 }
 
 fn encode_scalar(samples: &[i16], out: &mut [u8]) -> usize {
@@ -469,6 +499,10 @@ pub(crate) fn decode_from_to_slice(
 /// Decode a pre-split SVB-ZD stream (`ctrl` and `data_bytes` already
 /// separated) into `out`, which holds `out.len()` values. `ctrl` must hold at
 /// least `out.len().div_ceil(4)` bytes.
+// Every arm, including the scalar fallback, is a `return` inside a #[cfg]
+// block, because a #[cfg] cannot remove a tail expression. Whichever arm is
+// last in a given build is a needless return to clippy.
+#[allow(clippy::needless_return)]
 fn decode_parts_to_slice(
     ctrl: &[u8],
     data_bytes: &[u8],
@@ -515,7 +549,20 @@ fn decode_parts_to_slice(
         // SAFETY: NEON is mandatory on AArch64.
         return unsafe { decode_neon(ctrl, data_bytes, initial, out) };
     }
-    decode_scalar(ctrl, data_bytes, initial, out, 0)
+    // Compiled out where a SIMD arm above always returns.
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            any(feature = "simd-avx2", feature = "simd-ssse3")
+        ),
+        all(
+            target_arch = "aarch64",
+            any(feature = "simd-neon", feature = "simd-auto")
+        )
+    )))]
+    {
+        return decode_scalar(ctrl, data_bytes, initial, out, 0);
+    }
 }
 
 // ── scalar fallback ───────────────────────────────────────────────────────────

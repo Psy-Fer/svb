@@ -32,8 +32,6 @@
 extern crate alloc;
 
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
-use alloc::vec;
-#[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::vec::Vec;
 
 pub mod error;
@@ -53,6 +51,8 @@ pub mod zigzag;
 // Generates the 5-way cfg dispatch used by every codec variant. Each arm is
 // individually gated so that exactly one branch is active at a time,
 // preventing unreachable_code warnings when multiple simd-* features overlap.
+// The scalar fallback is gated off in builds where a SIMD arm always returns
+// (forced AVX2 or SSSE3 on x86_64, forced NEON or simd-auto on AArch64).
 //
 // Usage:
 //   impl_dispatch! { fn name(a: A, b: B) -> R; avx2_fn, sse2_fn, neon_fn, scalar_fn }
@@ -65,6 +65,15 @@ macro_rules! impl_dispatch {
     (fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;
      $avx2_fn:path, $sse2_fn:path, $neon_fn:path, $scalar_fn:path) => {
         fn $name($($arg: $ty),*) -> $ret {
+            // In these builds a SIMD arm below always returns, so the scalar
+            // call at the end is compiled out (it would be unreachable code).
+            // This reference keeps the scalar function from being reported as
+            // dead code there.
+            #[cfg(any(
+                all(target_arch = "x86_64", any(feature = "simd-avx2", feature = "simd-ssse3")),
+                all(target_arch = "aarch64", any(feature = "simd-neon", feature = "simd-auto"))
+            ))]
+            let _ = $scalar_fn;
             #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
             {
                 // SAFETY: simd-avx2 feature declares AVX2 is available at runtime.
@@ -106,7 +115,13 @@ macro_rules! impl_dispatch {
                     return unsafe { $neon_fn($($arg),*) };
                 }
             }
-            $scalar_fn($($arg),*)
+            #[cfg(not(any(
+                all(target_arch = "x86_64", any(feature = "simd-avx2", feature = "simd-ssse3")),
+                all(target_arch = "aarch64", any(feature = "simd-neon", feature = "simd-auto"))
+            )))]
+            {
+                return $scalar_fn($($arg),*);
+            }
         }
     };
 }

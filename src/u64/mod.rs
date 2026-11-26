@@ -1012,8 +1012,6 @@ mod cross_path {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(feature = "std"))]
-    use alloc::vec;
 
     #[test]
     fn check_range_all_safe() {

@@ -230,9 +230,13 @@ impl Svb16 {
 //
 // These tests call the scalar and SIMD decode functions directly to verify
 // bit-identical output. They are runtime-guarded so they pass on CPUs that
-// do not support the relevant feature (the assertion is simply skipped).
+// do not support the relevant feature (the assertion is simply skipped). The
+// x86_64 tests need std for runtime feature detection.
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(all(target_arch = "x86_64", feature = "std"), target_arch = "aarch64")
+))]
 mod cross_path {
     #[cfg(not(feature = "std"))]
     use alloc::{vec, vec::Vec};

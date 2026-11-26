@@ -68,6 +68,10 @@ pub(crate) fn decode_from_to_slice(
 /// data block of the full payload can be sliced at the pre-computed split points
 /// and passed directly here, one call per sub-chunk. `ctrl` must hold at least
 /// `out.len().div_ceil(8)` bytes. `DataTruncated` indices are relative to `out`.
+// Every arm, including the scalar fallback, is a `return` inside a #[cfg]
+// block, because a #[cfg] cannot remove a tail expression. Whichever arm is
+// last in a given build is a needless return to clippy.
+#[allow(clippy::needless_return)]
 pub(crate) fn decode_parts_to_slice(
     ctrl: &[u8],
     data_bytes: &[u8],
@@ -115,7 +119,20 @@ pub(crate) fn decode_parts_to_slice(
         // SAFETY: NEON is mandatory on AArch64.
         return unsafe { decode_neon(ctrl, data_bytes, initial, out) };
     }
-    decode_scalar(ctrl, data_bytes, initial, out, 0)
+    // Compiled out where a SIMD arm above always returns.
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            any(feature = "simd-avx2", feature = "simd-ssse3")
+        ),
+        all(
+            target_arch = "aarch64",
+            any(feature = "simd-neon", feature = "simd-auto")
+        )
+    )))]
+    {
+        return decode_scalar(ctrl, data_bytes, initial, out, 0);
+    }
 }
 
 // ── scalar fallback ───────────────────────────────────────────────────────────
