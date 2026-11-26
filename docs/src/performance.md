@@ -613,6 +613,12 @@ reused `Vec`.
 read (about 4 ns per read), +4% allocating per call, and within 2% at 512
 samples per read.
 
+- The extra cost against the step before is the zero-fill of `out` in the
+  `Vec` wrappers. On the 101988-sample read that is about 200 KB, roughly the
+  4 us added to `decode_exzd_fused`.
+- `ExzdDecoder::decode_to_slice` with a reused output buffer allocates nothing
+  once its buffers have grown, and is the fastest way to decode many reads.
+
 Encode after `encode_exzd_to_slice` was added, same method:
 
 | Benchmark | n=128 | n=1024 | n=8192 |
@@ -625,11 +631,35 @@ Encode after `encode_exzd_to_slice` was added, same method:
 `encode_exzd_into`, because both spend most of their time in the qts, delta
 and zigzag passes, which still allocate.
 
-- The extra cost against the step before is the zero-fill of `out` in the
-  `Vec` wrappers. On the 101988-sample read that is about 200 KB, roughly the
-  4 us added to `decode_exzd_fused`.
-- `ExzdDecoder::decode_to_slice` with a reused output buffer allocates nothing
-  once its buffers have grown, and is the fastest way to decode many reads.
+### VBZ encode and the 3-pass decoders
+
+`encode_vbz_to_slice`, `decode_vbz_to_slice` and `decode_svbzd_to_slice` were
+added last, and the matching `_into` functions became wrappers around them.
+Same method as the ex-zd tables, load average 4-6 on 16 cores. Changes are
+0.4.0 against 0.3.1.
+
+| Benchmark | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| `encode_vbz` | +3% | -2.5% | +2% |
+| `encode_vbz_into` (reuse) | +5% | -7% | -1% |
+| `encode_vbz_to_slice` (reuse) | 67.5 ns | 330 ns | 2522 ns |
+| `decode_vbz` (3-pass) | -3% | 0% | +1.5% |
+| `decode_vbz_into` (reuse) | -7% | -5% | +1% |
+| `decode_vbz_to_slice` | 85.1 ns | 556 ns | 4041 ns |
+| `decode_svbzd` (3-pass) | -9% | -15% | -16% |
+| `decode_svbzd_into` (reuse) | -8% | -16% | -16% |
+| `decode_svbzd_to_slice` | 153 ns | 985 ns | 7227 ns |
+
+- `encode_vbz_into` (reuse) was 66.7 ns in 0.3.1 at n=128, so the slice
+  function is about the same. The other VBZ rows are within the run-to-run
+  spread.
+- The 3-pass SVB-ZD decoder used to `push` each sample onto the `Vec`. It now
+  writes into a slice, and the `Vec` wrapper zero-fills first, which is still
+  faster than the `push` loop.
+- These are not the fast paths. `decode_vbz_fused_to_slice` is 1.3-1.6x
+  faster than `decode_vbz_to_slice` (59, 346 and 3016 ns in the same run), and
+  `decode_svbzd_fused_to_slice` is about 2x faster than
+  `decode_svbzd_to_slice` (see "Fused SVB-ZD decode" above).
 
 ## Running benchmarks
 

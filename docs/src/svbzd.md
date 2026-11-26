@@ -92,6 +92,10 @@ decode_svbzd_fused_to_slice(&encoded, &mut out).unwrap();
 assert_eq!(out, samples);
 ```
 
+`decode_svbzd_to_slice` does the same with the 3-pass decoder. It is about
+half the speed of the fused one and allocates a temporary buffer for the
+U32Classic pass.
+
 ## Parallel decode with fused_from
 
 `decode_svbzd_fused_from` accepts a caller-supplied initial carry value, enabling independent decoding of any sub-stream that starts at a known split point. This is the building block for parallel decoding:

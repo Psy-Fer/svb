@@ -77,6 +77,25 @@ decode_vbz_fused_to_slice(&encoded, &mut out).unwrap();
 assert_eq!(out, samples);
 ```
 
+`decode_vbz_to_slice` does the same with the 3-pass decoder. It is slower than
+the fused one and allocates a temporary buffer for the SVB16 pass.
+
+`encode_vbz_to_slice` encodes into a caller-supplied `&mut [u8]` and returns
+the number of bytes written. The slice must be at least
+`vbz_max_encoded_len(samples.len())` bytes (`ceil(n / 8)` control bytes plus
+2 bytes per sample), otherwise `EncodeError::OutputTooSmall` is returned and
+the slice is left unchanged. The delta and zigzag passes still allocate
+temporary buffers.
+
+```rust
+use svb::{encode_vbz, encode_vbz_to_slice, vbz_max_encoded_len};
+
+let samples = [100i16, 101, 103, 102, 98];
+let mut buf = vec![0u8; vbz_max_encoded_len(samples.len())];
+let len = encode_vbz_to_slice(&samples, &mut buf).unwrap();
+assert_eq!(&buf[..len], encode_vbz(&samples));
+```
+
 The experimental VBZ-K format has `decode_vbzk_to_slice` and
 `decode_vbzk_parallel_to_slice`. The parallel version gives each thread its
 own part of `out`, so the sub-streams are not copied together afterwards.

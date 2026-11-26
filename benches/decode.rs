@@ -362,6 +362,66 @@ fn bench_vbz_decode(c: &mut Criterion) {
     g.finish();
 }
 
+// Vec and slice forms of the VBZ encoder and 3-pass decoders with reused
+// output buffers.
+fn bench_vbz_reuse(c: &mut Criterion) {
+    let mut g = c.benchmark_group("vbz_reuse");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let (samples, enc) = vbz_signal(n);
+        let svbzd_enc = encode_svbzd(&samples);
+        let mut v = Vec::new();
+        g.bench_with_input(BenchmarkId::new("encode_into", n), &samples, |b, s| {
+            b.iter(|| {
+                v.clear();
+                svb::encode_vbz_into(s, &mut v);
+                black_box(v.len())
+            });
+        });
+        let mut d: Vec<i16> = Vec::new();
+        g.bench_with_input(BenchmarkId::new("decode_into", n), &enc, |b, e| {
+            b.iter(|| {
+                d.clear();
+                svb::decode_vbz_into(e, n, &mut d).unwrap();
+                black_box(d.len())
+            });
+        });
+        g.bench_with_input(
+            BenchmarkId::new("svbzd_decode_into", n),
+            &svbzd_enc,
+            |b, e| {
+                b.iter(|| {
+                    d.clear();
+                    svb::decode_svbzd_into(e, n, &mut d).unwrap();
+                    black_box(d.len())
+                });
+            },
+        );
+        let mut buf = vec![0u8; svb::vbz_max_encoded_len(n)];
+        g.bench_with_input(BenchmarkId::new("encode_to_slice", n), &samples, |b, s| {
+            b.iter(|| black_box(svb::encode_vbz_to_slice(s, &mut buf).unwrap()));
+        });
+        let mut out = vec![0i16; n];
+        g.bench_with_input(BenchmarkId::new("decode_to_slice", n), &enc, |b, e| {
+            b.iter(|| {
+                svb::decode_vbz_to_slice(e, &mut out).unwrap();
+                black_box(out[0])
+            });
+        });
+        g.bench_with_input(
+            BenchmarkId::new("svbzd_decode_to_slice", n),
+            &svbzd_enc,
+            |b, e| {
+                b.iter(|| {
+                    svb::decode_svbzd_to_slice(e, &mut out).unwrap();
+                    black_box(out[0])
+                });
+            },
+        );
+    }
+    g.finish();
+}
+
 fn bench_vbz_fused(c: &mut Criterion) {
     let mut group = c.benchmark_group("vbz_fused");
     for &n in &[128usize, 1024, 8192] {
@@ -1376,6 +1436,7 @@ criterion_group!(
     bench_svb16_decode_to_slice,
     bench_vbz_encode,
     bench_vbz_decode,
+    bench_vbz_reuse,
     bench_vbz_fused,
     bench_vbz_fused_to_slice,
     bench_vbzk_api,

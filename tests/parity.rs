@@ -4,11 +4,12 @@
 
 use svb::{
     decode_exzd, decode_exzd_fused, decode_exzd_fused_to_slice, decode_exzd_to_slice, decode_vbz,
-    encode_exzd, encode_exzd_to_slice, encode_vbz, exzd_max_encoded_len,
+    decode_vbz_to_slice, encode_exzd, encode_exzd_to_slice, encode_vbz, encode_vbz_to_slice,
+    exzd_max_encoded_len,
     u16::Svb16,
     u32::{U32Classic, U32Variant0124},
     u64::{U64Coder1234, U64Coder1248},
-    zigzag,
+    vbz_max_encoded_len, zigzag,
 };
 
 // ── §2.2 Zigzag ──────────────────────────────────────────────────────────────
@@ -224,25 +225,40 @@ fn load_u64(bytes: &[u8]) -> Vec<u64> {
         .collect()
 }
 
+// The 3-pass decoder and both slice functions against one POD5 read. svb's
+// encoder reproduces the POD5 bytes exactly.
+fn check_pod5_read(svb16: &[u8], expected: &[i16]) {
+    let n = expected.len();
+    assert_eq!(decode_vbz(svb16, n).unwrap(), expected);
+    let mut out = vec![0i16; n];
+    decode_vbz_to_slice(svb16, &mut out).unwrap();
+    assert_eq!(out, expected);
+
+    assert_eq!(encode_vbz(expected), svb16);
+    let mut buf = vec![0u8; vbz_max_encoded_len(n)];
+    let len = encode_vbz_to_slice(expected, &mut buf).unwrap();
+    assert_eq!(&buf[..len], svb16);
+}
+
 #[test]
 fn pod5_parity_read0() {
     let svb16 = include_bytes!("vectors/parity_00_02885.svb16");
     let expected = load_i16(include_bytes!("vectors/parity_00_02885.i16"));
-    assert_eq!(decode_vbz(svb16, 2885).unwrap(), expected);
+    check_pod5_read(svb16, &expected);
 }
 
 #[test]
 fn pod5_parity_read1() {
     let svb16 = include_bytes!("vectors/parity_01_02915.svb16");
     let expected = load_i16(include_bytes!("vectors/parity_01_02915.i16"));
-    assert_eq!(decode_vbz(svb16, 2915).unwrap(), expected);
+    check_pod5_read(svb16, &expected);
 }
 
 #[test]
 fn pod5_parity_read2() {
     let svb16 = include_bytes!("vectors/parity_02_02949.svb16");
     let expected = load_i16(include_bytes!("vectors/parity_02_02949.i16"));
-    assert_eq!(decode_vbz(svb16, 2949).unwrap(), expected);
+    check_pod5_read(svb16, &expected);
 }
 
 // ── U32 / U64 regression vectors ─────────────────────────────────────────────

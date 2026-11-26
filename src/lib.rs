@@ -154,7 +154,10 @@ pub mod u64;
 // The outer zstd layer is handled by the caller (e.g. pod5-rs).
 
 #[cfg(feature = "alloc")]
-pub use vbz::{decode_vbz, decode_vbz_into, encode_vbz, encode_vbz_into};
+pub use vbz::{
+    decode_vbz, decode_vbz_into, decode_vbz_to_slice, encode_vbz, encode_vbz_into,
+    encode_vbz_to_slice, vbz_max_encoded_len,
+};
 
 #[cfg(feature = "alloc")]
 mod vbz_fused;
@@ -172,7 +175,7 @@ mod vbz {
     #[cfg(feature = "std")]
     use std::vec::Vec;
 
-    use crate::error::DecodeError;
+    use crate::error::{DecodeError, EncodeError};
     use crate::{delta, u16::Svb16, zigzag};
 
     /// Encode `i16` samples through delta, zigzag, then SVB16, returning raw bytes ready to pass to zstd.
@@ -203,9 +206,48 @@ mod vbz {
     /// encode_vbz_into(&[4i16, 5, 6], &mut buf);
     /// ```
     pub fn encode_vbz_into(samples: &[i16], out: &mut Vec<u8>) {
-        let deltas = delta::encode(samples);
-        let codes = zigzag::encode(&deltas);
-        Svb16.encode_into(&codes, out);
+        Svb16.encode_into(&vbz_codes(samples), out);
+    }
+
+    /// Worst-case VBZ encoded size in bytes for `n` samples: `ceil(n / 8)`
+    /// control bytes plus 2 data bytes per sample.
+    ///
+    /// Use this to size the buffer for [`encode_vbz_to_slice`].
+    ///
+    /// ```
+    /// assert_eq!(svb::vbz_max_encoded_len(0), 0);
+    /// assert_eq!(svb::vbz_max_encoded_len(9), 2 + 2 * 9);
+    /// ```
+    pub const fn vbz_max_encoded_len(n: usize) -> usize {
+        Svb16.max_encoded_len(n)
+    }
+
+    /// Encode `i16` samples to VBZ into the start of `out` and return the
+    /// number of bytes written.
+    ///
+    /// `out` must be at least [`vbz_max_encoded_len(samples.len())`](vbz_max_encoded_len)
+    /// bytes long, otherwise [`EncodeError::OutputTooSmall`] is returned and
+    /// `out` is not modified. The check is against the worst case, so a
+    /// shorter slice is rejected even if the actual encoded bytes would have
+    /// fitted. Bytes in `out` after the returned length may be overwritten.
+    ///
+    /// The delta and zigzag passes still allocate temporary buffers
+    /// internally.
+    ///
+    /// ```
+    /// let samples = [10i16, 11, 12, 13, 300];
+    /// let mut buf = vec![0u8; svb::vbz_max_encoded_len(samples.len())];
+    /// let len = svb::encode_vbz_to_slice(&samples, &mut buf).unwrap();
+    /// assert_eq!(&buf[..len], svb::encode_vbz(&samples));
+    /// ```
+    pub fn encode_vbz_to_slice(samples: &[i16], out: &mut [u8]) -> Result<usize, EncodeError> {
+        // Svb16.encode_to_slice checks `out` against vbz_max_encoded_len.
+        Svb16.encode_to_slice(&vbz_codes(samples), out)
+    }
+
+    // Delta then zigzag: the values Svb16 encodes.
+    fn vbz_codes(samples: &[i16]) -> Vec<u16> {
+        zigzag::encode(&delta::encode(samples))
     }
 
     /// Decode exactly `n` `i16` samples from SVB16 bytes (after zstd decompression).
@@ -243,10 +285,38 @@ mod vbz {
     /// decode_vbz_into(&encoded, 2, &mut out).unwrap();
     /// assert_eq!(out, [0i16, 10, 20]);
     /// ```
+    ///
+    /// On error `out` is left at its original length.
     pub fn decode_vbz_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
-        let codes = Svb16.decode(data, n)?;
-        let deltas = zigzag::decode(&codes);
-        delta::decode_into(&deltas, out);
+        let start = out.len();
+        out.resize(start + n, 0);
+        let result = decode_vbz_to_slice(data, &mut out[start..]);
+        if result.is_err() {
+            out.truncate(start);
+        }
+        result
+    }
+
+    /// Decode VBZ bytes into `out` with the 3-pass decoder (SVB16, zigzag,
+    /// delta).
+    ///
+    /// The number of samples decoded is `out.len()`, which must equal the
+    /// number that was encoded. On error the contents of `out` are
+    /// unspecified. The SVB16 pass decodes into a temporary buffer; zigzag and
+    /// delta then work in `out`. [`decode_vbz_fused_to_slice`](crate::decode_vbz_fused_to_slice)
+    /// is faster and does not allocate.
+    ///
+    /// ```
+    /// let samples = [10i16, 11, 12, 13, 300];
+    /// let encoded = svb::encode_vbz(&samples);
+    /// let mut out = [0i16; 5];
+    /// svb::decode_vbz_to_slice(&encoded, &mut out).unwrap();
+    /// assert_eq!(out, samples);
+    /// ```
+    pub fn decode_vbz_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
+        let codes = Svb16.decode(data, out.len())?;
+        zigzag::decode_to_slice(&codes, out);
+        delta::decode_in_place(out);
         Ok(())
     }
 }
@@ -512,6 +582,73 @@ mod vbz_tests {
         let mut out = vec![99i16];
         decode_vbz_into(&enc, 3, &mut out).unwrap();
         assert_eq!(out, [99, 10, 20, 30]);
+    }
+
+    fn slice_case(n: usize) -> Vec<i16> {
+        (0..n)
+            .map(|i| match i % 11 {
+                0 => i16::MIN,
+                5 => i16::MAX,
+                _ => (i as i16).wrapping_mul(613) % 200,
+            })
+            .collect()
+    }
+
+    const SLICE_SIZES: [usize; 10] = [0, 1, 7, 8, 9, 15, 16, 17, 63, 1000];
+
+    #[test]
+    fn encode_to_slice_matches_vec_encode() {
+        for n in SLICE_SIZES {
+            let samples = slice_case(n);
+            let enc = crate::test_util::encode_checked(&samples, vbz_max_encoded_len(n), |s, o| {
+                encode_vbz_to_slice(s, o).unwrap()
+            });
+            assert_eq!(enc, encode_vbz(&samples), "n={n}");
+        }
+    }
+
+    #[test]
+    fn encode_to_slice_too_small() {
+        let samples = [1i16, 2, 3, 4, 5, 6, 7, 8, 9];
+        let need = vbz_max_encoded_len(9);
+        assert_eq!(need, 20);
+        let mut buf = vec![0xA5u8; need - 1];
+        let err = encode_vbz_to_slice(&samples, &mut buf).unwrap_err();
+        assert!(
+            matches!(err, EncodeError::OutputTooSmall { need: 20, have: 19 }),
+            "{err:?}"
+        );
+        assert!(buf.iter().all(|&b| b == 0xA5), "out was modified");
+    }
+
+    #[test]
+    fn decode_to_slice_roundtrip() {
+        for n in SLICE_SIZES {
+            let samples = slice_case(n);
+            let enc = encode_vbz(&samples);
+            let mut out = vec![0x5A5Ai16; n];
+            decode_vbz_to_slice(&enc, &mut out).unwrap();
+            assert_eq!(out, samples, "n={n}");
+        }
+    }
+
+    #[test]
+    fn decode_truncated_is_an_error() {
+        let samples = slice_case(65);
+        let enc = encode_vbz(&samples);
+        for len in 0..enc.len() {
+            let mut out = vec![0i16; 65];
+            assert!(
+                decode_vbz_to_slice(&enc[..len], &mut out).is_err(),
+                "len={len}"
+            );
+            let mut v = vec![7i16, 8];
+            assert!(
+                decode_vbz_into(&enc[..len], 65, &mut v).is_err(),
+                "len={len}"
+            );
+            assert_eq!(v, [7, 8], "len={len}");
+        }
     }
 }
 
@@ -1340,14 +1477,42 @@ pub fn decode_svbzd(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
 }
 
 /// Decode exactly `n` `i16` samples from SVB-ZD bytes, appending to `out`.
+///
+/// On error `out` is left at its original length.
 #[cfg(feature = "alloc")]
 pub fn decode_svbzd_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
-    let codes = crate::u32::U32Classic.decode(data, n)?;
+    let start = out.len();
+    out.resize(start + n, 0);
+    let result = decode_svbzd_to_slice(data, &mut out[start..]);
+    if result.is_err() {
+        out.truncate(start);
+    }
+    result
+}
+
+/// Decode SVB-ZD bytes into `out` with the 3-pass decoder (U32Classic,
+/// zigzag, delta).
+///
+/// The number of samples decoded is `out.len()`, which must equal the number
+/// that was encoded. On error the contents of `out` are unspecified. The
+/// U32Classic pass decodes into a temporary buffer.
+/// [`decode_svbzd_fused_to_slice`] is faster and does not allocate.
+///
+/// ```
+/// let samples = [10i16, 11, 12, 11, 9];
+/// let encoded = svb::encode_svbzd(&samples);
+/// let mut out = [0i16; 5];
+/// svb::decode_svbzd_to_slice(&encoded, &mut out).unwrap();
+/// assert_eq!(out, samples);
+/// ```
+#[cfg(feature = "alloc")]
+pub fn decode_svbzd_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
+    let codes = crate::u32::U32Classic.decode(data, out.len())?;
     let mut acc: i32 = 0;
-    for zz in codes {
+    for (o, zz) in out.iter_mut().zip(codes) {
         let delta = ((zz >> 1) as i32) ^ -((zz & 1) as i32);
         acc = acc.wrapping_add(delta);
-        out.push(acc as i16);
+        *o = acc as i16;
     }
     Ok(())
 }
@@ -2021,6 +2186,48 @@ mod svbzd_tests {
             "{err:?}"
         );
         assert!(buf.iter().all(|&b| b == 0xA5), "out was modified");
+    }
+
+    #[test]
+    fn three_pass_to_slice_roundtrip() {
+        for n in [0usize, 1, 3, 4, 5, 63, 1000] {
+            let samples: Vec<i16> = (0..n)
+                .map(|i| {
+                    if i % 7 == 3 {
+                        i16::MIN
+                    } else {
+                        (i as i16).wrapping_mul(613)
+                    }
+                })
+                .collect();
+            let enc = encode_svbzd(&samples);
+            let mut out = vec![0x5A5Ai16; n];
+            decode_svbzd_to_slice(&enc, &mut out).unwrap();
+            assert_eq!(out, samples, "n={n}");
+            let mut v = vec![42i16];
+            decode_svbzd_into(&enc, n, &mut v).unwrap();
+            assert_eq!(v[1..], samples, "n={n}");
+            assert_eq!(v[0], 42);
+        }
+    }
+
+    #[test]
+    fn three_pass_truncated_is_an_error() {
+        let samples: Vec<i16> = (0..65).map(|i| (i as i16).wrapping_mul(613)).collect();
+        let enc = encode_svbzd(&samples);
+        for len in 0..enc.len() {
+            let mut out = vec![0i16; 65];
+            assert!(
+                decode_svbzd_to_slice(&enc[..len], &mut out).is_err(),
+                "len={len}"
+            );
+            let mut v = vec![7i16, 8];
+            assert!(
+                decode_svbzd_into(&enc[..len], 65, &mut v).is_err(),
+                "len={len}"
+            );
+            assert_eq!(v, [7, 8], "len={len}");
+        }
     }
 
     #[test]
