@@ -46,19 +46,15 @@
 //! module) as two separate full-array passes is the faster design in
 //! practice at both widths, not just simpler.
 
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(feature = "std")]
-use std::vec::Vec;
-
 /// Inverse-zigzag + delta-decode `zd`, applying a left-shift of `q` bits to
 /// each reconstructed sample, starting the prefix sum from `initial`, and
-/// appending to `out`.
+/// writing into `out`, which must be the same length as `zd`.
 ///
 /// `q` is masked to `0..=15` so the shift can never panic, even on a `q`
 /// value read from untrusted/corrupted input (same convention as
 /// [`crate::quantize::unshift_inplace`]).
-pub(crate) fn decode_into(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
+pub(crate) fn decode_to_slice(zd: &[u16], initial: i16, q: u8, out: &mut [i16]) {
+    assert_eq!(zd.len(), out.len());
     let q = q & 15;
     #[cfg(all(feature = "simd-avx2", target_arch = "x86_64"))]
     {
@@ -134,13 +130,13 @@ fn unzigzag_one(code: u16) -> i16 {
     ((code >> 1) as i16) ^ -((code & 1) as i16)
 }
 
+// Also used for the SIMD kernels' tails.
 #[allow(dead_code)]
-fn decode_scalar(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
-    out.reserve(zd.len());
+fn decode_scalar(zd: &[u16], initial: i16, q: u8, out: &mut [i16]) {
     let mut acc = initial;
-    for &code in zd {
+    for (o, &code) in out.iter_mut().zip(zd) {
         acc = acc.wrapping_add(unzigzag_one(code));
-        out.push(acc << q);
+        *o = acc << q;
     }
 }
 
@@ -153,12 +149,10 @@ fn decode_scalar(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
 // unshifted, since it needs to keep accumulating in the same domain as `zd`.
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
-unsafe fn decode_sse2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
+unsafe fn decode_sse2(zd: &[u16], initial: i16, q: u8, out: &mut [i16]) {
     use core::arch::x86_64::*;
 
     let n = zd.len();
-    out.reserve(n);
-    let base = out.len();
     let simd_n = (n / 8) * 8;
 
     let mut acc = initial;
@@ -187,8 +181,8 @@ unsafe fn decode_sse2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
             _mm_add_epi16(d, _mm_set1_epi16(acc))
         };
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 8 <= base + n.
-            let out_ptr = out.as_mut_ptr().add(base + i) as *mut __m128i;
+            // SAFETY: i + 8 <= n = out.len() (checked by decode_to_slice).
+            let out_ptr = out.as_mut_ptr().add(i) as *mut __m128i;
             // Element 7 of the unshifted `result` is the prefix sum of all 8
             // deltas + acc = new accumulator; qts shift is applied only to
             // the stored copy.
@@ -197,16 +191,8 @@ unsafe fn decode_sse2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
         }
         i += 8;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
     // Scalar tail for n % 8 remaining values.
-    for &code in &zd[simd_n..] {
-        acc = acc.wrapping_add(unzigzag_one(code));
-        out.push(acc << q);
-    }
+    decode_scalar(&zd[simd_n..], acc, q, &mut out[simd_n..]);
 }
 
 // AVX2: 16 u16 codes per iteration — same fusion as decode_sse2, but the
@@ -223,12 +209,10 @@ unsafe fn decode_sse2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 #[target_feature(enable = "avx2")]
-unsafe fn decode_avx2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
+unsafe fn decode_avx2(zd: &[u16], initial: i16, q: u8, out: &mut [i16]) {
     use core::arch::x86_64::*;
 
     let n = zd.len();
-    out.reserve(n);
-    let base = out.len();
     let simd_n = (n / 16) * 16;
 
     let mut acc = initial;
@@ -268,8 +252,8 @@ unsafe fn decode_avx2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
             _mm256_add_epi16(d, _mm256_set1_epi16(acc))
         };
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 16 <= base + n.
-            let out_ptr = out.as_mut_ptr().add(base + i) as *mut __m256i;
+            // SAFETY: i + 16 <= n = out.len() (checked by decode_to_slice).
+            let out_ptr = out.as_mut_ptr().add(i) as *mut __m256i;
             // Lane 15 (last lane of the high half) of the unshifted `result`
             // is the prefix sum of all 16 deltas + acc = new accumulator;
             // qts shift is applied only to the stored copy.
@@ -279,16 +263,8 @@ unsafe fn decode_avx2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
         }
         i += 16;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
     // Scalar tail for n % 16 remaining values.
-    for &code in &zd[simd_n..] {
-        acc = acc.wrapping_add(unzigzag_one(code));
-        out.push(acc << q);
-    }
+    decode_scalar(&zd[simd_n..], acc, q, &mut out[simd_n..]);
 }
 
 // NEON: 8 u16 codes per iteration. Same fusion as decode_sse2, using
@@ -296,12 +272,10 @@ unsafe fn decode_avx2(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
 // vextq_s16-based three-step prefix-sum scan.
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
-unsafe fn decode_neon(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
+unsafe fn decode_neon(zd: &[u16], initial: i16, q: u8, out: &mut [i16]) {
     use core::arch::aarch64::*;
 
     let n = zd.len();
-    out.reserve(n);
-    let base = out.len();
     let simd_n = (n / 8) * 8;
 
     let mut acc = initial;
@@ -331,34 +305,24 @@ unsafe fn decode_neon(zd: &[u16], initial: i16, q: u8, out: &mut Vec<i16>) {
             vaddq_s16(d, vdupq_n_s16(acc))
         };
         unsafe {
-            // SAFETY: out.reserve(n) ensures capacity; base + i + 8 <= base + n.
+            // SAFETY: i + 8 <= n = out.len() (checked by decode_to_slice).
             // Element 7 of the unshifted `result` is the prefix sum of all 8
             // deltas + acc = new accumulator; qts shift is applied only to
             // the stored copy.
             acc = vgetq_lane_s16(result, 7);
-            vst1q_s16(out.as_mut_ptr().add(base + i), vshlq_s16(result, q_vec));
+            vst1q_s16(out.as_mut_ptr().add(i), vshlq_s16(result, q_vec));
         }
         i += 8;
     }
-    unsafe {
-        // SAFETY: elements [base, base + simd_n) were all written above.
-        out.set_len(base + simd_n);
-    }
-
     // Scalar tail for n % 8 remaining values.
-    for &code in &zd[simd_n..] {
-        acc = acc.wrapping_add(unzigzag_one(code));
-        out.push(acc << q);
-    }
+    decode_scalar(&zd[simd_n..], acc, q, &mut out[simd_n..]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(not(feature = "std"))]
-    use alloc::vec;
-    #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
 
     fn reference(zd: &[u16], initial: i16, q: u8) -> Vec<i16> {
         let mut acc = initial;
@@ -371,8 +335,8 @@ mod tests {
     }
 
     fn dispatch_matches_reference(zd: &[u16], q: u8) {
-        let mut out = Vec::new();
-        decode_into(zd, 0, q, &mut out);
+        let mut out = vec![0x5A5Ai16; zd.len()];
+        decode_to_slice(zd, 0, q, &mut out);
         assert_eq!(out, reference(zd, 0, q));
     }
 
@@ -416,8 +380,8 @@ mod tests {
     #[test]
     fn nonzero_initial_carry() {
         let zd: Vec<u16> = (0..20u16).map(|i| i * 5 + 2).collect();
-        let mut out = Vec::new();
-        decode_into(&zd, 1234, 0, &mut out);
+        let mut out = vec![0x5A5Ai16; zd.len()];
+        decode_to_slice(&zd, 1234, 0, &mut out);
         assert_eq!(out, reference(&zd, 1234, 0));
     }
 
@@ -434,8 +398,8 @@ mod tests {
         // q values >= 16 must not panic (masked to q & 15), even though the
         // encoder never produces them — decode must stay safe on corrupted input.
         let zd: Vec<u16> = (0..20u16).map(|i| i * 7 + 1).collect();
-        let mut out = Vec::new();
-        decode_into(&zd, 0, 255, &mut out);
+        let mut out = vec![0x5A5Ai16; zd.len()];
+        decode_to_slice(&zd, 0, 255, &mut out);
         assert_eq!(out, reference(&zd, 0, 255));
     }
 
@@ -448,7 +412,7 @@ mod tests {
         for n in 0..=31usize {
             for q in [0u8, 1, 5, 15] {
                 let zd: Vec<u16> = (0..n as u32).map(|i| ((i * 6151) % 65536) as u16).collect();
-                let mut out = Vec::new();
+                let mut out = vec![0x5A5Ai16; zd.len()];
                 unsafe { decode_avx2(&zd, 0, q, &mut out) };
                 assert_eq!(out, reference(&zd, 0, q), "n={n} q={q}");
             }
@@ -459,7 +423,7 @@ mod tests {
     #[test]
     fn avx2_nonzero_initial_carry() {
         let zd: Vec<u16> = (0..40u16).map(|i| i * 5 + 2).collect();
-        let mut out = Vec::new();
+        let mut out = vec![0x5A5Ai16; zd.len()];
         unsafe { decode_avx2(&zd, 1234, 0, &mut out) };
         assert_eq!(out, reference(&zd, 1234, 0));
     }
@@ -472,7 +436,7 @@ mod tests {
     fn sse2_matches_reference_directly() {
         for q in [0u8, 1, 5] {
             let zd: Vec<u16> = (0..37u16).map(|i| i * 91 % 401).collect();
-            let mut out = Vec::new();
+            let mut out = vec![0x5A5Ai16; zd.len()];
             unsafe { decode_sse2(&zd, 0, q, &mut out) };
             assert_eq!(out, reference(&zd, 0, q));
         }
@@ -486,7 +450,7 @@ mod tests {
     fn neon_matches_reference_directly() {
         for q in [0u8, 1, 5] {
             let zd: Vec<u16> = (0..37u16).map(|i| i * 91 % 401).collect();
-            let mut out = Vec::new();
+            let mut out = vec![0x5A5Ai16; zd.len()];
             unsafe { decode_neon(&zd, 0, q, &mut out) };
             assert_eq!(out, reference(&zd, 0, q));
         }

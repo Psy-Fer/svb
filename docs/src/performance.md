@@ -589,6 +589,36 @@ faster, both with `ExzdDecoder` and allocating per call.
   goes through the `delta` `Vec` functions, which are 8-11% slower than 0.3.1
   (see "Delta and zigzag" above).
 
+After the ex-zd functions were converted to slices (the `_into` functions are
+now wrappers that zero-fill `out` and decode into it), same method, with the
+fused and real-read rows rerun on a quiet machine:
+
+| Benchmark | n=128 | n=1024 | n=8192 |
+|---|---|---|---|
+| `decode_exzd_fused_into` (reuse) | +11% | 0% | +3% |
+| `decode_exzd_fused_to_slice` (one-shot) | 57.8 ns, -3% | 415 ns, -4% | 2393 ns, 0% |
+| `ExzdDecoder::decode_to_slice` | 42.0 ns, -31% | 309 ns, -29% | 2177 ns, -9% |
+| `decode_exzd` (3-pass) | -3% | -13% (0.3.1 varied 567-675 ns) | +3% |
+
+The `_to_slice` percentages are against 0.3.1's `decode_exzd_fused_into` with a
+reused `Vec`.
+
+| Real reads (`tests/vectors`) | 2885-2949 samples | 101988 samples |
+|---|---|---|
+| `decode_exzd_fused` | +2 to +3% | +11.5% |
+| `ExzdDecoder::decode_into` | 0 to +1% | +3% |
+| `decode_exzd` (3-pass) | -1 to +1% | +7.5% |
+
+`exzd_many_small_reads`: +14% with a reused `ExzdDecoder` at 64 samples per
+read (about 4 ns per read), +4% allocating per call, and within 2% at 512
+samples per read.
+
+- The extra cost against the step before is the zero-fill of `out` in the
+  `Vec` wrappers. On the 101988-sample read that is about 200 KB, roughly the
+  4 us added to `decode_exzd_fused`.
+- `ExzdDecoder::decode_to_slice` with a reused output buffer allocates nothing
+  once its buffers have grown, and is the fastest way to decode many reads.
+
 ## Running benchmarks
 
 ```sh

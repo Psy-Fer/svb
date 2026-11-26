@@ -1156,6 +1156,31 @@ fn bench_exzd_fused(c: &mut Criterion) {
     g.finish();
 }
 
+// Slice decode with a reused output buffer: one-shot fused, and through a
+// reused ExzdDecoder (no allocation per call).
+fn bench_exzd_to_slice(c: &mut Criterion) {
+    let mut g = c.benchmark_group("exzd_to_slice");
+    for &n in SIZES {
+        g.throughput(Throughput::Elements(n as u64));
+        let enc = encode_exzd(&vbz_i16_samples(n));
+        let mut out = vec![0i16; n];
+        g.bench_with_input(BenchmarkId::new("fused", n), &enc, |b, enc| {
+            b.iter(|| {
+                svb::decode_exzd_fused_to_slice(enc, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+        let mut decoder = ExzdDecoder::new();
+        g.bench_with_input(BenchmarkId::new("decoder", n), &enc, |b, enc| {
+            b.iter(|| {
+                decoder.decode_to_slice(enc, &mut out).unwrap();
+                black_box(&out);
+            });
+        });
+    }
+    g.finish();
+}
+
 fn bench_exzd_fused_spiky(c: &mut Criterion) {
     let mut g = c.benchmark_group("exzd_fused_spiky");
     for &n in SIZES {
@@ -1363,6 +1388,7 @@ criterion_group!(
     bench_exzd_encode,
     bench_exzd_decode,
     bench_exzd_fused,
+    bench_exzd_to_slice,
     bench_exzd_fused_spiky,
     bench_exzd_real_reads,
     bench_exzd_many_small_reads,

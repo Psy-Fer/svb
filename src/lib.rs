@@ -1540,21 +1540,61 @@ pub fn decode_exzd(data: &[u8]) -> Result<Vec<i16>, DecodeError> {
 }
 
 /// Decode ex-zd bytes into `i16` samples, appending to `out`.
+///
+/// On error `out` is left at its original length.
 #[cfg(feature = "alloc")]
 pub fn decode_exzd_into(data: &[u8], out: &mut Vec<i16>) -> Result<(), DecodeError> {
-    let Some((q, zd)) = decode_exzd_header_and_zd(data)? else {
+    decode_exzd_append(data, out, decode_exzd_to_slice)
+}
+
+/// Decode ex-zd bytes into `out` (3-pass: patched, then zigzag, then delta).
+///
+/// `out.len()` must equal the sample count stored in the frame, which
+/// [`exzd_decoded_len`] returns; otherwise [`DecodeError::OutputLengthMismatch`]
+/// is returned. On other errors the contents of `out` are unspecified.
+///
+/// ```
+/// let samples = [10i16, 11, 12, 11, 9];
+/// let encoded = svb::encode_exzd(&samples);
+/// let mut out = vec![0i16; svb::exzd_decoded_len(&encoded).unwrap()];
+/// svb::decode_exzd_to_slice(&encoded, &mut out).unwrap();
+/// assert_eq!(out, samples);
+/// ```
+#[cfg(feature = "alloc")]
+pub fn decode_exzd_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    let mut zd = Vec::new();
+    let Some(q) = decode_exzd_zd(data, out.len(), &mut zd, &mut Vec::new(), &mut Vec::new())?
+    else {
         return Ok(());
     };
-
-    let deltas = zigzag::decode(&zd);
-    let start = out.len();
-    delta::decode_into(&deltas, out);
-
+    zigzag::decode_to_slice(&zd, out);
+    delta::decode_in_place(out);
     if q != 0 {
-        quantize::unshift_inplace(&mut out[start..], q);
+        quantize::unshift_inplace(out, q);
     }
-
     Ok(())
+}
+
+/// Number of samples in an ex-zd frame, read from its header.
+///
+/// Use this to size the output for [`decode_exzd_to_slice`],
+/// [`decode_exzd_fused_to_slice`] and [`ExzdDecoder::decode_to_slice`]. It
+/// also checks the version byte, and that `data` is long enough to hold that
+/// many samples, so a corrupted sample count is rejected before anything is
+/// allocated for it.
+///
+/// ```
+/// let encoded = svb::encode_exzd(&[1i16, 2, 3]);
+/// assert_eq!(svb::exzd_decoded_len(&encoded).unwrap(), 3);
+/// ```
+#[cfg(feature = "alloc")]
+pub fn exzd_decoded_len(data: &[u8]) -> Result<usize, DecodeError> {
+    parse_exzd_header(data).map(|(nin, _)| nin)
 }
 
 /// Decode ex-zd bytes into `i16` samples using a fused single-pass decoder.
@@ -1577,56 +1617,89 @@ pub fn decode_exzd_fused(data: &[u8]) -> Result<Vec<i16>, DecodeError> {
 }
 
 /// Decode ex-zd bytes, appending to `out`. See [`decode_exzd_fused`].
+///
+/// On error `out` is left at its original length.
 #[cfg(feature = "alloc")]
 pub fn decode_exzd_fused_into(data: &[u8], out: &mut Vec<i16>) -> Result<(), DecodeError> {
-    let Some((q, zd)) = decode_exzd_header_and_zd(data)? else {
-        return Ok(());
-    };
-
-    exzd_fused::decode_into(&zd, 0, q, out);
-
-    Ok(())
+    decode_exzd_append(data, out, decode_exzd_fused_to_slice)
 }
 
-/// Parse the ex-zd header and reconstruct the full `nin`-length zigzag-delta
-/// array (raw `zd[0]` + patched/exception decode of the rest).
+/// Decode ex-zd bytes into `out` with the fused decoder. See
+/// [`decode_exzd_fused`].
 ///
-/// Returns `None` for `nin == 0` (nothing to decode). This is the shared
-/// prefix between [`decode_exzd_into`] and [`decode_exzd_fused_into`]; they
-/// differ only in how they turn `zd` into samples.
+/// `out.len()` must equal the sample count stored in the frame, which
+/// [`exzd_decoded_len`] returns; otherwise [`DecodeError::OutputLengthMismatch`]
+/// is returned. On other errors the contents of `out` are unspecified.
+///
+/// ```
+/// let samples = [10i16, 11, 12, 11, 9];
+/// let encoded = svb::encode_exzd(&samples);
+/// let mut out = vec![0i16; svb::exzd_decoded_len(&encoded).unwrap()];
+/// svb::decode_exzd_fused_to_slice(&encoded, &mut out).unwrap();
+/// assert_eq!(out, samples);
+/// ```
 #[cfg(feature = "alloc")]
-fn decode_exzd_header_and_zd(data: &[u8]) -> Result<Option<(u8, Vec<u16>)>, DecodeError> {
+pub fn decode_exzd_fused_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
     #[cfg(not(feature = "std"))]
     use alloc::vec::Vec;
     #[cfg(feature = "std")]
     use std::vec::Vec;
 
     let mut zd = Vec::new();
-    let mut ex_pos = Vec::new();
-    let mut ex_val = Vec::new();
-    let q = decode_exzd_header_and_zd_with_scratch(data, &mut zd, &mut ex_pos, &mut ex_val)?;
-    Ok(q.map(|q| (q, zd)))
+    decode_exzd_fused_with_scratch(data, out, &mut zd, &mut Vec::new(), &mut Vec::new())
 }
 
-/// Same as [`decode_exzd_header_and_zd`], but fills caller-supplied `zd`,
-/// `ex_pos`, and `ex_val` scratch buffers instead of allocating fresh ones.
-/// On success `zd` holds exactly `nin` values. Returns `Some(q)`, or
-/// `None` for `nin == 0`. Used by [`ExzdDecoder`] to avoid a heap
-/// allocation per decode when repeatedly decoding many small frames.
+// Grows `out` by the frame's sample count, decodes into the new space with
+// `decode`, and truncates `out` back on error.
 #[cfg(feature = "alloc")]
-fn decode_exzd_header_and_zd_with_scratch(
+fn decode_exzd_append(
     data: &[u8],
+    out: &mut Vec<i16>,
+    decode: impl FnOnce(&[u8], &mut [i16]) -> Result<(), DecodeError>,
+) -> Result<(), DecodeError> {
+    // exzd_decoded_len has checked that `data` can hold this many samples, so
+    // a corrupted count cannot make this resize huge.
+    let n = exzd_decoded_len(data)?;
+    let start = out.len();
+    out.resize(start + n, 0);
+    let result = decode(data, &mut out[start..]);
+    if result.is_err() {
+        out.truncate(start);
+    }
+    result
+}
+
+#[cfg(feature = "alloc")]
+fn decode_exzd_fused_with_scratch(
+    data: &[u8],
+    out: &mut [i16],
     zd: &mut Vec<u16>,
     ex_pos: &mut Vec<u32>,
     ex_val: &mut Vec<u32>,
-) -> Result<Option<u8>, DecodeError> {
+) -> Result<(), DecodeError> {
+    let Some(q) = decode_exzd_zd(data, out.len(), zd, ex_pos, ex_val)? else {
+        return Ok(());
+    };
+    exzd_fused::decode_to_slice(zd, 0, q, out);
+    Ok(())
+}
+
+/// Parse and check the ex-zd header. Returns `(nin, q)`.
+///
+/// For `nin > 0` this also checks that `data` holds the raw first value and at
+/// least `nin - 1` more bytes. Every element after the first costs at least
+/// one byte, whether stored as a literal or in the exception arrays, so a
+/// shorter frame cannot be valid. `nin` is an untrusted header field, and
+/// without this check a corrupted or crafted frame could make a caller
+/// allocate an absurd amount of memory (or panic with "capacity overflow").
+#[cfg(feature = "alloc")]
+fn parse_exzd_header(data: &[u8]) -> Result<(usize, u8), DecodeError> {
     if data.len() < EXZD_HEADER_LEN {
         return Err(DecodeError::ControlStreamTooShort {
             need: EXZD_HEADER_LEN,
             have: data.len(),
         });
     }
-
     let version = data[0];
     if version != EXZD_VERSION {
         return Err(DecodeError::UnsupportedVersion { version });
@@ -1636,43 +1709,59 @@ fn decode_exzd_header_and_zd_with_scratch(
     ]) as usize;
     let q = data[9];
 
+    if nin > 0 {
+        if data.len() < EXZD_HEADER_LEN + 2 {
+            return Err(DecodeError::ControlStreamTooShort {
+                need: EXZD_HEADER_LEN + 2,
+                have: data.len(),
+            });
+        }
+        let remaining = data.len() - (EXZD_HEADER_LEN + 2);
+        if nin - 1 > remaining {
+            return Err(DecodeError::ControlStreamTooShort {
+                need: nin - 1,
+                have: remaining,
+            });
+        }
+    }
+    Ok((nin, q))
+}
+
+/// Check the header against `out_len`, then reconstruct the frame's
+/// zigzag-delta array into `zd` (raw `zd[0]` + patched/exception decode of
+/// the rest), using `ex_pos` and `ex_val` as scratch.
+///
+/// Returns `Some(q)` with `zd` holding exactly `nin` values, or `None` for
+/// `nin == 0` (nothing to decode). `zd` is only filled where it grows, so a
+/// reused buffer costs nothing extra.
+#[cfg(feature = "alloc")]
+fn decode_exzd_zd(
+    data: &[u8],
+    out_len: usize,
+    zd: &mut Vec<u16>,
+    ex_pos: &mut Vec<u32>,
+    ex_val: &mut Vec<u32>,
+) -> Result<Option<u8>, DecodeError> {
+    let (nin, q) = parse_exzd_header(data)?;
+    if out_len != nin {
+        return Err(DecodeError::OutputLengthMismatch {
+            need: nin,
+            have: out_len,
+        });
+    }
     if nin == 0 {
         return Ok(None);
     }
-
-    if data.len() < EXZD_HEADER_LEN + 2 {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: EXZD_HEADER_LEN + 2,
-            have: data.len(),
-        });
-    }
-    let zd0 = u16::from_le_bytes([data[EXZD_HEADER_LEN], data[EXZD_HEADER_LEN + 1]]);
-
-    // `nin` is an untrusted header field; a corrupted/crafted frame can claim
-    // an absurd sample count. The patched-encoding payload can never be
-    // shorter than `nin - 1` bytes (every element costs at least one byte,
-    // whether stored as a literal or contributing to the exception arrays),
-    // so this rejects bogus `nin` before it reaches `zd.reserve`, which would
-    // otherwise panic with "capacity overflow" for a large enough value.
-    let remaining = data.len() - (EXZD_HEADER_LEN + 2);
-    if nin - 1 > remaining {
-        return Err(DecodeError::ControlStreamTooShort {
-            need: nin - 1,
-            have: remaining,
-        });
-    }
-
     // Every element is overwritten below. `resize` keeps the existing
     // elements, so a reused buffer is only filled where it grows.
     zd.resize(nin, 0);
-    zd[0] = zd0;
+    zd[0] = u16::from_le_bytes([data[EXZD_HEADER_LEN], data[EXZD_HEADER_LEN + 1]]);
     patched::decode_to_slice_with_scratch(
         &data[EXZD_HEADER_LEN + 2..],
         &mut zd[1..],
         ex_pos,
         ex_val,
     )?;
-
     Ok(Some(q))
 }
 
@@ -1683,11 +1772,11 @@ fn decode_exzd_header_and_zd_with_scratch(
 /// The single-shot [`decode_exzd_fused`]/[`decode_exzd_fused_into`]
 /// functions allocate their working buffers (the reconstructed zigzag-delta
 /// array and the decoded exception position/residual lists) fresh on every
-/// call — the right default for a
-/// one-off decode. But the typical ex-zd workload is a BLOW5/nanopore file
-/// with many thousands of individual reads, each decoded via its own call;
-/// in that pattern, `ExzdDecoder` lets the same buffers be reused across
-/// calls instead of allocated and freed every time.
+/// call — the right default for a one-off decode. But the typical ex-zd
+/// workload is a BLOW5/nanopore file with many thousands of individual
+/// reads, each decoded via its own call; in that pattern, `ExzdDecoder`
+/// lets the same buffers be reused across calls instead of allocated and
+/// freed every time.
 ///
 /// # Examples
 ///
@@ -1720,20 +1809,29 @@ impl ExzdDecoder {
     /// Decode ex-zd bytes into `i16` samples, appending to `out`.
     ///
     /// Identical output to [`decode_exzd_fused`], but reuses this decoder's
-    /// scratch buffers instead of allocating new ones on every call.
+    /// scratch buffers instead of allocating new ones on every call. On error
+    /// `out` is left at its original length.
     pub fn decode_into(&mut self, data: &[u8], out: &mut Vec<i16>) -> Result<(), DecodeError> {
-        let Some(q) = decode_exzd_header_and_zd_with_scratch(
-            data,
-            &mut self.zd,
-            &mut self.ex_pos,
-            &mut self.ex_val,
-        )?
-        else {
-            return Ok(());
-        };
+        decode_exzd_append(data, out, |d, o| self.decode_to_slice(d, o))
+    }
 
-        exzd_fused::decode_into(&self.zd, 0, q, out);
-        Ok(())
+    /// Decode ex-zd bytes into `out`, reusing this decoder's scratch buffers.
+    ///
+    /// `out.len()` must equal the sample count stored in the frame, which
+    /// [`exzd_decoded_len`] returns; otherwise
+    /// [`DecodeError::OutputLengthMismatch`] is returned. On other errors the
+    /// contents of `out` are unspecified.
+    ///
+    /// ```
+    /// # use svb::{encode_exzd, exzd_decoded_len, ExzdDecoder};
+    /// let mut decoder = ExzdDecoder::new();
+    /// let encoded = encode_exzd(&[1i16, 2, 3]);
+    /// let mut out = vec![0i16; exzd_decoded_len(&encoded).unwrap()];
+    /// decoder.decode_to_slice(&encoded, &mut out).unwrap();
+    /// assert_eq!(out, [1, 2, 3]);
+    /// ```
+    pub fn decode_to_slice(&mut self, data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
+        decode_exzd_fused_with_scratch(data, out, &mut self.zd, &mut self.ex_pos, &mut self.ex_val)
     }
 }
 
@@ -2069,5 +2167,135 @@ mod exzd_tests {
         let mut out = vec![99i16];
         decoder.decode_into(&enc, &mut out).unwrap();
         assert_eq!(out, [99, 10, 20, 30]);
+    }
+
+    // ── slice API ─────────────────────────────────────────────────────────────
+
+    // Sample sets covering qts (q = 3), exceptions at several densities,
+    // extremes and the empty frame.
+    fn slice_cases() -> Vec<Vec<i16>> {
+        vec![
+            vec![],
+            vec![7],
+            vec![i16::MIN, i16::MAX, 0, -1, 1, i16::MIN, i16::MAX, 0],
+            (0..1000).map(|i| ((i % 97) * 8 - 400) as i16).collect(),
+            (0..1000)
+                .map(|i| ((i % 500 - 250) as i16).wrapping_add((i as i16).wrapping_mul(37) % 7 - 3))
+                .collect(),
+            (0..300)
+                .map(|i| {
+                    if i % 5 == 0 {
+                        (i * 977 % 30000) as i16
+                    } else {
+                        (i % 9) as i16
+                    }
+                })
+                .collect(),
+            (0..64)
+                .map(|i| if i % 2 == 0 { 0i16 } else { 20000 })
+                .collect(),
+        ]
+    }
+
+    type SliceDecoder = fn(&[u8], &mut [i16]) -> Result<(), DecodeError>;
+
+    fn slice_decoders() -> [(&'static str, SliceDecoder); 3] {
+        [
+            ("3pass", decode_exzd_to_slice),
+            ("fused", decode_exzd_fused_to_slice),
+            ("decoder", |d, o| ExzdDecoder::new().decode_to_slice(d, o)),
+        ]
+    }
+
+    #[test]
+    fn to_slice_roundtrip() {
+        // One decoder reused across all cases, so its buffers grow and shrink.
+        let mut decoder = ExzdDecoder::new();
+        for samples in slice_cases() {
+            let enc = encode_exzd(&samples);
+            let n = exzd_decoded_len(&enc).unwrap();
+            assert_eq!(n, samples.len());
+            for (name, decode) in slice_decoders() {
+                let mut out = vec![0x5A5Ai16; n];
+                decode(&enc, &mut out).unwrap();
+                assert_eq!(out, samples, "{name} n={n}");
+            }
+            let mut out = vec![0x5A5Ai16; n];
+            decoder.decode_to_slice(&enc, &mut out).unwrap();
+            assert_eq!(out, samples, "reused decoder n={n}");
+        }
+    }
+
+    #[test]
+    fn to_slice_length_mismatch() {
+        for samples in [vec![], vec![1i16, 2, 3]] {
+            let enc = encode_exzd(&samples);
+            let n = samples.len();
+            for (name, decode) in slice_decoders() {
+                for have in core::iter::once(n + 1).chain(n.checked_sub(1)) {
+                    let mut out = vec![0i16; have];
+                    let err = decode(&enc, &mut out).unwrap_err();
+                    assert!(
+                        matches!(err, DecodeError::OutputLengthMismatch { need, have: h } if need == n && h == have),
+                        "{name} n={n} have={have}: {err:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decoded_len_checks_header() {
+        let enc = encode_exzd(&[1i16, 2, 3, 4]);
+        assert_eq!(exzd_decoded_len(&enc).unwrap(), 4);
+        assert_eq!(exzd_decoded_len(&encode_exzd(&[])).unwrap(), 0);
+
+        let mut bad_version = enc.clone();
+        bad_version[0] = 1;
+        assert!(matches!(
+            exzd_decoded_len(&bad_version),
+            Err(DecodeError::UnsupportedVersion { version: 1 })
+        ));
+        assert!(exzd_decoded_len(&enc[..EXZD_HEADER_LEN - 1]).is_err());
+
+        // A sample count far beyond what the frame could hold is rejected,
+        // so the Vec decoders never try to allocate for it.
+        let mut huge = enc.clone();
+        huge[1..9].copy_from_slice(&(u64::MAX / 4).to_le_bytes());
+        assert!(exzd_decoded_len(&huge).is_err());
+        let mut out = vec![5i16];
+        assert!(decode_exzd_fused_into(&huge, &mut out).is_err());
+        assert_eq!(out, [5]);
+    }
+
+    #[test]
+    fn every_truncation_is_an_error() {
+        for samples in slice_cases() {
+            let enc = encode_exzd(&samples);
+            let n = samples.len();
+            for cut in 0..enc.len() {
+                for (name, decode) in slice_decoders() {
+                    let mut out = vec![0i16; n];
+                    assert!(
+                        decode(&enc[..cut], &mut out).is_err(),
+                        "{name} n={n} cut={cut}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vec_wrappers_restore_length_on_error() {
+        let samples: Vec<i16> = (0..100).map(|i| (i * 311 % 2000) as i16).collect();
+        let enc = encode_exzd(&samples);
+        let short = &enc[..enc.len() - 1];
+        let mut out = vec![1i16, 2];
+        assert!(decode_exzd_into(short, &mut out).is_err());
+        assert_eq!(out, [1, 2]);
+        assert!(decode_exzd_fused_into(short, &mut out).is_err());
+        assert_eq!(out, [1, 2]);
+        assert!(ExzdDecoder::new().decode_into(short, &mut out).is_err());
+        assert_eq!(out, [1, 2]);
     }
 }

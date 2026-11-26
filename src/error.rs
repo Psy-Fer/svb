@@ -35,6 +35,12 @@ pub enum DecodeError {
     /// signal forward-incompatible changes rather than silently
     /// misinterpreting the payload.
     UnsupportedVersion { version: u8 },
+    /// The output slice is not the length the frame says it holds.
+    ///
+    /// Returned by the `_to_slice` decoders of self-describing formats
+    /// (ex-zd), whose frame stores its own sample count. `need` is that count;
+    /// `have` is the length of the output slice.
+    OutputLengthMismatch { need: usize, have: usize },
 }
 
 impl fmt::Display for DecodeError {
@@ -50,6 +56,10 @@ impl fmt::Display for DecodeError {
             Self::UnsupportedVersion { version } => {
                 write!(f, "unsupported format version: {version}")
             }
+            Self::OutputLengthMismatch { need, have } => write!(
+                f,
+                "output length does not match the frame: need {need} values, have {have}"
+            ),
         }
     }
 }

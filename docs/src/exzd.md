@@ -49,6 +49,34 @@ decode_exzd_into(&buf, &mut out).unwrap();
 assert_eq!(out, samples);
 ```
 
+## Decoding into your own buffer
+
+`decode_exzd_to_slice`, `decode_exzd_fused_to_slice` and
+`ExzdDecoder::decode_to_slice` write into a caller-supplied `&mut [i16]`. The
+frame stores its own sample count, so `out.len()` must equal it; otherwise
+`DecodeError::OutputLengthMismatch` is returned. `exzd_decoded_len` reads the
+count from the header. It also checks the version byte and that the frame is
+long enough to hold that many samples, so a corrupted count is rejected before
+you allocate for it.
+
+```rust
+use svb::{decode_exzd_fused_to_slice, encode_exzd, exzd_decoded_len};
+
+let samples = [100i16, 101, 103, 102, 98];
+let encoded = encode_exzd(&samples);
+
+let mut out = vec![0i16; exzd_decoded_len(&encoded).unwrap()];
+decode_exzd_fused_to_slice(&encoded, &mut out).unwrap();
+assert_eq!(out, samples);
+```
+
+The decoders still allocate working buffers internally (the zigzag-delta array
+and the exception lists). `ExzdDecoder` keeps these between calls, so
+`ExzdDecoder::decode_to_slice` with a reused output buffer does not allocate
+once the buffers have grown to the largest frame seen. On error the `_into`
+functions leave the `Vec` at its original length; the contents of a slice are
+unspecified.
+
 ## Composable primitives
 
 The qts and patched/exception stages are exposed independently, matching [delta and zigzag](transforms.md):
