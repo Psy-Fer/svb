@@ -43,6 +43,76 @@ pub fn decode_from_into(
     result
 }
 
+// ── encode ────────────────────────────────────────────────────────────────────
+
+// Samples per encode block. A multiple of 16, so every block but the last
+// fills whole ctrl bytes and the AVX2 kernel's 16-value loop. The two stack
+// buffers take about 4 KB. Smaller blocks measured slower (256: about 20%,
+// from the per-block call and copy), and 2048 was only 2-4% faster.
+const ENCODE_BLOCK: usize = 1024;
+// Inputs up to this length use buffers of this size instead. Zero-filling the
+// 4 KB of full-size buffers made 128-sample encodes about 10% slower.
+const SMALL_BLOCK: usize = 256;
+
+/// Encode `samples` to VBZ (delta, zigzag, Svb16) into the start of `out` and
+/// return the number of bytes written. `out` must be at least
+/// `vbz_max_encoded_len(samples.len())` bytes; the caller checks this.
+///
+/// Works in blocks: the zigzag-delta codes of a block go into a stack buffer,
+/// the Svb16 kernel encodes them into a second stack buffer, and the block's
+/// ctrl and data bytes are then copied to their places in `out`. Nothing is
+/// allocated, and the Svb16 SIMD kernels are used unchanged.
+pub(crate) fn encode_to_slice(samples: &[i16], out: &mut [u8]) -> usize {
+    use crate::u16::Svb16;
+
+    if samples.len() <= SMALL_BLOCK {
+        let mut codes = [0u16; SMALL_BLOCK];
+        let mut block = [0u8; Svb16.max_encoded_len(SMALL_BLOCK)];
+        encode_blocks(samples, out, &mut codes, &mut block)
+    } else {
+        let mut codes = [0u16; ENCODE_BLOCK];
+        let mut block = [0u8; Svb16.max_encoded_len(ENCODE_BLOCK)];
+        encode_blocks(samples, out, &mut codes, &mut block)
+    }
+}
+
+// Encode in blocks of `codes.len()` samples. Any multiple of 8 gives the same
+// bytes, since each block then fills whole ctrl bytes; the sizes used are
+// multiples of 16 for the AVX2 kernel. `block` must hold
+// `Svb16.max_encoded_len(codes.len())` bytes.
+fn encode_blocks(samples: &[i16], out: &mut [u8], codes: &mut [u16], block: &mut [u8]) -> usize {
+    use crate::u16::Svb16;
+
+    let block_len = codes.len();
+    let ctrl_len = samples.len().div_ceil(8);
+    let (ctrl, data) = out.split_at_mut(ctrl_len);
+    let mut prev = 0i16;
+    let mut data_pos = 0;
+    for (b, chunk) in samples.chunks(block_len).enumerate() {
+        let codes = &mut codes[..chunk.len()];
+        // Each code depends only on the input, with no value carried through
+        // the loop, so the compiler can vectorise it.
+        let zigzag = |d: i16| ((d << 1) ^ (d >> 15)) as u16;
+        codes[0] = zigzag(chunk[0].wrapping_sub(prev));
+        for (c, w) in codes[1..].iter_mut().zip(chunk.windows(2)) {
+            *c = zigzag(w[1].wrapping_sub(w[0]));
+        }
+        prev = chunk[chunk.len() - 1];
+        let len = Svb16
+            .encode_to_slice(codes, block)
+            .expect("block buffer sized by max_encoded_len");
+        let block_ctrl = chunk.len().div_ceil(8);
+        let c0 = b * (block_len / 8);
+        ctrl[c0..c0 + block_ctrl].copy_from_slice(&block[..block_ctrl]);
+        let block_data = len - block_ctrl;
+        data[data_pos..data_pos + block_data].copy_from_slice(&block[block_ctrl..len]);
+        data_pos += block_data;
+    }
+    ctrl_len + data_pos
+}
+
+// ── decode ────────────────────────────────────────────────────────────────────
+
 /// Decode `out.len()` values of a VBZ stream into `out`, starting from `initial`.
 pub(crate) fn decode_from_to_slice(
     data: &[u8],

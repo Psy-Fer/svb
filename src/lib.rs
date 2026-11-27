@@ -17,10 +17,9 @@
 //! Enable `simd-auto` for runtime CPU detection (recommended). Use `simd-avx2`,
 //! `simd-ssse3`, or `simd-neon` for compile-time SIMD when the target is known.
 //! Disable `std` for `no_std` use. Without `alloc`, the slice functions
-//! (`encode_to_slice`, `decode_to_slice`, the fused VBZ, VBZ-K and SVB-ZD
-//! decoders and the SVB-ZD encoder) are available and never allocate. Enable
-//! `alloc` for the rest: the `Vec` functions, VBZ and VBZ-K encode, ex-zd and
-//! the 3-pass decoders.
+//! (`encode_to_slice`, `decode_to_slice`, the VBZ, VBZ-K and SVB-ZD encoders and
+//! fused decoders) are available and never allocate. Enable `alloc` for the
+//! rest: the `Vec` functions, ex-zd and the 3-pass decoders.
 //!
 //! **`no_std` note:** `simd-auto` on x86-64 requires `std` for
 //! [`is_x86_feature_detected!`]. When `std` is disabled, `simd-auto` compiles
@@ -166,10 +165,8 @@ pub mod u64;
 // The outer zstd layer is handled by the caller (e.g. pod5-rs).
 
 #[cfg(feature = "alloc")]
-pub use vbz::{
-    decode_vbz, decode_vbz_into, decode_vbz_to_slice, encode_vbz, encode_vbz_into,
-    encode_vbz_to_slice, vbz_max_encoded_len,
-};
+pub use vbz::{decode_vbz, decode_vbz_into, decode_vbz_to_slice, encode_vbz, encode_vbz_into};
+pub use vbz::{encode_vbz_to_slice, vbz_max_encoded_len};
 
 mod vbz_fused;
 
@@ -178,15 +175,18 @@ mod svbzd_fused;
 #[cfg(feature = "alloc")]
 mod exzd_fused;
 
-#[cfg(feature = "alloc")]
 mod vbz {
-    #[cfg(not(feature = "std"))]
+    #[cfg(all(feature = "alloc", not(feature = "std")))]
     use alloc::vec::Vec;
     #[cfg(feature = "std")]
     use std::vec::Vec;
 
-    use crate::error::{DecodeError, EncodeError};
-    use crate::{delta, u16::Svb16, zigzag};
+    #[cfg(feature = "alloc")]
+    use crate::error::DecodeError;
+    use crate::error::EncodeError;
+    #[cfg(feature = "alloc")]
+    use crate::{delta, zigzag};
+    use crate::{u16::Svb16, vbz_fused};
 
     /// Encode `i16` samples through delta, zigzag, then SVB16, returning raw bytes ready to pass to zstd.
     ///
@@ -199,6 +199,7 @@ mod vbz {
     /// let decoded = decode_vbz(&encoded, samples.len()).unwrap();
     /// assert_eq!(decoded, samples);
     /// ```
+    #[cfg(feature = "alloc")]
     pub fn encode_vbz(samples: &[i16]) -> Vec<u8> {
         let mut out = Vec::new();
         encode_vbz_into(samples, &mut out);
@@ -215,8 +216,12 @@ mod vbz {
     /// encode_vbz_into(&[1i16, 2, 3], &mut buf);
     /// encode_vbz_into(&[4i16, 5, 6], &mut buf);
     /// ```
+    #[cfg(feature = "alloc")]
     pub fn encode_vbz_into(samples: &[i16], out: &mut Vec<u8>) {
-        Svb16.encode_into(&vbz_codes(samples), out);
+        let start = out.len();
+        out.resize(start + vbz_max_encoded_len(samples.len()), 0);
+        let written = vbz_fused::encode_to_slice(samples, &mut out[start..]);
+        out.truncate(start + written);
     }
 
     /// Worst-case VBZ encoded size in bytes for `n` samples: `ceil(n / 8)`
@@ -240,9 +245,7 @@ mod vbz {
     /// `out` is not modified. The check is against the worst case, so a
     /// shorter slice is rejected even if the actual encoded bytes would have
     /// fitted. Bytes in `out` after the returned length may be overwritten.
-    ///
-    /// The delta and zigzag passes still allocate temporary buffers
-    /// internally.
+    /// Nothing is allocated.
     ///
     /// ```
     /// let samples = [10i16, 11, 12, 13, 300];
@@ -251,13 +254,14 @@ mod vbz {
     /// assert_eq!(&buf[..len], svb::encode_vbz(&samples));
     /// ```
     pub fn encode_vbz_to_slice(samples: &[i16], out: &mut [u8]) -> Result<usize, EncodeError> {
-        // Svb16.encode_to_slice checks `out` against vbz_max_encoded_len.
-        Svb16.encode_to_slice(&vbz_codes(samples), out)
-    }
-
-    // Delta then zigzag: the values Svb16 encodes.
-    fn vbz_codes(samples: &[i16]) -> Vec<u16> {
-        zigzag::encode(&delta::encode(samples))
+        let need = vbz_max_encoded_len(samples.len());
+        if out.len() < need {
+            return Err(EncodeError::OutputTooSmall {
+                need,
+                have: out.len(),
+            });
+        }
+        Ok(vbz_fused::encode_to_slice(samples, out))
     }
 
     /// Decode exactly `n` `i16` samples from SVB16 bytes (after zstd decompression).
@@ -277,6 +281,7 @@ mod vbz {
     /// let encoded = encode_vbz(&samples);
     /// assert_eq!(decode_vbz(&encoded, samples.len()).unwrap(), samples);
     /// ```
+    #[cfg(feature = "alloc")]
     pub fn decode_vbz(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
         let mut out = Vec::new();
         decode_vbz_into(data, n, &mut out)?;
@@ -300,6 +305,7 @@ mod vbz {
     /// ```
     ///
     /// On error `out` is left at its original length.
+    #[cfg(feature = "alloc")]
     pub fn decode_vbz_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
         crate::error::check_ctrl_len(data, n.div_ceil(8))?;
         let start = out.len();
@@ -330,6 +336,7 @@ mod vbz {
     // Not `vec![0; n]` for the temporary codes: that allocates with calloc,
     // which measured slower than malloc + fill for small n on glibc.
     #[allow(clippy::slow_vector_initialization)]
+    #[cfg(feature = "alloc")]
     pub fn decode_vbz_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
         crate::error::check_ctrl_len(data, out.len().div_ceil(8))?;
         let mut codes = Vec::new();
@@ -626,7 +633,6 @@ pub fn encode_vbzk(samples: &[i16], k: usize) -> Vec<u8> {
 /// # Panics
 ///
 /// Panics if `k == 0`.
-#[cfg(feature = "alloc")]
 pub const fn vbzk_max_encoded_len(n: usize, k: usize) -> usize {
     vbzk_header_len(vbzk_effective_k(n, k)).saturating_add(vbz_max_encoded_len(n))
 }
@@ -649,7 +655,6 @@ pub const fn vbzk_max_encoded_len(n: usize, k: usize) -> usize {
 /// # Panics
 ///
 /// Panics if `k == 0`.
-#[cfg(feature = "alloc")]
 pub fn encode_vbzk_to_slice(
     samples: &[i16],
     k: usize,
@@ -691,7 +696,6 @@ pub fn encode_vbzk_to_slice(
 // The number of sub-streams the encoder uses: `k` capped at 255 (the header
 // stores it in one byte), or 1 when sub-streams of `(n / k) & !7` samples
 // would be empty.
-#[cfg(feature = "alloc")]
 const fn vbzk_effective_k(n: usize, k: usize) -> usize {
     assert!(k != 0, "k must be >= 1");
     let k = if k > u8::MAX as usize {
@@ -702,7 +706,6 @@ const fn vbzk_effective_k(n: usize, k: usize) -> usize {
     if k > 1 && (n / k) & !7 != 0 { k } else { 1 }
 }
 
-#[cfg(feature = "alloc")]
 const fn vbzk_header_len(k: usize) -> usize {
     1 + (k - 1) * 6
 }

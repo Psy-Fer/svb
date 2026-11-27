@@ -348,8 +348,9 @@ fn vbzk_decode() {
         let n = samples.len();
         for k in [1, 2, 4, 7] {
             let frame = vbzk_frame(&samples, k);
-            #[cfg(feature = "alloc")]
-            assert_eq!(frame, svb::encode_vbzk(&samples, k), "k={k}");
+            let mut enc = vec![0u8; svb::vbzk_max_encoded_len(n, k)];
+            let len = svb::encode_vbzk_to_slice(&samples, k, &mut enc).unwrap();
+            assert_eq!(enc[..len], frame, "k={k}");
 
             let mut out = vec![0i16; n];
             svb::decode_vbzk_to_slice(&frame, &mut out).unwrap();
@@ -412,4 +413,58 @@ fn vbzk_offsets_are_checked_before_decoding() {
             &frame, &mut out
         )));
     }
+}
+
+// encode_vbz_to_slice against delta, zigzag and Svb16 run as separate passes.
+// The encoder works in blocks of 1024 samples; the lengths below include
+// every length up to 600 and the lengths around one and two blocks, so the
+// carry between blocks and short last blocks are covered.
+#[test]
+fn vbz_encode_matches_separate_passes() {
+    let mut x = 0x1234_5678u32;
+    let mut next = || {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        x
+    };
+    // Mostly small steps with some large jumps, so both widths occur.
+    let mut samples = vec![0i16; 2100];
+    let mut s = 0i16;
+    for v in samples.iter_mut() {
+        let r = next();
+        let step = if r % 5 == 0 {
+            r as i16
+        } else {
+            (r % 200) as i16 - 100
+        };
+        s = s.wrapping_add(step);
+        *v = s;
+    }
+    let check = |samples: &[i16]| {
+        let codes = vbz_codes(samples);
+        let mut want = vec![0u8; Svb16.max_encoded_len(samples.len())];
+        let want_len = Svb16.encode_to_slice(&codes, &mut want).unwrap();
+
+        let mut got = vec![0xA5u8; svb::vbz_max_encoded_len(samples.len())];
+        let len = svb::encode_vbz_to_slice(samples, &mut got).unwrap();
+        assert_eq!(got[..len], want[..want_len], "n={}", samples.len());
+    };
+    for n in (0..=600).chain(1000..=1050).chain(2030..=2100) {
+        check(&samples[..n]);
+    }
+    for (enc, samples) in pod5_reads() {
+        check(&samples);
+        let mut got = vec![0u8; svb::vbz_max_encoded_len(samples.len())];
+        let len = svb::encode_vbz_to_slice(&samples, &mut got).unwrap();
+        assert_eq!(got[..len], *enc);
+    }
+
+    // One byte short of the worst case is rejected before anything is written.
+    let mut small = vec![0xA5u8; svb::vbz_max_encoded_len(9) - 1];
+    assert!(matches!(
+        svb::encode_vbz_to_slice(&samples[..9], &mut small),
+        Err(svb::EncodeError::OutputTooSmall { .. })
+    ));
+    assert!(small.iter().all(|&b| b == 0xA5));
 }
