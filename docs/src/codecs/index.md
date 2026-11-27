@@ -34,6 +34,8 @@ All codecs use the same flat layout: control bytes first, data bytes immediately
 
 The control stream length is always `ceil(n / 4)` bytes for 2-bit codecs, `ceil(n / 8)` for `Svb16`. No length prefix is stored; the caller supplies the element count to `decode`.
 
+When `n` is not a multiple of the tags per byte, the last control byte has unused high bits. The encoders write them as zero and the decoders ignore them, which matches Lemire's C library. A non-zero unused bit does not change the decoded values, so it is not reported as an error.
+
 ## Encoding into your own buffer
 
 Every codec has `encode_to_slice` and `decode_to_slice`, which work on plain
