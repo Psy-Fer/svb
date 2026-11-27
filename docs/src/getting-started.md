@@ -14,7 +14,7 @@ svb = { version = "0.2", features = ["simd-auto"] }
 | Flag | Effect |
 |---|---|
 | `std` (default) | Enables `std`; implies `alloc` |
-| `alloc` | Enables the `Vec` functions, VBZ encode, VBZ-K and ex-zd. Without it only the slice functions are available (see [no_std Support](no-std.md)) |
+| `alloc` | Enables the `Vec` functions, VBZ and VBZ-K encode, and ex-zd. Without it only the slice functions are available (see [no_std Support](no-std.md)) |
 | `simd-auto` | Runtime CPU detection; selects the best available SIMD path |
 | `simd-avx2` | Compile-time AVX2 (asserts AVX2 is available at runtime) |
 | `simd-ssse3` | Compile-time SSSE3 |

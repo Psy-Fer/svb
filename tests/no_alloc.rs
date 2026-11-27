@@ -315,3 +315,101 @@ fn long_read_decodes() {
     svb::decode_vbz_fused_to_slice(enc, &mut out).unwrap();
     assert_eq!(out, samples);
 }
+
+// A VBZ-K frame built from the format description: byte k, then for each
+// sub-stream i >= 1 the carry (the sample before its first one, i16 LE) and
+// the offset of its first data byte (u32 LE), then the VBZ bytes of all the
+// samples. Sub-streams 0..k-1 hold `(n / k) & !7` samples each.
+fn vbzk_frame(samples: &[i16], k: usize) -> Vec<u8> {
+    let n = samples.len();
+    let n_sub = (n / k) & !7;
+    assert!(k == 1 || n_sub > 0);
+    let codes = vbz_codes(samples);
+    let mut vbz = vec![0u8; Svb16.max_encoded_len(n)];
+    let len = Svb16.encode_to_slice(&codes, &mut vbz).unwrap();
+    vbz.truncate(len);
+
+    let ctrl = &vbz[..n.div_ceil(8)];
+    let width = |j: usize| 1 + ((ctrl[j / 8] >> (j % 8)) & 1) as u32;
+    let mut frame = vec![k as u8];
+    for i in 1..k {
+        let split = i * n_sub;
+        let offset: u32 = (0..split).map(width).sum();
+        frame.extend_from_slice(&samples[split - 1].to_le_bytes());
+        frame.extend_from_slice(&offset.to_le_bytes());
+    }
+    frame.extend_from_slice(&vbz);
+    frame
+}
+
+#[test]
+fn vbzk_decode() {
+    for (_, samples) in pod5_reads() {
+        let n = samples.len();
+        for k in [1, 2, 4, 7] {
+            let frame = vbzk_frame(&samples, k);
+            #[cfg(feature = "alloc")]
+            assert_eq!(frame, svb::encode_vbzk(&samples, k), "k={k}");
+
+            let mut out = vec![0i16; n];
+            svb::decode_vbzk_to_slice(&frame, &mut out).unwrap();
+            assert_eq!(out, samples, "k={k}");
+
+            let mut longer = frame.clone();
+            longer.push(0);
+            assert!(matches!(
+                svb::decode_vbzk_to_slice(&longer, &mut out),
+                Err(DecodeError::TrailingData { .. })
+            ));
+        }
+
+        // Sub-stream 2 of 4 with a data offset past the end of the frame. That
+        // offset is also where sub-stream 1's data ends, so sub-stream 1 is the
+        // first one out of range.
+        let mut bad = vbzk_frame(&samples, 4);
+        let entry = 1 + 6 + 2; // header entry for sub-stream 2, offset field
+        bad[entry..entry + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let mut out = vec![0i16; n];
+        let n_sub = (n / 4) & !7;
+        assert!(matches!(
+            svb::decode_vbzk_to_slice(&bad, &mut out),
+            Err(DecodeError::DataTruncated { index }) if index == n_sub
+        ));
+    }
+}
+
+// A frame with two faults: sub-stream 0 claims one data byte fewer than it
+// has (one 2-byte tag cleared), and sub-stream 2's data ends past the end of
+// the frame. Every offset is checked before any sub-stream is decoded, so the
+// bad offset is reported, as the parallel decoder does.
+#[test]
+fn vbzk_offsets_are_checked_before_decoding() {
+    for (_, samples) in pod5_reads() {
+        let n = samples.len();
+        let k = 4;
+        let n_sub = (n / k) & !7;
+        let mut frame = vbzk_frame(&samples, k);
+        let header_len = 1 + (k - 1) * 6;
+
+        let j = (0..n_sub)
+            .find(|&j| frame[header_len + j / 8] >> (j % 8) & 1 == 1)
+            .expect("a 2-byte value in sub-stream 0");
+        frame[header_len + j / 8] &= !(1 << (j % 8));
+        let mut out = vec![0i16; n];
+        // On its own, the cleared tag gives TrailingData for sub-stream 0.
+        assert!(matches!(
+            svb::decode_vbzk_to_slice(&frame, &mut out),
+            Err(DecodeError::TrailingData { .. })
+        ));
+
+        let entry = 1 + 2 * 6 + 2; // offset field of sub-stream 3, the end of 2
+        frame[entry..entry + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let is_offset_error =
+            |r| matches!(r, Err(DecodeError::DataTruncated { index }) if index == 2 * n_sub);
+        assert!(is_offset_error(svb::decode_vbzk_to_slice(&frame, &mut out)));
+        #[cfg(feature = "std")]
+        assert!(is_offset_error(svb::decode_vbzk_parallel_to_slice(
+            &frame, &mut out
+        )));
+    }
+}

@@ -17,9 +17,10 @@
 //! Enable `simd-auto` for runtime CPU detection (recommended). Use `simd-avx2`,
 //! `simd-ssse3`, or `simd-neon` for compile-time SIMD when the target is known.
 //! Disable `std` for `no_std` use. Without `alloc`, the slice functions
-//! (`encode_to_slice`, `decode_to_slice`, the fused VBZ and SVB-ZD decoders and
-//! the SVB-ZD encoder) are available and never allocate. Enable `alloc` for the
-//! rest: the `Vec` functions, VBZ encode, VBZ-K, ex-zd and the 3-pass decoders.
+//! (`encode_to_slice`, `decode_to_slice`, the fused VBZ, VBZ-K and SVB-ZD
+//! decoders and the SVB-ZD encoder) are available and never allocate. Enable
+//! `alloc` for the rest: the `Vec` functions, VBZ and VBZ-K encode, ex-zd and
+//! the 3-pass decoders.
 //!
 //! **`no_std` note:** `simd-auto` on x86-64 requires `std` for
 //! [`is_x86_feature_detected!`]. When `std` is disabled, `simd-auto` compiles
@@ -747,9 +748,15 @@ pub fn decode_vbzk_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(),
 /// svb::decode_vbzk_to_slice(&encoded, &mut out).unwrap();
 /// assert_eq!(out, samples);
 /// ```
-#[cfg(feature = "alloc")]
 pub fn decode_vbzk_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
-    for s in parse_vbzk(data, out.len())? {
+    let frame = parse_vbzk(data, out.len())?;
+    // Check every sub-stream's offsets before decoding any of them, so a frame
+    // with several faults reports the same error as the parallel decoder.
+    for i in 0..frame.k {
+        frame.stream(i)?;
+    }
+    for i in 0..frame.k {
+        let s = frame.stream(i)?;
         decode_vbzk_stream(&s, &mut out[s.start..s.start + s.len])?;
     }
     Ok(())
@@ -758,7 +765,6 @@ pub fn decode_vbzk_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeEr
 // Decode one VBZ-K sub-stream into `out`. The sub-stream must use all of its
 // data bytes, which end where the next sub-stream's start (or at the end of
 // `data` for the last one).
-#[cfg(feature = "alloc")]
 fn decode_vbzk_stream(s: &VbzkStream<'_>, out: &mut [i16]) -> Result<(), DecodeError> {
     let used = vbz_fused::decode_parts_to_slice(s.ctrl, s.data, s.initial, out)
         .map_err(|e| offset_index(e, s.start))?;
@@ -767,7 +773,6 @@ fn decode_vbzk_stream(s: &VbzkStream<'_>, out: &mut [i16]) -> Result<(), DecodeE
 
 // One VBZ-K sub-stream: its ctrl and data bytes, where its samples go in the
 // output, and the carry it starts from.
-#[cfg(feature = "alloc")]
 struct VbzkStream<'a> {
     ctrl: &'a [u8],
     data: &'a [u8],
@@ -778,12 +783,21 @@ struct VbzkStream<'a> {
     initial: i16,
 }
 
-// Parse a VBZ-K header and split the body into its sub-streams. The data
-// offsets in the header are checked: a sub-stream whose data would start past
-// the end of the body, or before the previous one, returns `DataTruncated`
-// with the index of that sub-stream's first sample.
-#[cfg(feature = "alloc")]
-fn parse_vbzk(data: &[u8], n: usize) -> Result<Vec<VbzkStream<'_>>, DecodeError> {
+// A VBZ-K frame with its header checked: the shared ctrl stream, the data
+// bytes of all sub-streams, and what is needed to find each sub-stream.
+struct VbzkFrame<'a> {
+    data: &'a [u8],
+    k: usize,
+    n: usize,
+    n_sub: usize,
+    header_len: usize,
+    ctrl: &'a [u8],
+    data_bytes: &'a [u8],
+}
+
+// Parse a VBZ-K header for `n` samples. Checks that the header and the ctrl
+// stream fit in `data`; the sub-stream offsets are checked by `stream`.
+fn parse_vbzk(data: &[u8], n: usize) -> Result<VbzkFrame<'_>, DecodeError> {
     let Some(&k) = data.first() else {
         return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
     };
@@ -807,55 +821,65 @@ fn parse_vbzk(data: &[u8], n: usize) -> Result<Vec<VbzkStream<'_>>, DecodeError>
             have: svb.len(),
         });
     }
-    let ctrl = &svb[..ctrl_len];
-    let data_bytes = &svb[ctrl_len..];
+    Ok(VbzkFrame {
+        data,
+        k,
+        n,
+        n_sub: (n / k) & !7,
+        header_len,
+        ctrl: &svb[..ctrl_len],
+        data_bytes: &svb[ctrl_len..],
+    })
+}
 
+impl<'a> VbzkFrame<'a> {
     // Sub-stream i (for i >= 1) starts at header entry i - 1:
-    // [carry: i16 LE][data offset: u32 LE].
-    let entry = |i: usize| -> (i16, usize) {
+    // [carry: i16 LE][data offset: u32 LE]. Sub-stream 0 starts at 0 with
+    // carry 0.
+    fn entry(&self, i: usize) -> (i16, usize) {
         if i == 0 {
             return (0, 0);
         }
+        let d = self.data;
         let off = 1 + (i - 1) * 6;
-        let carry = i16::from_le_bytes([data[off], data[off + 1]]);
-        let d_off =
-            u32::from_le_bytes([data[off + 2], data[off + 3], data[off + 4], data[off + 5]]);
+        let carry = i16::from_le_bytes([d[off], d[off + 1]]);
+        let d_off = u32::from_le_bytes([d[off + 2], d[off + 3], d[off + 4], d[off + 5]]);
         (carry, d_off as usize)
-    };
+    }
 
-    let n_sub = (n / k) & !7;
-    let mut streams = Vec::with_capacity(k);
-    for i in 0..k {
+    // Sub-stream `i` (below `k`). A sub-stream whose data would start past the
+    // end of the body, or before the previous one, returns `DataTruncated`
+    // with the index of its first sample.
+    fn stream(&self, i: usize) -> Result<VbzkStream<'a>, DecodeError> {
+        let (k, n_sub) = (self.k, self.n_sub);
         let len = if i < k - 1 {
             n_sub
         } else {
-            n - (k - 1) * n_sub
+            self.n - (k - 1) * n_sub
         };
         let start = i * n_sub;
-        let (initial, d_start) = entry(i);
+        let (initial, d_start) = self.entry(i);
         let d_end = if i + 1 < k {
-            entry(i + 1).1
+            self.entry(i + 1).1
         } else {
-            data_bytes.len()
+            self.data_bytes.len()
         };
-        if d_start > d_end || d_end > data_bytes.len() {
+        if d_start > d_end || d_end > self.data_bytes.len() {
             return Err(DecodeError::DataTruncated { index: start });
         }
         let ctrl_start = i * (n_sub / 8);
-        streams.push(VbzkStream {
-            ctrl: &ctrl[ctrl_start..ctrl_start + len.div_ceil(8)],
-            data: &data_bytes[d_start..d_end],
-            data_offset: header_len + ctrl_len + d_start,
+        Ok(VbzkStream {
+            ctrl: &self.ctrl[ctrl_start..ctrl_start + len.div_ceil(8)],
+            data: &self.data_bytes[d_start..d_end],
+            data_offset: self.header_len + self.ctrl.len() + d_start,
             start,
             len,
             initial,
-        });
+        })
     }
-    Ok(streams)
 }
 
 // Shift a `DataTruncated` index from a sub-stream to the whole output.
-#[cfg(feature = "alloc")]
 fn offset_index(e: DecodeError, base: usize) -> DecodeError {
     match e {
         DecodeError::DataTruncated { index } => DecodeError::DataTruncated {
@@ -906,7 +930,10 @@ pub fn decode_vbzk_parallel_into(
 /// Has the same per-call thread-spawn cost as [`decode_vbzk_parallel_into`].
 #[cfg(all(feature = "alloc", feature = "std"))]
 pub fn decode_vbzk_parallel_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
-    let streams = parse_vbzk(data, out.len())?;
+    let frame = parse_vbzk(data, out.len())?;
+    let streams = (0..frame.k)
+        .map(|i| frame.stream(i))
+        .collect::<Result<Vec<_>, _>>()?;
 
     // Split `out` into one part per sub-stream, in order.
     let mut parts = Vec::with_capacity(streams.len());

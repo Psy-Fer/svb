@@ -15,6 +15,7 @@ This gives the functions that work on caller-supplied slices:
 - every codec's `max_encoded_len`, `encode_to_slice` and `decode_to_slice`;
 - the `delta` and `zigzag` `_to_slice` functions, and `delta::decode_in_place`;
 - `decode_vbz_fused_to_slice` and `decode_vbz_fused_from_to_slice`;
+- `decode_vbzk_to_slice` (experimental VBZ-K);
 - `encode_svbzd_to_slice`, `svbzd_max_encoded_len`, `decode_svbzd_fused_to_slice` and `decode_svbzd_fused_from_to_slice`.
 
 These functions never allocate, in any build, so they are also the ones to use when you want to control every allocation in a `std` program. The output can be a stack array, a static buffer or memory you manage yourself:
@@ -48,7 +49,7 @@ The rest of the API needs the `alloc` feature:
 
 - the `Vec` functions (`encode`, `encode_into`, `decode`, `decode_into` and the pipeline forms that return or append to a `Vec`);
 - the VBZ encoder and the 3-pass `decode_vbz_to_slice` and `decode_svbzd_to_slice`, which use temporary buffers;
-- VBZ-K;
+- the VBZ-K encoder and the parallel VBZ-K decoder (which also needs `std`);
 - ex-zd, `patched` and `quantize`, which need buffers whose size depends on the data.
 
 ## With an allocator
