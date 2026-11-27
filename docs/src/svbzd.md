@@ -27,6 +27,15 @@ let decoded = decode_svbzd(&encoded, samples.len()).unwrap();
 assert_eq!(decoded, samples);
 ```
 
+## Extra bytes after the frame
+
+The decoders expect `data` to hold exactly one encoded frame (in BLOW5, the
+record's signal bytes after the 4-byte sample count). If the control stream
+says the frame ends before the end of `data`, they return
+`DecodeError::TrailingData { used, len }`. This also catches a corrupted
+control stream that claims fewer bytes than were written. See the same
+section in [VBZ](vbz.md#extra-bytes-after-the-frame) for an example.
+
 ## Low-level / into variants
 
 For zero-allocation usage or appending to an existing buffer:

@@ -267,6 +267,9 @@ mod vbz {
 
     /// Decode exactly `n` `i16` samples from SVB16 bytes (after zstd decompression).
     ///
+    /// `data` must be exactly one frame: extra bytes after it give
+    /// [`DecodeError::TrailingData`].
+    ///
     /// `n` must equal the number of samples that were originally encoded (`n` is
     /// not stored in the encoded bytes and cannot be inferred); a wrong value
     /// produces incorrect output or a [`DecodeError`].
@@ -329,8 +332,15 @@ mod vbz {
     /// svb::decode_vbz_to_slice(&encoded, &mut out).unwrap();
     /// assert_eq!(out, samples);
     /// ```
+    // Not `vec![0; n]` for the temporary codes: that allocates with calloc,
+    // which measured slower than malloc + fill for small n on glibc.
+    #[allow(clippy::slow_vector_initialization)]
     pub fn decode_vbz_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
-        let codes = Svb16.decode(data, out.len())?;
+        crate::error::check_ctrl_len(data, out.len().div_ceil(8))?;
+        let mut codes = Vec::new();
+        codes.resize(out.len(), 0u16);
+        let used = Svb16.decode_to_slice(data, &mut codes)?;
+        crate::error::check_used(used, data.len())?;
         zigzag::decode_to_slice(&codes, out);
         delta::decode_in_place(out);
         Ok(())
@@ -338,6 +348,9 @@ mod vbz {
 }
 
 /// Decode a VBZ-encoded byte stream into `i16` samples using a fused single-pass decoder.
+///
+/// `data` must be exactly one frame: extra bytes after it give
+/// [`DecodeError::TrailingData`].
 ///
 /// Identical output to [`decode_vbz`] but fuses SVB16, zigzag, and delta decode
 /// into one SIMD loop. SVB16 and zigzag work fills the delta carry-chain stall,
@@ -702,6 +715,9 @@ const fn vbzk_header_len(k: usize) -> usize {
 }
 
 /// Decode VBZ-K encoded data, returning a new `Vec<i16>`.
+///
+/// `data` must be exactly one frame: extra bytes after it give
+/// [`DecodeError::TrailingData`].
 #[cfg(feature = "alloc")]
 pub fn decode_vbzk(data: &[u8], n: usize) -> Result<Vec<i16>, DecodeError> {
     #[cfg(not(feature = "std"))]
@@ -742,11 +758,19 @@ pub fn decode_vbzk_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(),
 #[cfg(feature = "alloc")]
 pub fn decode_vbzk_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
     for s in parse_vbzk(data, out.len())? {
-        let sub_out = &mut out[s.start..s.start + s.len];
-        vbz_fused::decode_parts_to_slice(s.ctrl, s.data, s.initial, sub_out)
-            .map_err(|e| offset_index(e, s.start))?;
+        decode_vbzk_stream(&s, &mut out[s.start..s.start + s.len])?;
     }
     Ok(())
+}
+
+// Decode one VBZ-K sub-stream into `out`. The sub-stream must use all of its
+// data bytes, which end where the next sub-stream's start (or at the end of
+// `data` for the last one).
+#[cfg(feature = "alloc")]
+fn decode_vbzk_stream(s: &VbzkStream<'_>, out: &mut [i16]) -> Result<(), DecodeError> {
+    let used = vbz_fused::decode_parts_to_slice(s.ctrl, s.data, s.initial, out)
+        .map_err(|e| offset_index(e, s.start))?;
+    crate::error::check_used(s.data_offset + used, s.data_offset + s.data.len())
 }
 
 // One VBZ-K sub-stream: its ctrl and data bytes, where its samples go in the
@@ -755,6 +779,8 @@ pub fn decode_vbzk_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeEr
 struct VbzkStream<'a> {
     ctrl: &'a [u8],
     data: &'a [u8],
+    // Position of `data` in the whole VBZ-K frame.
+    data_offset: usize,
     start: usize,
     len: usize,
     initial: i16,
@@ -766,9 +792,6 @@ struct VbzkStream<'a> {
 // with the index of that sub-stream's first sample.
 #[cfg(feature = "alloc")]
 fn parse_vbzk(data: &[u8], n: usize) -> Result<Vec<VbzkStream<'_>>, DecodeError> {
-    if n == 0 {
-        return Ok(Vec::new());
-    }
     let Some(&k) = data.first() else {
         return Err(DecodeError::ControlStreamTooShort { need: 1, have: 0 });
     };
@@ -830,6 +853,7 @@ fn parse_vbzk(data: &[u8], n: usize) -> Result<Vec<VbzkStream<'_>>, DecodeError>
         streams.push(VbzkStream {
             ctrl: &ctrl[ctrl_start..ctrl_start + len.div_ceil(8)],
             data: &data_bytes[d_start..d_end],
+            data_offset: header_len + ctrl_len + d_start,
             start,
             len,
             initial,
@@ -905,12 +929,7 @@ pub fn decode_vbzk_parallel_to_slice(data: &[u8], out: &mut [i16]) -> Result<(),
         let handles: Vec<_> = streams
             .iter()
             .zip(parts)
-            .map(|(s, part)| {
-                scope.spawn(move || {
-                    vbz_fused::decode_parts_to_slice(s.ctrl, s.data, s.initial, part)
-                        .map_err(|e| offset_index(e, s.start))
-                })
-            })
+            .map(|(s, part)| scope.spawn(move || decode_vbzk_stream(s, part)))
             .collect();
         // Join every thread before returning, then report the first error.
         let results: Vec<_> = handles
@@ -1386,6 +1405,9 @@ pub fn encode_svbzd_to_slice(samples: &[i16], out: &mut [u8]) -> Result<usize, E
 
 /// Decode exactly `n` `i16` samples from SVB-ZD bytes (3-pass: U32Classic → zigzag → delta).
 ///
+/// `data` must be exactly one frame: extra bytes after it give
+/// [`DecodeError::TrailingData`].
+///
 /// `n` must equal the number of samples originally encoded; a wrong value
 /// produces incorrect output or a [`DecodeError`].
 ///
@@ -1440,8 +1462,20 @@ pub fn decode_svbzd_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<()
 /// assert_eq!(out, samples);
 /// ```
 #[cfg(feature = "alloc")]
+// Not `vec![0; n]` for the temporary codes: that allocates with calloc,
+// which measured slower than malloc + fill for small n on glibc.
+#[allow(clippy::slow_vector_initialization)]
 pub fn decode_svbzd_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
-    let codes = crate::u32::U32Classic.decode(data, out.len())?;
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
+    crate::error::check_ctrl_len(data, out.len().div_ceil(4))?;
+    let mut codes = Vec::new();
+    codes.resize(out.len(), 0u32);
+    let used = crate::u32::U32Classic.decode_to_slice(data, &mut codes)?;
+    crate::error::check_used(used, data.len())?;
     let mut acc: i32 = 0;
     for (o, zz) in out.iter_mut().zip(codes) {
         let delta = ((zz >> 1) as i32) ^ -((zz & 1) as i32);
@@ -1452,6 +1486,9 @@ pub fn decode_svbzd_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeE
 }
 
 /// Decode SVB-ZD bytes into `i16` samples using a fused single-pass decoder.
+///
+/// `data` must be exactly one frame: extra bytes after it give
+/// [`DecodeError::TrailingData`].
 ///
 /// Identical output to [`decode_svbzd`] but fuses U32Classic decode, inverse-zigzag,
 /// and delta prefix sum into one SIMD loop. U32Classic and zigzag work fills the
@@ -1686,6 +1723,9 @@ fn write_exzd_header(nin: usize, q: u8, out: &mut [u8]) {
 
 /// Decode ex-zd bytes into `i16` samples.
 ///
+/// `data` must be exactly one frame: extra bytes after it give
+/// [`DecodeError::TrailingData`].
+///
 /// Unlike [`decode_vbz`] / [`decode_svbzd`], the sample count is embedded in
 /// the frame itself, so no separate `n` is needed.
 ///
@@ -1768,6 +1808,9 @@ pub fn exzd_decoded_len(data: &[u8]) -> Result<usize, DecodeError> {
 }
 
 /// Decode ex-zd bytes into `i16` samples using a fused single-pass decoder.
+///
+/// `data` must be exactly one frame: extra bytes after it give
+/// [`DecodeError::TrailingData`].
 ///
 /// Identical output to [`decode_exzd`], but fuses inverse-zigzag and the
 /// delta prefix sum into one SIMD loop rather than two separate scans. The
@@ -1920,18 +1963,28 @@ fn decode_exzd_zd(
         });
     }
     if nin == 0 {
+        crate::error::check_used(EXZD_HEADER_LEN, data.len())?;
         return Ok(None);
     }
     // Every element is overwritten below. `resize` keeps the existing
     // elements, so a reused buffer is only filled where it grows.
     zd.resize(nin, 0);
     zd[0] = u16::from_le_bytes([data[EXZD_HEADER_LEN], data[EXZD_HEADER_LEN + 1]]);
-    patched::decode_to_slice_with_scratch(
+    let used = patched::decode_to_slice_with_scratch(
         &data[EXZD_HEADER_LEN + 2..],
         &mut zd[1..],
         ex_pos,
         ex_val,
-    )?;
+    )
+    .map_err(|e| match e {
+        // Positions in the patched part to positions in the frame.
+        DecodeError::TrailingData { used, len } => DecodeError::TrailingData {
+            used: EXZD_HEADER_LEN + 2 + used,
+            len: EXZD_HEADER_LEN + 2 + len,
+        },
+        other => other,
+    })?;
+    crate::error::check_used(EXZD_HEADER_LEN + 2 + used, data.len())?;
     Ok(Some(q))
 }
 

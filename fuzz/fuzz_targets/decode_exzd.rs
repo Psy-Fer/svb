@@ -8,7 +8,7 @@
 //! agree. The decoder is kept between inputs, so its grow-only buffers carry
 //! state from earlier frames. The slice decoders must reject an output of
 //! the wrong length, and the `_into` functions must restore the `Vec` on
-//! error.
+//! error. Both decoders must reject one extra byte after a frame.
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
@@ -24,6 +24,12 @@ thread_local! {
 }
 
 fuzz_target!(|data: &[u8]| {
+    check_strict("decode_exzd", data, false, |d| {
+        svb::decode_exzd(d).map(|_| ())
+    });
+    check_strict("decode_exzd_fused", data, false, |d| {
+        svb::decode_exzd_fused(d).map(|_| ())
+    });
     DECODER.with_borrow_mut(|decoder| check(data, decoder));
 });
 

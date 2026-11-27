@@ -103,3 +103,36 @@ pub fn split_n(data: &[u8]) -> Option<(usize, &[u8])> {
     }
     Some((u16::from_le_bytes([data[0], data[1]]) as usize, &data[2..]))
 }
+
+/// Check a pipeline decoder that expects exactly one frame. `decode` decodes
+/// a whole input. When `data` decodes, the same bytes plus one more must give
+/// `TrailingData` at the old end. With `truncate`, a `TrailingData` error at
+/// the end of `data` means the first `used` bytes are a frame, so they must
+/// decode. Only VBZ and SVB-ZD use `truncate`: in VBZ-K and ex-zd the error
+/// can come from a part of the frame whose length is stored in the frame, and
+/// cutting the input there breaks that length.
+pub fn check_strict(
+    name: &str,
+    data: &[u8],
+    truncate: bool,
+    decode: impl Fn(&[u8]) -> Result<(), svb::DecodeError>,
+) {
+    match decode(data) {
+        Ok(()) => {
+            let mut longer = data.to_vec();
+            longer.push(0xAB);
+            let r = decode(&longer);
+            assert!(
+                matches!(r, Err(svb::DecodeError::TrailingData { used, len })
+                    if used == data.len() && len == data.len() + 1),
+                "{name}: one extra byte gave {r:?}"
+            );
+        }
+        Err(svb::DecodeError::TrailingData { used, len }) if truncate && len == data.len() => {
+            assert!(used < len, "{name}: used {used} >= len {len}");
+            let r = decode(&data[..used]);
+            assert!(r.is_ok(), "{name}: first {used} bytes gave {r:?}");
+        }
+        Err(_) => {}
+    }
+}

@@ -5,7 +5,7 @@
 //!
 //! The sequential and parallel decoders must agree, the `Vec` functions must
 //! match the slice functions, and the `_into` functions must restore the
-//! `Vec` on error.
+//! `Vec` on error. The decoder must reject one extra byte after a frame.
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
@@ -42,4 +42,9 @@ fuzz_target!(|data: &[u8]| {
     let mut v = prefix.to_vec();
     let r = svb::decode_vbzk_parallel_into(rest, n, &mut v);
     check_into(&prefix, &v, &r, expected);
+
+    check_strict("decode_vbzk_to_slice", rest, false, |d| {
+        let mut o = vec![0i16; n];
+        svb::decode_vbzk_to_slice(d, &mut o)
+    });
 });

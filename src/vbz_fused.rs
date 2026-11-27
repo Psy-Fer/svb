@@ -49,7 +49,7 @@ pub(crate) fn decode_from_to_slice(
 ) -> Result<(), DecodeError> {
     let n = out.len();
     if n == 0 {
-        return Ok(());
+        return crate::error::check_used(0, data.len());
     }
     let ctrl_len = n.div_ceil(8);
     if data.len() < ctrl_len {
@@ -58,7 +58,8 @@ pub(crate) fn decode_from_to_slice(
             have: data.len(),
         });
     }
-    decode_parts_to_slice(&data[..ctrl_len], &data[ctrl_len..], initial, out)
+    let used = decode_parts_to_slice(&data[..ctrl_len], &data[ctrl_len..], initial, out)?;
+    crate::error::check_used(ctrl_len + used, data.len())
 }
 
 /// Decode a pre-split VBZ sub-stream (`ctrl` and `data_bytes` already
@@ -77,9 +78,9 @@ pub(crate) fn decode_parts_to_slice(
     data_bytes: &[u8],
     initial: i16,
     out: &mut [i16],
-) -> Result<(), DecodeError> {
+) -> Result<usize, DecodeError> {
     if out.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     assert!(ctrl.len() >= out.len().div_ceil(8));
 
@@ -146,7 +147,7 @@ fn decode_scalar(
     initial: i16,
     out: &mut [i16],
     first_index: usize,
-) -> Result<(), DecodeError> {
+) -> Result<usize, DecodeError> {
     let mut acc = initial;
     let mut data_pos = 0usize;
     for (i, o) in out.iter_mut().enumerate() {
@@ -175,7 +176,7 @@ fn decode_scalar(
         acc = acc.wrapping_add(delta);
         *o = acc;
     }
-    Ok(())
+    Ok(data_pos)
 }
 
 // ── SSSE3 / x86_64 ───────────────────────────────────────────────────────────
@@ -192,7 +193,7 @@ pub(crate) unsafe fn decode_ssse3(
     data_bytes: &[u8],
     initial: i16,
     out: &mut [i16],
-) -> Result<(), DecodeError> {
+) -> Result<usize, DecodeError> {
     use crate::u16::shuffle::TABLE;
     use core::arch::x86_64::*;
 
@@ -288,13 +289,14 @@ pub(crate) unsafe fn decode_ssse3(
     }
 
     // Scalar tail: 0-7 remaining values.
-    decode_scalar(
+    let tail = decode_scalar(
         &ctrl[ctrl_pos..],
         &data_bytes[data_pos..],
         acc,
         &mut out[decoded..],
         decoded,
-    )
+    )?;
+    Ok(data_pos + tail)
 }
 
 // ── NEON / AArch64 ───────────────────────────────────────────────────────────
@@ -309,7 +311,7 @@ pub(crate) unsafe fn decode_neon(
     data_bytes: &[u8],
     initial: i16,
     out: &mut [i16],
-) -> Result<(), DecodeError> {
+) -> Result<usize, DecodeError> {
     use crate::u16::shuffle::TABLE;
     use core::arch::aarch64::*;
 
@@ -408,13 +410,14 @@ pub(crate) unsafe fn decode_neon(
     }
 
     // Scalar tail: 0-7 remaining values.
-    decode_scalar(
+    let tail = decode_scalar(
         &ctrl[ctrl_pos..],
         &data_bytes[data_pos..],
         acc,
         &mut out[decoded..],
         decoded,
-    )
+    )?;
+    Ok(data_pos + tail)
 }
 
 #[cfg(test)]

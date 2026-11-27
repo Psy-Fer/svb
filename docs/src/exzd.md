@@ -33,6 +33,16 @@ let decoded = decode_exzd(&encoded).unwrap();
 assert_eq!(decoded, samples);
 ```
 
+## Extra bytes after the frame
+
+The decoders expect `data` to hold exactly one ex-zd frame. Bytes after the
+end of the frame give `DecodeError::TrailingData { used, len }`. The two
+exception arrays inside the frame each have a stored length, and each must
+use exactly that length, so a corrupted control stream in either one is
+caught the same way. `used` and `len` are then positions in the frame where
+that array ended and should have ended. `patched::decode_to_slice` on its own
+accepts bytes after the encoded values and returns how many it used.
+
 ## Low-level / into variants
 
 For zero-allocation usage or appending to an existing buffer:

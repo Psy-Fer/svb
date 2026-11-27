@@ -27,6 +27,37 @@ let decoded = decode_vbz(&encoded, samples.len()).unwrap();
 assert_eq!(decoded, samples);
 ```
 
+## Extra bytes after the frame
+
+The decoders expect `data` to hold exactly one encoded frame, as a POD5
+signal chunk does. If the control stream says the frame ends before the end
+of `data`, they return `DecodeError::TrailingData` with the position where
+the frame ended (`used`) and the length of `data` (`len`). This also catches a
+corrupted control stream that claims fewer bytes than were written, which
+would otherwise decode to wrong samples without an error. It does not catch
+corruption that leaves the length unchanged, such as a changed data byte.
+
+```rust
+use svb::{encode_vbz, decode_vbz_fused, DecodeError};
+
+let samples = [100i16, 101, 103];
+let mut data = encode_vbz(&samples);
+let frame_len = data.len();
+data.push(0);
+match decode_vbz_fused(&data, samples.len()) {
+    Err(DecodeError::TrailingData { used, len }) => {
+        assert_eq!((used, len), (frame_len, frame_len + 1));
+    }
+    other => panic!("{other:?}"),
+}
+```
+
+VBZ-K applies the same rule to each sub-stream, whose end is given by the
+next sub-stream's data offset in the header. To decode a frame that sits
+inside a larger buffer, slice it out first. The codec level
+`Svb16::decode_to_slice` does accept extra bytes and returns the number of
+bytes the frame used.
+
 ## Low-level / into variants
 
 For zero-allocation usage or building larger buffers:

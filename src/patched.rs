@@ -188,6 +188,10 @@ pub fn decode_into(data: &[u8], n: usize, out: &mut Vec<u16>) -> Result<usize, D
 /// the number of values that were originally encoded. On error the contents
 /// of `out` are unspecified.
 ///
+/// Bytes after the encoded values are not read, so `data` can hold more.
+/// Inside the frame, each exception array must use exactly the length stored
+/// for it, otherwise this returns [`DecodeError::TrailingData`].
+///
 /// # Examples
 ///
 /// ```
@@ -358,12 +362,12 @@ fn decode_to_slice_with_scratch_choosing(
         ex_pos.push(u32::from_le_bytes([p[0], p[1], p[2], p[3]]));
         ex_val.push(u32::from_le_bytes([v[0], v[1], v[2], v[3]]));
     } else {
-        U32Classic.decode_into(&data[pos_bytes_range], nex, ex_pos)?;
+        decode_exact(data, pos_bytes_range, nex, ex_pos)?;
         for i in 1..ex_pos.len() {
             let prev = ex_pos[i - 1];
             ex_pos[i] = ex_pos[i].wrapping_add(prev).wrapping_add(1);
         }
-        U32Classic.decode_into(&data[val_bytes_range], nex, ex_val)?;
+        decode_exact(data, val_bytes_range, nex, ex_val)?;
     }
 
     // Validate once, up front, so neither merge strategy below needs to
@@ -400,6 +404,21 @@ fn decode_to_slice_with_scratch_choosing(
     }
 
     Ok(offset + n_literal)
+}
+
+/// Decode `n` U32Classic values from `data[range]` into `out` (which is
+/// empty). The values must use the whole range, since its length is stored
+/// in the frame. `TrailingData` reports positions in `data`.
+fn decode_exact(
+    data: &[u8],
+    range: core::ops::Range<usize>,
+    n: usize,
+    out: &mut Vec<u32>,
+) -> Result<(), DecodeError> {
+    crate::error::check_ctrl_len(&data[range.clone()], n.div_ceil(4))?;
+    out.resize(n, 0);
+    let used = U32Classic.decode_to_slice(&data[range.clone()], out)?;
+    crate::error::check_used(range.start + used, range.end)
 }
 
 /// Move the literals in `out[..n - nex]` to their final positions and write

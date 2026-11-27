@@ -45,6 +45,18 @@ pub enum DecodeError {
     /// (ex-zd), whose frame stores its own sample count. `need` is that count;
     /// `have` is the length of the output slice.
     OutputLengthMismatch { need: usize, have: usize },
+    /// The input holds more bytes than the encoded values use.
+    ///
+    /// Returned by the pipeline decoders (VBZ, VBZ-K, SVB-ZD and ex-zd), which
+    /// expect `data` to be exactly one frame. `used` is where the values ended
+    /// according to the control stream, and `len` is where they should have
+    /// ended. For a whole frame `len` is `data.len()`. For a part of a frame
+    /// whose length is stored in the frame (a VBZ-K sub-stream, or a `patched`
+    /// exception array) it is the end of that part, and both are positions in
+    /// `data`. A corrupted control stream that claims fewer bytes than were
+    /// written gives this error. The codec `decode_to_slice` functions do not
+    /// return it; they return the number of bytes used instead.
+    TrailingData { used: usize, len: usize },
 }
 
 impl fmt::Display for DecodeError {
@@ -64,6 +76,10 @@ impl fmt::Display for DecodeError {
                 f,
                 "output length does not match the frame: need {need} values, have {have}"
             ),
+            Self::TrailingData { used, len } => write!(
+                f,
+                "bytes left over after the encoded values: they end at byte {used}, expected {len}"
+            ),
         }
     }
 }
@@ -80,6 +96,15 @@ pub(crate) fn check_ctrl_len(data: &[u8], ctrl_len: usize) -> Result<(), DecodeE
             need: ctrl_len,
             have: data.len(),
         });
+    }
+    Ok(())
+}
+
+// Fails if a pipeline decoder used fewer than all `len` bytes of its input.
+// `used` is never above `len`: a decoder that needs more returns an error.
+pub(crate) fn check_used(used: usize, len: usize) -> Result<(), DecodeError> {
+    if used != len {
+        return Err(DecodeError::TrailingData { used, len });
     }
     Ok(())
 }

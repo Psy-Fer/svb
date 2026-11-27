@@ -5,7 +5,7 @@
 //!
 //! The 3-pass and fused decoders must agree, the `Vec` functions must match
 //! the slice functions, and the `_into` functions must restore the `Vec` on
-//! error.
+//! error. Each decoder must reject one extra byte after a frame.
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
@@ -47,4 +47,14 @@ fuzz_target!(|data: &[u8]| {
     let mut v = prefix.to_vec();
     let r = svb::decode_svbzd_fused_into(rest, n, &mut v);
     check_into(&prefix, &v, &r, expected);
+
+    check_strict("decode_svbzd_to_slice", rest, true, |d| {
+        let mut o = vec![0i16; n];
+        svb::decode_svbzd_to_slice(d, &mut o)
+    });
+
+    check_strict("decode_svbzd_fused_to_slice", rest, true, |d| {
+        let mut o = vec![0i16; n];
+        svb::decode_svbzd_fused_to_slice(d, &mut o)
+    });
 });
