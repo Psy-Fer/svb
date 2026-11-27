@@ -624,6 +624,7 @@ unsafe fn decode_blocks_u64(
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "alloc")]
 /// Delta-encode `samples`, using `T::default()` (typically `0`) as the implicit value before the first element.
 ///
 /// Each output element is `samples[i] - samples[i-1]` (wrapping), with `0`
@@ -640,6 +641,7 @@ pub fn encode<T: Delta>(samples: &[T]) -> Vec<T> {
     encode_with_initial(T::default(), samples)
 }
 
+#[cfg(feature = "alloc")]
 /// Delta-encode `samples`, treating `initial` as the value logically preceding the first element.
 ///
 /// Pass `0` (or `T::default()`) for a standalone sequence; pass the last value
@@ -661,6 +663,7 @@ pub fn encode_with_initial<T: Delta>(initial: T, samples: &[T]) -> Vec<T> {
     out
 }
 
+#[cfg(feature = "alloc")]
 /// Delta-encode `samples` using `T::default()` as the initial value, appending the result to `out`.
 ///
 /// # Examples
@@ -675,6 +678,7 @@ pub fn encode_into<T: Delta>(samples: &[T], out: &mut Vec<T>) {
     encode_with_initial_into(T::default(), samples, out);
 }
 
+#[cfg(feature = "alloc")]
 /// Delta-decode `deltas`, using `T::default()` (typically `0`) as the initial accumulator.
 ///
 /// This is the inverse of [`encode`]; pass the same sequence of delta values
@@ -691,6 +695,7 @@ pub fn decode<T: Delta>(deltas: &[T]) -> Vec<T> {
     decode_with_initial(T::default(), deltas)
 }
 
+#[cfg(feature = "alloc")]
 /// Delta-decode `deltas`, starting the prefix sum from `initial`.
 ///
 /// Use `initial = 0` (or `T::default()`) for a standalone sequence; for
@@ -713,6 +718,7 @@ pub fn decode_with_initial<T: Delta>(initial: T, deltas: &[T]) -> Vec<T> {
     out
 }
 
+#[cfg(feature = "alloc")]
 /// Delta-decode `deltas` using `T::default()` as the initial accumulator, appending the result to `out`.
 ///
 /// # Examples
@@ -727,6 +733,7 @@ pub fn decode_into<T: Delta>(deltas: &[T], out: &mut Vec<T>) {
     decode_with_initial_into(T::default(), deltas, out);
 }
 
+#[cfg(feature = "alloc")]
 /// Delta-decode `deltas` starting from `initial`, appending the result to `out`.
 ///
 /// Streaming counterpart to [`decode_with_initial`]; avoids allocating when
@@ -848,6 +855,7 @@ pub fn mid_carry(initial: i16, deltas: &[i16]) -> i16 {
         .fold(initial, |acc, &d| acc.wrapping_add(d))
 }
 
+#[cfg(feature = "alloc")]
 /// Decode a delta-encoded `i16` slice using two independent sub-streams,
 /// appending into `out`.
 ///
@@ -907,6 +915,7 @@ pub fn decode_2chain_to_slice(initial: i16, deltas: &[i16], mid_carry: i16, out:
     decode_2chain_i16(initial, deltas_a, mid_carry, deltas_b, out_a, out_b);
 }
 
+#[cfg(feature = "alloc")]
 /// Decode a delta-encoded `i16` slice using two independent sub-streams,
 /// returning a new `Vec`.
 pub fn decode_2chain(initial: i16, deltas: &[i16], mid_carry: i16) -> Vec<i16> {
@@ -915,6 +924,7 @@ pub fn decode_2chain(initial: i16, deltas: &[i16], mid_carry: i16) -> Vec<i16> {
     out
 }
 
+#[cfg(feature = "alloc")]
 /// Delta-encode `samples` using `initial` as the preceding value, appending the result to `out`.
 ///
 /// Streaming counterpart to [`encode_with_initial`]; avoids allocating when
@@ -1711,7 +1721,7 @@ unsafe fn decode_neon_u64(initial: u64, src: *const u64, dst: *mut u64, n: usize
     (acc, simd_n)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use super::*;
     #[cfg(not(feature = "std"))]

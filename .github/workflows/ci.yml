@@ -78,6 +78,23 @@ jobs:
       - name: Test — no_std + alloc + simd-auto
         run: cargo test --no-default-features --features alloc,simd-auto
 
+      # no_std without alloc: only the slice API is built. The test targets
+      # that use the Vec API declare required-features and are skipped, which
+      # leaves tests/no_alloc.rs. Doctests need alloc, so they are not run.
+      - name: Test — no_std, no alloc
+        run: cargo test --no-default-features --tests
+
+      - name: Test — no_std, no alloc + simd-auto
+        run: cargo test --no-default-features --features simd-auto --tests
+
+      - name: Test — no_std, no alloc + simd-avx2 (forced AVX2)
+        if: runner.arch == 'X64'
+        run: cargo test --no-default-features --features simd-avx2 --tests
+
+      - name: Test — no_std, no alloc + simd-neon (forced NEON)
+        if: runner.arch == 'ARM64'
+        run: cargo test --no-default-features --features simd-neon --tests
+
   # ── lint ─────────────────────────────────────────────────────────────────────
 
   lint:
@@ -99,6 +116,9 @@ jobs:
       # --all-targets extends the lint to tests and benches.
       - name: clippy
         run: cargo clippy --features simd-auto --all-targets -- -D clippy::all
+
+      - name: clippy (no_std, no alloc)
+        run: cargo clippy --no-default-features --all-targets -- -D clippy::all
 
   # ── MSRV ─────────────────────────────────────────────────────────────────────
 

@@ -101,7 +101,7 @@ pub(super) fn encoded_data_len(ctrl: &[u8], n: usize) -> usize {
     n + ones
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use super::*;
     #[cfg(not(feature = "std"))]

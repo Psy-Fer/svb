@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `encode_svbzd_to_slice` encodes SVB-ZD into a caller-supplied `&mut [u8]` and returns the number of bytes written, with `svbzd_max_encoded_len` for sizing the buffer. `encode_svbzd_into` is now a wrapper around it.
 - Fuzz targets `decode_vbzk`, `vbzk_roundtrip`, `patched_decode` and `patched_roundtrip`. The existing decode targets now also check that the slice, `Vec` and `_into` functions agree, and that the 3-pass and fused decoders agree; the round-trip targets check `encode_to_slice` against `max_encoded_len`.
 - Slice functions for the delta and zigzag layers: `delta::encode_to_slice`, `delta::decode_to_slice` and their `_with_initial` forms, `delta::decode_in_place` / `decode_with_initial_in_place` (decode a slice of deltas without a second buffer), `delta::decode_2chain_to_slice`, `zigzag::encode_to_slice` and `zigzag::decode_to_slice`. The output must be the same length as the input; they panic otherwise.
+- Builds without the `alloc` feature (`default-features = false`) now provide the slice API: every codec's `max_encoded_len`, `encode_to_slice` and `decode_to_slice`, the `delta` and `zigzag` slice functions, `decode_vbz_fused_to_slice`, `decode_vbz_fused_from_to_slice`, `encode_svbzd_to_slice`, `svbzd_max_encoded_len`, `decode_svbzd_fused_to_slice` and `decode_svbzd_fused_from_to_slice`. Before, nothing but the error types was available without `alloc`. These functions never allocate in any build. Everything else still needs `alloc`.
 
 ### Changed
 

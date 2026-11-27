@@ -8,7 +8,7 @@
 //! The kernels write into a slice (`n = out.len()`); the `Vec` functions grow
 //! the `Vec`, decode into the new space and truncate it again on error.
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(feature = "alloc", not(feature = "std")))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
@@ -17,10 +17,12 @@ use crate::error::DecodeError;
 
 // ── public entry points ───────────────────────────────────────────────────────
 
+#[cfg(feature = "alloc")]
 pub fn decode_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Result<(), DecodeError> {
     decode_from_into(data, n, 0, out)
 }
 
+#[cfg(feature = "alloc")]
 /// Decode a VBZ stream with an explicit starting carry value.
 ///
 /// `initial` is the last decoded sample before this stream begins — 0 for the
@@ -420,7 +422,7 @@ pub(crate) unsafe fn decode_neon(
     Ok(data_pos + tail)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use super::*;
     #[cfg(not(feature = "std"))]

@@ -29,7 +29,7 @@
 //!
 //! Data bytes follow in the same order as the values, with no padding between them.
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(feature = "alloc", not(feature = "std")))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
@@ -82,6 +82,7 @@ impl_dispatch! {
 pub struct U32Classic;
 
 impl U32Classic {
+    #[cfg(feature = "alloc")]
     /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
     ///
     /// # Examples
@@ -97,6 +98,7 @@ impl U32Classic {
         out
     }
 
+    #[cfg(feature = "alloc")]
     /// Encode `values`, appending the encoded bytes to `out`.
     ///
     /// # Examples
@@ -159,6 +161,7 @@ impl U32Classic {
         Ok(dispatch_encode_classic(values, out))
     }
 
+    #[cfg(feature = "alloc")]
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u32>`.
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
@@ -189,6 +192,7 @@ impl U32Classic {
         Ok(out)
     }
 
+    #[cfg(feature = "alloc")]
     /// Decode exactly `n` values from `data`, appending them to `out`.
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
@@ -293,6 +297,7 @@ impl_dispatch! {
 pub struct U32Variant0124;
 
 impl U32Variant0124 {
+    #[cfg(feature = "alloc")]
     /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
     ///
     /// # Examples
@@ -308,6 +313,7 @@ impl U32Variant0124 {
         out
     }
 
+    #[cfg(feature = "alloc")]
     /// Encode `values`, appending the encoded bytes to `out`.
     ///
     /// # Examples
@@ -370,6 +376,7 @@ impl U32Variant0124 {
         Ok(dispatch_encode_0124(values, out))
     }
 
+    #[cfg(feature = "alloc")]
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u32>`.
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
@@ -400,6 +407,7 @@ impl U32Variant0124 {
         Ok(out)
     }
 
+    #[cfg(feature = "alloc")]
     /// Decode exactly `n` values from `data`, appending them to `out`.
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
@@ -468,7 +476,7 @@ impl U32Variant0124 {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod cross_path {
     // ── x86 decode ────────────────────────────────────────────────────────────
     #[cfg(all(target_arch = "x86_64", feature = "std"))]

@@ -16,8 +16,10 @@
 //!
 //! Enable `simd-auto` for runtime CPU detection (recommended). Use `simd-avx2`,
 //! `simd-ssse3`, or `simd-neon` for compile-time SIMD when the target is known.
-//! Disable `std` and enable `alloc` for `no_std` use; all codec functionality
-//! requires at least the `alloc` feature.
+//! Disable `std` for `no_std` use. Without `alloc`, the slice functions
+//! (`encode_to_slice`, `decode_to_slice`, the fused VBZ and SVB-ZD decoders and
+//! the SVB-ZD encoder) are available and never allocate. Enable `alloc` for the
+//! rest: the `Vec` functions, VBZ encode, VBZ-K, ex-zd and the 3-pass decoders.
 //!
 //! **`no_std` note:** `simd-auto` on x86-64 requires `std` for
 //! [`is_x86_feature_detected!`]. When `std` is disabled, `simd-auto` compiles
@@ -37,13 +39,11 @@ use alloc::vec::Vec;
 pub mod error;
 pub use error::{DecodeError, EncodeError};
 
-#[cfg(feature = "alloc")]
 pub mod delta;
 #[cfg(feature = "alloc")]
 pub mod patched;
 #[cfg(feature = "alloc")]
 pub mod quantize;
-#[cfg(feature = "alloc")]
 pub mod zigzag;
 
 // ── SIMD dispatch macro ───────────────────────────────────────────────────────
@@ -60,7 +60,6 @@ pub mod zigzag;
 // Call it with braces: rustfmt reformats parenthesised calls and breaks the `;`.
 // Adding a new target architecture requires editing only the macro body here.
 
-#[cfg(feature = "alloc")]
 macro_rules! impl_dispatch {
     (fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;
      $avx2_fn:path, $sse2_fn:path, $neon_fn:path, $scalar_fn:path) => {
@@ -153,11 +152,8 @@ pub(crate) mod test_util {
     }
 }
 
-#[cfg(feature = "alloc")]
 pub mod u16;
-#[cfg(feature = "alloc")]
 pub mod u32;
-#[cfg(feature = "alloc")]
 pub mod u64;
 
 // ── VBZ convenience pipeline ──────────────────────────────────────────────────
@@ -174,10 +170,8 @@ pub use vbz::{
     encode_vbz_to_slice, vbz_max_encoded_len,
 };
 
-#[cfg(feature = "alloc")]
 mod vbz_fused;
 
-#[cfg(feature = "alloc")]
 mod svbzd_fused;
 
 #[cfg(feature = "alloc")]
@@ -383,7 +377,6 @@ pub fn decode_vbz_fused_into(data: &[u8], n: usize, out: &mut Vec<i16>) -> Resul
 /// svb::decode_vbz_fused_to_slice(&encoded, &mut out).unwrap();
 /// assert_eq!(out, samples);
 /// ```
-#[cfg(feature = "alloc")]
 pub fn decode_vbz_fused_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
     vbz_fused::decode_from_to_slice(data, 0, out)
 }
@@ -447,7 +440,6 @@ pub fn decode_vbz_fused_from_into(
 /// See [`decode_vbz_fused_from`] for how to split a stream. Writing each
 /// half into its own part of one output slice (for example with
 /// `split_at_mut`) avoids concatenating the halves afterwards.
-#[cfg(feature = "alloc")]
 pub fn decode_vbz_fused_from_to_slice(
     data: &[u8],
     initial_carry: i16,
@@ -1371,7 +1363,6 @@ pub fn encode_svbzd_into(samples: &[i16], out: &mut Vec<u8>) {
 /// assert_eq!(svb::svbzd_max_encoded_len(0), 0);
 /// assert_eq!(svb::svbzd_max_encoded_len(5), 2 + 4 * 5);
 /// ```
-#[cfg(feature = "alloc")]
 pub const fn svbzd_max_encoded_len(n: usize) -> usize {
     svbzd_fused::max_encoded_len(n)
 }
@@ -1391,7 +1382,6 @@ pub const fn svbzd_max_encoded_len(n: usize) -> usize {
 /// let len = svb::encode_svbzd_to_slice(&samples, &mut buf).unwrap();
 /// assert_eq!(&buf[..len], svb::encode_svbzd(&samples));
 /// ```
-#[cfg(feature = "alloc")]
 pub fn encode_svbzd_to_slice(samples: &[i16], out: &mut [u8]) -> Result<usize, EncodeError> {
     let need = svbzd_max_encoded_len(samples.len());
     if out.len() < need {
@@ -1529,7 +1519,6 @@ pub fn decode_svbzd_fused_into(
 /// svb::decode_svbzd_fused_to_slice(&encoded, &mut out).unwrap();
 /// assert_eq!(out, samples);
 /// ```
-#[cfg(feature = "alloc")]
 pub fn decode_svbzd_fused_to_slice(data: &[u8], out: &mut [i16]) -> Result<(), DecodeError> {
     svbzd_fused::decode_from_to_slice(data, 0, out)
 }
@@ -1576,7 +1565,6 @@ pub fn decode_svbzd_fused_from_into(
 /// See [`decode_svbzd_fused_from`]. Writing each half into its own part of one
 /// output slice (for example with `split_at_mut`) avoids concatenating the
 /// halves afterwards.
-#[cfg(feature = "alloc")]
 pub fn decode_svbzd_fused_from_to_slice(
     data: &[u8],
     initial_carry: i32,
@@ -1597,7 +1585,9 @@ pub fn decode_svbzd_fused_from_to_slice(
 // Unlike encode_vbz/encode_svbzd, the frame is self-describing (it embeds its
 // own version byte and sample count), so decode_exzd takes no `n` parameter.
 
+#[cfg(feature = "alloc")]
 const EXZD_VERSION: u8 = 0;
+#[cfg(feature = "alloc")]
 const EXZD_HEADER_LEN: usize = 1 + 8 + 1; // version + nin(u64) + q
 
 /// Encode `i16` samples through qts, zigzag-delta, then patched exception encoding.

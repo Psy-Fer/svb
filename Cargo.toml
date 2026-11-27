@@ -34,3 +34,31 @@ streamvbyte64 = "0.2"
 [[bench]]
 name = "decode"
 harness = false
+# Uses the parallel VBZ-K decoder, which needs std.
+required-features = ["std"]
+
+# These use the Vec API. tests/no_alloc.rs is the one that also runs with
+# --no-default-features.
+[[test]]
+name = "compat"
+required-features = ["alloc"]
+
+[[test]]
+name = "cross_crate"
+required-features = ["alloc"]
+
+[[test]]
+name = "parity"
+required-features = ["alloc"]
+
+[[test]]
+name = "roundtrip"
+required-features = ["alloc"]
+
+[[test]]
+name = "trailing_bytes"
+required-features = ["alloc"]
+
+[[test]]
+name = "untrusted_counts"
+required-features = ["alloc"]

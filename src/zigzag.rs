@@ -40,6 +40,7 @@ pub trait Zigzag: private::Sealed + Sized + Copy {
         0
     }
     #[doc(hidden)]
+    #[cfg(feature = "alloc")]
     fn __encode_into(samples: &[Self], out: &mut Vec<Self::Unsigned>) {
         out.extend(samples.iter().copied().map(Self::encode_one));
     }
@@ -135,6 +136,7 @@ impl Zigzag for i64 {
     }
 }
 
+#[cfg(feature = "alloc")]
 /// Zigzag-encode `samples`, mapping each signed value to a compact unsigned code.
 ///
 /// # Examples
@@ -150,6 +152,7 @@ pub fn encode<T: Zigzag>(samples: &[T]) -> Vec<T::Unsigned> {
     out
 }
 
+#[cfg(feature = "alloc")]
 /// Zigzag-encode `samples`, appending the unsigned codes to `out`.
 ///
 /// # Examples
@@ -164,6 +167,7 @@ pub fn encode_into<T: Zigzag>(samples: &[T], out: &mut Vec<T::Unsigned>) {
     T::__encode_into(samples, out);
 }
 
+#[cfg(feature = "alloc")]
 /// Zigzag-decode `codes`, recovering the original signed values.
 ///
 /// # Examples
@@ -179,6 +183,7 @@ pub fn decode<T: Zigzag>(codes: &[T::Unsigned]) -> Vec<T> {
     out
 }
 
+#[cfg(feature = "alloc")]
 /// Zigzag-decode `codes`, appending the recovered signed values to `out`.
 ///
 /// # Examples
@@ -322,7 +327,7 @@ unsafe fn decode_blocks_neon(codes: &[u16], out: &mut [i16]) -> usize {
     simd_n
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use super::*;
     #[cfg(not(feature = "std"))]

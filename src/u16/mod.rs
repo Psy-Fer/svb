@@ -15,7 +15,7 @@
 //! value in that group of eight: `0` = 1-byte value, `1` = 2-byte value.
 //! Data bytes follow in the same order as the values, with no padding between them.
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(feature = "alloc", not(feature = "std")))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
@@ -73,6 +73,7 @@ impl_dispatch! {
 pub struct Svb16;
 
 impl Svb16 {
+    #[cfg(feature = "alloc")]
     /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
     ///
     /// # Examples
@@ -88,6 +89,7 @@ impl Svb16 {
         out
     }
 
+    #[cfg(feature = "alloc")]
     /// Encode `values`, appending the encoded bytes to `out`.
     ///
     /// # Examples
@@ -150,6 +152,7 @@ impl Svb16 {
         Ok(dispatch_encode(values, out))
     }
 
+    #[cfg(feature = "alloc")]
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u16>`.
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
@@ -174,6 +177,7 @@ impl Svb16 {
         Ok(out)
     }
 
+    #[cfg(feature = "alloc")]
     /// Decode exactly `n` values from `data`, appending them to `out`.
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
@@ -243,6 +247,7 @@ impl Svb16 {
 
 #[cfg(all(
     test,
+    feature = "alloc",
     any(all(target_arch = "x86_64", feature = "std"), target_arch = "aarch64")
 ))]
 mod cross_path {

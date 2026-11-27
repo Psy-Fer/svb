@@ -32,7 +32,7 @@
 //!
 //! Data bytes follow in the same order as the values, with no padding between them.
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(feature = "alloc", not(feature = "std")))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::vec::Vec;
@@ -108,6 +108,7 @@ impl U64Coder1234 {
         values.iter().position(|&v| v > u64::from(u32::MAX))
     }
 
+    #[cfg(feature = "alloc")]
     /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
     ///
     /// # Warning
@@ -131,6 +132,7 @@ impl U64Coder1234 {
         out
     }
 
+    #[cfg(feature = "alloc")]
     /// Encode `values`, appending the encoded bytes to `out`.
     ///
     /// # Warning
@@ -205,6 +207,7 @@ impl U64Coder1234 {
         Ok(dispatch_encode_1234(values, out))
     }
 
+    #[cfg(feature = "alloc")]
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u64>`.
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
@@ -235,6 +238,7 @@ impl U64Coder1234 {
         Ok(out)
     }
 
+    #[cfg(feature = "alloc")]
     /// Decode exactly `n` values from `data`, appending them to `out`.
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
@@ -339,6 +343,7 @@ impl_dispatch! {
 pub struct U64Coder1248;
 
 impl U64Coder1248 {
+    #[cfg(feature = "alloc")]
     /// Encode `values` and return a new `Vec<u8>` containing the control stream followed by the data stream.
     ///
     /// # Examples
@@ -354,6 +359,7 @@ impl U64Coder1248 {
         out
     }
 
+    #[cfg(feature = "alloc")]
     /// Encode `values`, appending the encoded bytes to `out`.
     ///
     /// # Examples
@@ -416,6 +422,7 @@ impl U64Coder1248 {
         Ok(dispatch_encode_1248(values, out))
     }
 
+    #[cfg(feature = "alloc")]
     /// Decode exactly `n` values from `data`, returning them in a new `Vec<u64>`.
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
@@ -446,6 +453,7 @@ impl U64Coder1248 {
         Ok(out)
     }
 
+    #[cfg(feature = "alloc")]
     /// Decode exactly `n` values from `data`, appending them to `out`.
     ///
     /// `n` must equal the number of values that were originally encoded (`n` is
@@ -514,7 +522,7 @@ impl U64Coder1248 {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod cross_path {
     // ── x86 decode ────────────────────────────────────────────────────────────
     #[cfg(all(target_arch = "x86_64", feature = "std"))]
@@ -1025,7 +1033,7 @@ mod cross_path {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
     use super::*;
 
